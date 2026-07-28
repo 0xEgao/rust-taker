@@ -9,6 +9,7 @@ use std::time::Duration;
 use coinswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
 
 use crate::error::{AppError, ErrorCode};
+use crate::state::AppState;
 use crate::types::{CoreStatus, PortStatus, RpcSettings, TorStatus, VersionInfo};
 
 /// Raw TCP reachability probe (RPC / ZMQ / Tor SOCKS / Tor control ports).
@@ -95,21 +96,37 @@ pub fn get_version_info(app: tauri::AppHandle) -> VersionInfo {
     }
 }
 
-/// Mirrors coinswap's own control-port handshake. Bootstrap < 100% is
-/// informational only, not a failure.
+/// Ensures Tor is actually running (system → host binary → embedded fallback, see `crate::tor`)
+/// before mirroring coinswap's own control-port handshake. Bootstrap < 100% is informational
+/// only, not a failure.
 #[tauri::command]
-pub async fn check_tor(control_port: u16, tor_auth_password: String) -> Result<TorStatus, AppError> {
-    tauri::async_runtime::spawn_blocking(move || run_tor_handshake(control_port, &tor_auth_password))
-        .await
-        .map_err(AppError::internal)
+pub async fn check_tor(
+    state: tauri::State<'_, AppState>,
+    socks_port: u16,
+    control_port: u16,
+    tor_auth_password: String,
+) -> Result<TorStatus, AppError> {
+    let (status, child) = tauri::async_runtime::spawn_blocking(move || {
+        let (source, child) = crate::tor::ensure_tor(socks_port, control_port);
+        (run_tor_handshake(control_port, &tor_auth_password, source), child)
+    })
+    .await
+    .map_err(AppError::internal)?;
+
+    if let Some(child) = child {
+        *state.managed_tor.lock()? = Some(child);
+    }
+    Ok(status)
 }
 
-fn run_tor_handshake(control_port: u16, password: &str) -> TorStatus {
+fn run_tor_handshake(control_port: u16, password: &str, source: crate::tor::TorSource) -> TorStatus {
+    let source = Some(source.as_str().to_string());
     let unreachable = |err: String| TorStatus {
         reachable: false,
         authenticated: false,
         bootstrap_progress: None,
         error: Some(err),
+        source: source.clone(),
     };
 
     let addr = match format!("127.0.0.1:{control_port}").to_socket_addrs() {
@@ -145,6 +162,7 @@ fn run_tor_handshake(control_port: u16, password: &str) -> TorStatus {
             authenticated: false,
             bootstrap_progress: None,
             error: Some("Tor control-port authentication failed".into()),
+            source,
         };
     }
 
@@ -154,6 +172,7 @@ fn run_tor_handshake(control_port: u16, password: &str) -> TorStatus {
             authenticated: true,
             bootstrap_progress: None,
             error: None,
+            source,
         };
     }
     resp.clear();
@@ -169,5 +188,6 @@ fn run_tor_handshake(control_port: u16, password: &str) -> TorStatus {
         authenticated: true,
         bootstrap_progress,
         error: None,
+        source,
     }
 }

@@ -1,7 +1,8 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Check, CheckCircle2, Copy, ExternalLink, Eye, EyeOff, Save, XCircle } from "lucide-react";
+import { Check, CheckCircle2, Copy, ExternalLink, Eye, EyeOff, ScrollText, Save, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { backupWallet, checkBitcoinCore, checkPort, checkTor } from "../../api/commands";
 import type { CoreStatus } from "../../api/types";
 import { Modal } from "../../components/ui/display";
@@ -44,6 +45,7 @@ function SectionDot({ color = "bg-primary" }: { color?: string }) {
 }
 
 export function SettingsPage() {
+  const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
   const [config, setConfig] = useState<ConnectivityConfig>(loadConnectivityDefaults);
   const [torPasswordVisible, setTorPasswordVisible] = useState(false);
@@ -103,10 +105,10 @@ export function SettingsPage() {
 
   async function testTor() {
     setTestingTor(true);
-    const [socksResult, torResult] = await Promise.allSettled([
-      checkPort(RPC_HOST, config.torSocksPort),
-      checkTor(config.torControlPort, config.torAuthPassword),
-    ]);
+    // checkTor now ensures Tor is actually running (system/host-binary/embedded fallback) before
+    // its handshake — run it first so the SOCKS-port check below reflects that, not a race.
+    const [torResult] = await Promise.allSettled([checkTor(config.torSocksPort, config.torControlPort, config.torAuthPassword)]);
+    const [socksResult] = await Promise.allSettled([checkPort(RPC_HOST, config.torSocksPort)]);
     setTorRows([
       {
         label: "SOCKS Port",
@@ -394,6 +396,20 @@ export function SettingsPage() {
             </Button>
           </div>
           {torRows && <TestResultRows rows={torRows} />}
+        </section>
+
+        <section className="p-6">
+          <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-subtle">
+            <SectionDot color="bg-subtle" />
+            Logs
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <p className="text-[12.5px] text-muted">View the tail of this session's debug log.</p>
+            <Button size="sm" variant="secondary" onClick={() => navigate("/logs")}>
+              <ScrollText size={14} strokeWidth={2} />
+              View Logs
+            </Button>
+          </div>
         </section>
       </div>
 

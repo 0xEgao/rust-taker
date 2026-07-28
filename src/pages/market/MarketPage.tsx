@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ChevronDown, ExternalLink, Inbox, Info, RefreshCw, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ExternalLink, Inbox, Info, RefreshCw, Search } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOffers, pollMaker, removeMaker, syncOfferbook } from "../../api/commands";
@@ -11,6 +11,8 @@ import { explorerTxUrl } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
 type MakerStatus = "good" | "bad" | "unresponsive";
+type SortKey = "fee" | "baseFee" | "liquidityFee" | "timeRate" | "minSwap" | "maxSwap" | "bond";
+type SortDir = "asc" | "desc";
 
 // Muted (desaturated) variants of the success/warning/danger tokens, one per maker status.
 const STATUS_TAB_CLASS: Record<MakerStatus, { text: string; glow: string }> = {
@@ -56,6 +58,38 @@ function StatCard({ label, value, caption }: { label: string; value: React.React
       <div className="text-[26px] font-bold text-foreground">{value}</div>
       <p className="text-[13px] text-muted">{caption}</p>
     </Card>
+  );
+}
+
+function SortHeader({
+  label,
+  sortKey,
+  active,
+  dir,
+  onSort,
+  className = "",
+}: {
+  label: React.ReactNode;
+  sortKey: SortKey;
+  active: SortKey | null;
+  dir: SortDir;
+  onSort: (key: SortKey) => void;
+  className?: string;
+}) {
+  const isActive = active === sortKey;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(sortKey)}
+      className={`group relative flex items-center justify-end gap-1 transition-colors ${isActive ? "text-primary" : "hover:text-foreground"} ${className}`}
+    >
+      {label}
+      {isActive ? (
+        dir === "asc" ? <ArrowUp size={11} strokeWidth={2.5} /> : <ArrowDown size={11} strokeWidth={2.5} />
+      ) : (
+        <ArrowUpDown size={11} strokeWidth={2} className="opacity-40" />
+      )}
+    </button>
   );
 }
 
@@ -283,6 +317,8 @@ export function MarketPage() {
   const [bondMaker, setBondMaker] = useState<Maker | null>(null);
   const [showAllColumns, setShowAllColumns] = useState(false);
   const [footerTick, setFooterTick] = useState(0);
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pushToast = useToastStore((s) => s.push);
 
@@ -301,7 +337,25 @@ export function MarketPage() {
   useEffect(() => {
     void (async () => {
       try {
-        await load();
+        const view = await load();
+        // A sync can already be running here — e.g. the one kicked off at app startup right
+        // after init_taker — with no button click of ours to hang a loading state off of.
+        // Reflect it anyway by polling until it clears, same cadence as our own refresh().
+        if (view.syncing) {
+          setRefreshing(true);
+          pollIntervalRef.current = setInterval(() => {
+            void load()
+              .then((v) => {
+                if (!v.syncing && pollIntervalRef.current) {
+                  clearInterval(pollIntervalRef.current);
+                  pollIntervalRef.current = null;
+                  setRefreshing(false);
+                  setFooterTick((t) => t + 1);
+                }
+              })
+              .catch(() => {});
+          }, 2000);
+        }
       } catch (e) {
         pushToast("error", (e as { message?: string })?.message ?? "Failed to load makers.");
       } finally {
@@ -311,6 +365,7 @@ export function MarketPage() {
   }, [load, pushToast]);
 
   const refresh = useCallback(async () => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     setRefreshing(true);
     pollIntervalRef.current = setInterval(() => {
       void load().catch(() => {});
@@ -340,6 +395,57 @@ export function MarketPage() {
 
   const buckets: Record<MakerStatus, Maker[]> = { good, bad, unresponsive };
   const displayed = buckets[tab];
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  }
+
+  const rows = useMemo(() => {
+    const withFee = displayed.map((maker) => {
+      const offer = maker.offer;
+      const referenceFee = offer
+        ? estimateMakerFee({
+            baseFee: offer.baseFee,
+            amountRelativeFeePct: offer.amountRelativeFeePct,
+            timeRelativeFeePct: offer.timeRelativeFeePct,
+            amountSats: FEE_REFERENCE_SCENARIO.amountSats,
+            makerPosition: FEE_REFERENCE_SCENARIO.makerPosition,
+            totalMakers: FEE_REFERENCE_SCENARIO.totalMakers,
+          }).totalFee
+        : 0;
+      return { maker, offer, referenceFee };
+    });
+
+    if (!sortKey) return withFee;
+
+    const valueOf = (row: (typeof withFee)[number]): number => {
+      switch (sortKey) {
+        case "fee":
+          return row.referenceFee;
+        case "baseFee":
+          return row.offer?.baseFee ?? 0;
+        case "liquidityFee":
+          return row.offer?.amountRelativeFeePct ?? 0;
+        case "timeRate":
+          return row.offer?.timeRelativeFeePct ?? 0;
+        case "minSwap":
+          return row.offer?.minSize ?? 0;
+        case "maxSwap":
+          return row.offer?.maxSize ?? 0;
+        case "bond":
+          return row.offer?.bondAmountSats ?? 0;
+      }
+    };
+
+    const sorted = [...withFee].sort((a, b) => valueOf(a) - valueOf(b));
+    if (sortDir === "desc") sorted.reverse();
+    return sorted;
+  }, [displayed, sortKey, sortDir]);
 
   async function poll(address: string) {
     if (pollingAddress) return;
@@ -491,21 +597,37 @@ export function MarketPage() {
             } uppercase tracking-widest text-subtle`}
           >
             <div>Tor Address</div>
-            {showAllColumns && <div className="text-right">Base Fee</div>}
-            {showAllColumns && <div className="text-right">Liquidity Fee</div>}
-            {showAllColumns && <div className="text-right">Time Rate</div>}
+            {showAllColumns && (
+              <SortHeader label="Base Fee" sortKey="baseFee" active={sortKey} dir={sortDir} onSort={toggleSort} />
+            )}
+            {showAllColumns && (
+              <SortHeader label="Liquidity Fee" sortKey="liquidityFee" active={sortKey} dir={sortDir} onSort={toggleSort} />
+            )}
+            {showAllColumns && (
+              <SortHeader label="Time Rate" sortKey="timeRate" active={sortKey} dir={sortDir} onSort={toggleSort} />
+            )}
             {!showAllColumns && (
               <div className="group relative flex items-center justify-end gap-1">
-                Fee
-                <Info size={11} strokeWidth={2} />
+                <SortHeader
+                  label={
+                    <span className="inline-flex items-center gap-1">
+                      Fee
+                      <Info size={11} strokeWidth={2} />
+                    </span>
+                  }
+                  sortKey="fee"
+                  active={sortKey}
+                  dir={sortDir}
+                  onSort={toggleSort}
+                />
                 <div className="pointer-events-none absolute right-0 top-[calc(100%+9px)] z-20 w-max max-w-65 rounded-lg border border-line-strong bg-bg px-2.5 py-2 text-left text-[11px] font-medium normal-case tracking-normal leading-snug text-foreground opacity-0 shadow-lg transition-all group-hover:translate-y-0 group-hover:opacity-100">
                   {FEE_REFERENCE_TOOLTIP}
                 </div>
               </div>
             )}
-            <div className="text-right">Min Swap</div>
-            <div className="text-right">Max Swap</div>
-            <div className="text-right">Fidelity Bond</div>
+            <SortHeader label="Min Swap" sortKey="minSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
+            <SortHeader label="Max Swap" sortKey="maxSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
+            <SortHeader label="Fidelity Bond" sortKey="bond" active={sortKey} dir={sortDir} onSort={toggleSort} />
             <div className="text-right">Actions</div>
           </div>
 
@@ -530,19 +652,8 @@ export function MarketPage() {
                 <strong className="text-[15px] text-foreground">No {tab} makers found</strong>
               </div>
             ) : (
-              displayed.map((maker) => {
-                const offer = maker.offer;
+              rows.map(({ maker, offer, referenceFee }) => {
                 const isPolling = pollingAddress === maker.address;
-                const referenceFee = offer
-                  ? estimateMakerFee({
-                      baseFee: offer.baseFee,
-                      amountRelativeFeePct: offer.amountRelativeFeePct,
-                      timeRelativeFeePct: offer.timeRelativeFeePct,
-                      amountSats: FEE_REFERENCE_SCENARIO.amountSats,
-                      makerPosition: FEE_REFERENCE_SCENARIO.makerPosition,
-                      totalMakers: FEE_REFERENCE_SCENARIO.totalMakers,
-                    }).totalFee
-                  : 0;
                 return (
                   <div
                     key={maker.address}

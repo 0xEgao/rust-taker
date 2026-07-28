@@ -1,6 +1,7 @@
 mod commands;
 mod error;
 mod state;
+mod tor;
 mod types;
 
 use commands::{logs, market, reports, setup, swap, wallet};
@@ -45,6 +46,7 @@ pub fn run() {
             swap::prepare_swap,
             swap::start_swap,
             swap::get_swap_progress,
+            swap::get_swap_tracker,
             swap::recover_swap,
             swap::get_recovery_status,
             // reports
@@ -60,6 +62,12 @@ pub fn run() {
                 // Drop for Taker flushes offerbook/wallet state and stops
                 // background threads. Best-effort: the app is closing either way.
                 let _ = wallet::shutdown(&state);
+                // Kill any host `tor` process we spawned — it has no other owner to reap it.
+                let spawned_tor = state.managed_tor.lock().ok().and_then(|mut guard| guard.take());
+                if let Some(mut child) = spawned_tor {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
         })
         .run(tauri::generate_context!())

@@ -1,0 +1,182 @@
+import { ArrowLeft, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { listSwapReports } from "../../api/commands";
+import type { SwapReportSummary, SwapStatus } from "../../api/types";
+import { isAppError } from "../../api/types";
+import { Card, SatsAmount } from "../../components/ui/display";
+import { SegmentedToggle, SortToggle } from "../../components/ui/inputs";
+import {
+  formatDuration,
+  formatRelativeTime,
+  SWAP_STATUS_CHIP_TONE,
+  SWAP_STATUS_ICON,
+  truncateMiddle,
+} from "../../lib/wallet-format";
+import { useToastStore } from "../../store/toast";
+
+// No recovery flow exists yet; recovery_* rows (if any) still show under "All".
+type StatusFilter = "all" | "success" | "failed";
+type SortField = "time" | "amount";
+
+const STATUS_LABEL: Record<SwapStatus, string> = {
+  success: "Success",
+  recovery_hashlock: "Recovered (hashlock)",
+  recovery_timelock: "Recovered (timelock)",
+  failed: "Failed",
+};
+
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <Card className="border-line-strong p-4">
+      <span className="font-mono text-[9.5px] uppercase tracking-widest text-subtle">{label}</span>
+      <div className="mt-1 font-mono text-[19px] font-bold text-foreground">{value}</div>
+    </Card>
+  );
+}
+
+export function SwapReportsPage() {
+  const navigate = useNavigate();
+  const pushToast = useToastStore((s) => s.push);
+  const [reports, setReports] = useState<SwapReportSummary[] | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [sortField, setSortField] = useState<SortField>("time");
+  const [sortDir, setSortDir] = useState<Record<SortField, "asc" | "desc">>({ time: "desc", amount: "desc" });
+
+  function toggleSort(field: SortField) {
+    if (field === sortField) setSortDir((prev) => ({ ...prev, [field]: prev[field] === "desc" ? "asc" : "desc" }));
+    else setSortField(field);
+  }
+
+  useEffect(() => {
+    void listSwapReports()
+      .then(setReports)
+      .catch((e) => {
+        setReports([]);
+        pushToast("error", isAppError(e) ? e.message : "Failed to load swap reports.");
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const filtered = useMemo(() => {
+    const rows = (reports ?? []).filter((r) => statusFilter === "all" || r.status === statusFilter);
+    const sorted = [...rows];
+    const dir = sortDir[sortField] === "asc" ? 1 : -1;
+    if (sortField === "time") sorted.sort((a, b) => (a.endTimestamp - b.endTimestamp) * dir);
+    else sorted.sort((a, b) => (a.outgoingAmountSats - b.outgoingAmountSats) * dir);
+    return sorted;
+  }, [reports, statusFilter, sortField, sortDir]);
+
+  const stats = useMemo(() => {
+    const all = reports ?? [];
+    const failed = all.filter((r) => r.status === "failed").length;
+    const totalVolume = all.reduce((sum, r) => sum + r.outgoingAmountSats, 0);
+    const totalFees = all.reduce((sum, r) => sum + r.feePaidSats, 0);
+    return { total: all.length, failed, totalVolume, totalFees };
+  }, [reports]);
+
+  return (
+    <div className="flex h-full flex-col overflow-y-auto px-8 pb-8 pt-2">
+      <div className="flex shrink-0 items-center gap-3 pb-4">
+        <button
+          type="button"
+          onClick={() => navigate("/swap")}
+          title="Back to Swap"
+          className="flex h-9 w-9 flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-line-strong hover:text-foreground"
+        >
+          <ArrowLeft size={16} strokeWidth={1.8} />
+        </button>
+        <div>
+          <h1 className="font-header text-[26px] font-bold text-foreground">Swap Reports</h1>
+          <p className="mt-1 text-[13.5px] text-muted">History of past swaps for this wallet.</p>
+        </div>
+      </div>
+
+      {reports === null ? (
+        <div className="grid flex-1 place-items-center gap-2.5 text-center text-[13px] text-subtle">
+          <RefreshCw size={28} strokeWidth={1.6} className="animate-spin text-primary" />
+          <span>Loading swap reports…</span>
+        </div>
+      ) : (
+        <>
+          <section className="grid shrink-0 grid-cols-4 gap-3">
+            <StatCard label="Total Reports" value={String(stats.total)} />
+            <StatCard label="Failed" value={String(stats.failed)} />
+            <StatCard label="Total Volume" value={`${stats.totalVolume.toLocaleString()} sats`} />
+            <StatCard label="Total Fees" value={`${stats.totalFees.toLocaleString()} sats`} />
+          </section>
+
+          <Card className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-line-strong px-4 py-3">
+            <SegmentedToggle
+              groupId="reports-status-filter"
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={[
+                { value: "all", label: "All" },
+                { value: "success", label: "Success" },
+                { value: "failed", label: "Failed" },
+              ]}
+            />
+            <SortToggle
+              groupId="reports-sort"
+              sortKey={sortField}
+              sortDir={sortDir}
+              onChange={toggleSort}
+              options={[
+                { key: "time", label: "Newest" },
+                { key: "amount", label: "Amount" },
+              ]}
+            />
+          </Card>
+
+          <Card className="mt-4 flex min-h-0 flex-1 flex-col border-line-strong">
+            <div className="grid grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] gap-3 border-b border-line px-4.5 py-3 font-mono text-[10px] uppercase tracking-widest text-subtle">
+              <span />
+              <span>Swap ID</span>
+              <span>When</span>
+              <span>Duration</span>
+              <span>Amount</span>
+              <span>Makers</span>
+              <span>Fee</span>
+            </div>
+            <div className="flex flex-1 flex-col divide-y divide-line overflow-y-auto">
+              {filtered.length === 0 && (
+                <p className="px-4.5 py-8 text-center text-[13px] text-subtle">
+                  {reports.length === 0 ? "No swap reports yet." : "No reports match this filter."}
+                </p>
+              )}
+              {filtered.map((r) => {
+                const Icon = SWAP_STATUS_ICON[r.status];
+                return (
+                  <div
+                    key={r.swapId}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => navigate(`/swap/reports/${encodeURIComponent(r.swapId)}`)}
+                    onKeyDown={(e) => e.key === "Enter" && navigate(`/swap/reports/${encodeURIComponent(r.swapId)}`)}
+                    className="grid cursor-pointer grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] items-center gap-3 px-4.5 py-3 text-left transition-colors duration-200 hover:bg-white/[0.04]"
+                  >
+                    <span className={`flex h-[34px] w-[34px] items-center justify-center rounded-control border ${SWAP_STATUS_CHIP_TONE[r.status]}`}>
+                      <Icon size={17} strokeWidth={2} />
+                    </span>
+                    <span className="flex min-w-0 flex-col gap-1">
+                      <span className="truncate font-mono text-[12px] text-muted">{truncateMiddle(r.swapId, 10, 6)}</span>
+                      <span className={`w-fit rounded-control border px-1.5 py-0.5 font-mono text-[9.5px] tracking-wide ${SWAP_STATUS_CHIP_TONE[r.status]}`}>
+                        {STATUS_LABEL[r.status]}
+                      </span>
+                    </span>
+                    <span className="font-mono text-[11.5px] text-subtle">{formatRelativeTime(r.endTimestamp)}</span>
+                    <span className="font-mono text-[11.5px] text-subtle">{formatDuration(r.endTimestamp - r.startTimestamp)}</span>
+                    <SatsAmount sats={r.outgoingAmountSats} className="text-[12.5px] font-semibold text-foreground" />
+                    <span className="font-mono text-[12px] text-foreground">{r.makersCount}</span>
+                    <SatsAmount sats={r.feePaidSats} className="text-[12px] text-warning" />
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}

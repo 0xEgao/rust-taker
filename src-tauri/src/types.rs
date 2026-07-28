@@ -50,6 +50,9 @@ pub struct TorStatus {
     pub bootstrap_progress: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// "system" | "host_binary" | "embedded" | "none" — which tier `tor::ensure_tor` used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -167,7 +170,7 @@ pub struct UtxoEntry {
     pub spend_type: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Outpoint {
     pub txid: String,
@@ -285,7 +288,9 @@ pub struct SwapSummaryDto {
     pub estimated_receive_amount_sats: u64,
 }
 
-/// Coarse lifecycle snapshot — no per-maker progress yet.
+/// Coarse in-memory lifecycle snapshot (survives across commands via `AppState.active_swap`).
+/// For live per-maker detail, see `SwapTrackerDto` / `get_swap_tracker`, which reads the crate's
+/// own `swap_tracker.cbor` — the same file the old Electron app polled directly off disk.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapProgressDto {
@@ -295,6 +300,32 @@ pub struct SwapProgressDto {
     pub started_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerProgressDto {
+    pub address: String,
+    pub steps_done: usize,
+    pub steps_total: usize,
+}
+
+/// Live per-maker detail read straight from `coinswap::taker::swap_tracker::SwapTracker`
+/// (a public crate API — see `commands::swap`'s module doc).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapTrackerDto {
+    /// "makers_discovered" | "negotiated" | "funding_created" | "funds_broadcast" |
+    /// "contracts_exchanged" | "finalizing" | "privkeys_forwarded" | "completed" | "failed"
+    pub phase: String,
+    // send_amount_sats/maker_count let the frontend rebuild its progress screen after remounting
+    // mid-swap (e.g. navigating away and back) without a cached SwapSummary — prepareSwap only
+    // ever returns one, and re-running it isn't possible for an already-running swap.
+    pub send_amount_sats: u64,
+    pub maker_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    pub makers: Vec<MakerProgressDto>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -318,9 +349,22 @@ pub struct SwapReportSummary {
     pub start_timestamp: u64,
     pub end_timestamp: u64,
     pub outgoing_amount_sats: u64,
-    pub incoming_amount_sats: u64,
+    /// outgoing_amount_sats - fee_paid_sats — the crate's own incoming_amount can be inconsistent
+    /// for non-Success outcomes, so this is derived here rather than passed through.
+    pub received_amount_sats: u64,
     pub fee_paid_sats: u64,
     pub makers_count: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerFeeInfo {
+    pub maker_index: usize,
+    pub maker_address: String,
+    pub base_fee_sats: f64,
+    pub amount_relative_fee_sats: f64,
+    pub time_relative_fee_sats: f64,
+    pub total_fee_sats: f64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -335,7 +379,8 @@ pub struct SwapReportDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub outgoing_amount_sats: u64,
-    pub incoming_amount_sats: u64,
+    /// outgoing_amount_sats - fee_paid_sats — see the same field's doc on `SwapReportSummary`.
+    pub received_amount_sats: u64,
     pub fee_paid_sats: u64,
     pub mining_fee_sats: u64,
     pub fee_percentage: f64,
@@ -347,7 +392,16 @@ pub struct SwapReportDetail {
     pub funding_txids: Vec<Vec<String>>,
     pub makers_count: usize,
     pub maker_addresses: Vec<String>,
-    pub has_deniability_proof: bool,
+    pub maker_fee_info: Vec<MakerFeeInfo>,
+    pub input_utxo_amounts_sats: Vec<u64>,
+    pub output_change_utxos: Vec<(u64, String)>,
+    pub output_swap_utxos: Vec<(u64, String)>,
+    /// The exact outpoint `verify_deniability` checks on-chain — the one field of the proof the
+    /// UI reasons about, so it's typed rather than pulled out of the raw JSON below.
+    pub proven_outpoint: Option<Outpoint>,
+    /// Raw pass-through of the crate's `DeniabilityProof` (already `Serialize`) rather than
+    /// hand-mirrored types — the frontend renders whatever shape comes through generically.
+    pub deniability_proof: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

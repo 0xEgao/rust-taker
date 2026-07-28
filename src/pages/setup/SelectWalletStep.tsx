@@ -2,8 +2,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { dirname } from "@tauri-apps/api/path";
 import { FolderOpen, FolderPlus, Plus } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { checkBitcoinCore, checkTor, initTaker, listWallets, restoreWallet } from "../../api/commands";
-import type { AppError, InitResult } from "../../api/types";
+import { checkBitcoinCore, checkTor, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { isAppError } from "../../api/types";
+import type { InitResult } from "../../api/types";
 import { Modal, StatusRow, WalletCard, type CheckState } from "../../components/ui/display";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Headline } from "../../components/ui/layout";
@@ -49,10 +50,6 @@ function randomWalletName() {
 
 function basename(path: string) {
   return path.split(/[/\\]/).pop() ?? path;
-}
-
-function isAppError(e: unknown): e is AppError {
-  return typeof e === "object" && e !== null && "code" in e;
 }
 
 // Local checks (RPC/Tor/wallet unlock) often resolve in well under 100ms,
@@ -163,7 +160,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     try {
       await withMinDelay(
         (async () => {
-          const status = await checkTor(connectivity.torControlPort, connectivity.torAuthPassword);
+          const status = await checkTor(connectivity.torSocksPort, connectivity.torControlPort, connectivity.torAuthPassword);
           if (!(status.reachable && status.authenticated)) {
             throw new Error(status.error ?? "Tor control port unreachable.");
           }
@@ -201,6 +198,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       );
       setSteps((s) => ({ ...s, init: "passed" }));
       saveConnectivityDefaults(connectivity);
+      // Kick off a real offerbook sync now, in the background, so the Market page has fresh
+      // maker data by the time the user looks at it — not just whatever offerbook.json had from
+      // the last session. Not awaited: this can take 30-60s+ and shouldn't block navigation.
+      void syncOfferbook().catch(() => {});
       onSuccess(result);
     } catch (e) {
       const err = isAppError(e) ? e : null;

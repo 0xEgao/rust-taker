@@ -1,21 +1,27 @@
-//! Swap execution: two-phase prepare/start, coarse progress, recovery.
+//! Swap execution: two-phase prepare/start, coarse in-memory progress, recovery.
 //!
-//! No per-maker live progress — coinswap's tracker types are `pub(crate)`,
-//! so `get_swap_progress` only reports coarse lifecycle.
+//! Live per-maker progress (`get_swap_tracker`) reads `coinswap::taker::swap_tracker::SwapTracker`
+//! directly — a public crate API (`SwapTracker`/`SwapRecord`/`MakerProgress` are all `pub`,
+//! `Serialize`/`Deserialize`), the same `<data_dir>/swap_tracker.cbor` file the old Electron app
+//! polled straight off disk.
 
 use std::str::FromStr;
 use std::time::SystemTime;
 
 use coinswap::bitcoin::{Amount, OutPoint, Txid};
 use coinswap::protocol::ProtocolVersion;
+use coinswap::taker::swap_tracker::{
+    ExchangeProgress, LegacyExchangeProgress, MakerProgress, SwapPhase, SwapRecord, SwapTracker,
+    TaprootExchangeProgress,
+};
 use coinswap::taker::{SwapParams, SwapSummary};
 use tauri::{Emitter, Manager};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
-    MakerFeeInfoDto, ProtocolVersionDto, RecoveryStatus, SwapProgressDto, SwapRequest,
-    SwapSummaryDto,
+    MakerFeeInfoDto, MakerProgressDto, ProtocolVersionDto, RecoveryStatus, SwapProgressDto,
+    SwapRequest, SwapSummaryDto, SwapTrackerDto,
 };
 
 fn protocol_label(p: ProtocolVersion) -> &'static str {
@@ -55,6 +61,74 @@ fn phase_label(phase: SwapLifecycle) -> &'static str {
         SwapLifecycle::Recovering => "recovering",
         SwapLifecycle::Finished => "finished",
         SwapLifecycle::Failed => "failed",
+    }
+}
+
+fn tracker_phase_label(phase: SwapPhase) -> &'static str {
+    match phase {
+        SwapPhase::MakersDiscovered => "makers_discovered",
+        SwapPhase::Negotiated => "negotiated",
+        SwapPhase::FundingCreated => "funding_created",
+        SwapPhase::FundsBroadcast => "funds_broadcast",
+        SwapPhase::ContractsExchanged => "contracts_exchanged",
+        SwapPhase::Finalizing => "finalizing",
+        SwapPhase::PrivkeysForwarded => "privkeys_forwarded",
+        SwapPhase::Completed => "completed",
+        SwapPhase::Failed => "failed",
+    }
+}
+
+// Counts of completed vs total boolean milestones — only the counts are ever rendered (a tone,
+// not a checklist), so we don't build/ship per-step labels for something nothing displays.
+fn legacy_steps_done(p: &LegacyExchangeProgress) -> (usize, usize) {
+    let flags = [
+        p.connected,
+        p.sender_sigs_requested,
+        p.sender_sigs_received,
+        p.prev_funding_broadcast,
+        p.prev_funding_confirmed,
+        p.proof_of_funding_sent,
+        p.maker_contracts_received,
+        p.next_maker_sigs_obtained,
+        p.prev_maker_sigs_obtained,
+        p.combined_sigs_sent,
+        p.maker_funding_confirmed,
+        p.watchonly_created,
+    ];
+    (flags.iter().filter(|d| **d).count(), flags.len())
+}
+
+fn taproot_steps_done(p: &TaprootExchangeProgress) -> (usize, usize) {
+    let flags = [
+        p.connected,
+        p.contract_data_sent,
+        p.maker_contract_received,
+        p.swapcoins_created,
+        p.maker_funding_confirmed,
+    ];
+    (flags.iter().filter(|d| **d).count(), flags.len())
+}
+
+fn to_maker_progress_dto(m: &MakerProgress) -> MakerProgressDto {
+    let (mut done, mut total) = match &m.exchange {
+        ExchangeProgress::Legacy(p) => legacy_steps_done(p),
+        ExchangeProgress::Taproot(p) => taproot_steps_done(p),
+    };
+    done += [m.finalization.privkey_received, m.finalization.privkey_forwarded]
+        .iter()
+        .filter(|d| **d)
+        .count();
+    total += 2;
+    MakerProgressDto { address: m.address.clone(), steps_done: done, steps_total: total }
+}
+
+fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
+    SwapTrackerDto {
+        phase: tracker_phase_label(r.phase).to_string(),
+        send_amount_sats: r.send_amount_sat,
+        maker_count: r.maker_count,
+        failure_reason: r.failure_reason.clone(),
+        makers: r.makers.iter().map(to_maker_progress_dto).collect(),
     }
 }
 
@@ -190,15 +264,42 @@ pub fn get_swap_progress(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<SwapProgressDto>, AppError> {
     let guard = state.active_swap.lock()?;
-    Ok(guard.as_ref().map(|active| SwapProgressDto {
-        swap_id: active.swap_id.clone(),
-        phase: phase_label(active.phase).to_string(),
-        started_at: active
-            .started_at
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs()),
-        error: active.error.clone(),
+    // Only Running/Recovering is worth reconciling after a remount — a terminal phase is stale
+    // by definition and would otherwise resurrect the last outcome indefinitely.
+    Ok(guard.as_ref().filter(|a| matches!(a.phase, SwapLifecycle::Running | SwapLifecycle::Recovering)).map(|active| {
+        SwapProgressDto {
+            swap_id: active.swap_id.clone(),
+            phase: phase_label(active.phase).to_string(),
+            started_at: active
+                .started_at
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs()),
+            error: active.error.clone(),
+        }
     }))
+}
+
+/// Live per-maker detail for the active swap, straight off `<data_dir>/swap_tracker.cbor` —
+/// intended to be polled every couple seconds while a swap is running, same cadence as the old
+/// Electron app's disk-read poll.
+#[tauri::command]
+pub async fn get_swap_tracker(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<SwapTrackerDto>, AppError> {
+    let swap_id = state.active_swap.lock()?.as_ref().map(|a| a.swap_id.clone());
+    let Some(swap_id) = swap_id else { return Ok(None) };
+    let data_dir = state
+        .data_dir
+        .read()?
+        .clone()
+        .ok_or_else(AppError::not_initialized)?;
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<SwapTrackerDto>, AppError> {
+        let tracker = SwapTracker::load_or_create(&data_dir)?;
+        Ok(tracker.get_record(&swap_id).map(to_tracker_dto))
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
 /// Manual backout trigger; also works cross-session after a crash.

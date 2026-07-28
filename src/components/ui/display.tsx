@@ -1,6 +1,9 @@
-import { AlertCircle, Check, Wallet } from "lucide-react";
-import { useEffect } from "react";
+import { AlertCircle, Check, ChevronDown, ExternalLink, Wallet } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useEffect, useRef, useState } from "react";
 import type { HTMLAttributes, ReactNode } from "react";
+import type { LogLine } from "../../api/types";
+import { explorerTxUrl, LOG_LEVEL_TONE, logLevel } from "../../lib/wallet-format";
 
 // Blur lives on its own layer, not this rounded/overflow-hidden div, to dodge a WebKit corner-seam
 // bug; `isolate` keeps descendants' negative z-index glows contained instead of escaping the card.
@@ -161,6 +164,105 @@ export function SatsGlyph({ className = "" }: { className?: string }) {
       <span className="absolute left-[0.04em] right-[0.04em] top-[0.45em] h-[0.1em] rounded-[1px] bg-current" />
       <span className="absolute left-[0.04em] right-[0.04em] top-[0.655em] h-[0.1em] rounded-[1px] bg-current" />
     </span>
+  );
+}
+
+/** Collapsed-by-default section, e.g. raw proof dumps or verbose logs nobody needs by default. */
+export function Disclosure({
+  label,
+  defaultOpen = false,
+  onOpenChange,
+  children,
+}: {
+  label: string;
+  defaultOpen?: boolean;
+  /** Notified on every toggle — lets a parent gate work (e.g. a poll) on visibility. */
+  onOpenChange?: (open: boolean) => void;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  function toggle() {
+    setOpen((o) => {
+      onOpenChange?.(!o);
+      return !o;
+    });
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex items-center justify-between gap-2 rounded-control border border-line bg-surface-raised px-3.5 py-2.5 text-[12px] font-medium text-muted transition-colors hover:text-foreground"
+      >
+        <span>{label}</span>
+        <ChevronDown size={15} strokeWidth={2} className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
+/**
+ * Scrollable, color-coded log tail. Snaps to the bottom on mount (so opening it — including via
+ * `Disclosure`, which mounts fresh each time it's expanded — always lands on the latest line
+ * first) and keeps following new lines as long as the viewer is still near the bottom.
+ */
+export function LogViewer({
+  lines,
+  emptyMessage = "No log lines yet.",
+  className = "min-h-0 flex-1",
+}: {
+  lines: LogLine[];
+  emptyMessage?: string;
+  className?: string;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Not "first render": `lines` is usually still empty then (fetch is async), which would
+  // consume the flag before there's anything to scroll to.
+  const hasSnappedToBottom = useRef(false);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || lines.length === 0) return;
+    if (!hasSnappedToBottom.current) {
+      hasSnappedToBottom.current = true;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 80) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+
+  return (
+    <div ref={scrollRef} className={`overflow-y-auto px-4.5 py-3 ${className}`}>
+      {lines.length === 0 ? (
+        <p className="py-6 text-center text-[13px] text-subtle">{emptyMessage}</p>
+      ) : (
+        <div className="flex flex-col gap-0.5">
+          {lines.map((l, i) => (
+            <div key={i} className={`whitespace-pre-wrap break-all font-mono text-[11px] ${LOG_LEVEL_TONE[logLevel(l.line)]}`}>
+              {l.line}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ExternalLinkButton({ txid }: { txid: string }) {
+  return (
+    <button
+      type="button"
+      title="View on explorer"
+      onClick={(e) => {
+        e.stopPropagation();
+        void openUrl(explorerTxUrl(txid));
+      }}
+      className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-primary/60 hover:bg-primary/[0.14] hover:text-primary-hover"
+    >
+      <ExternalLink size={16} strokeWidth={1.8} />
+    </button>
   );
 }
 

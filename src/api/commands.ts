@@ -22,6 +22,7 @@ import type {
   SwapReportSummary,
   SwapRequest,
   SwapSummary,
+  SwapTrackerProgress,
   TorStatus,
   TxSummary,
   UtxoEntry,
@@ -42,10 +43,11 @@ export function checkBitcoinCore(rpc: RpcSettings): Promise<CoreStatus> {
 }
 
 export function checkTor(
+  socksPort: number,
   controlPort: number,
   torAuthPassword: string,
 ): Promise<TorStatus> {
-  return invoke("check_tor", { controlPort, torAuthPassword });
+  return invoke("check_tor", { socksPort, controlPort, torAuthPassword });
 }
 
 export function getVersionInfo(): Promise<VersionInfo> {
@@ -182,6 +184,12 @@ export function startSwap(swapId: string): Promise<void> {
 
 export function getSwapProgress(): Promise<SwapProgress | null> {
   return invoke("get_swap_progress");
+}
+
+// Live per-maker detail read straight from swap_tracker.cbor — poll this every couple seconds
+// while a swap is running, same cadence as the old Electron app's disk-read poll.
+export function getSwapTracker(): Promise<SwapTrackerProgress | null> {
+  return invoke("get_swap_tracker");
 }
 
 export function recoverSwap(): Promise<void> {

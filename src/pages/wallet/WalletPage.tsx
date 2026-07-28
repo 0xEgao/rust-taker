@@ -1,9 +1,9 @@
-import { ArrowDownLeft, ArrowUpRight, ExternalLink } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../../api/commands";
-import { Card, SatsAmount } from "../../components/ui/display";
+import { Card, ExternalLinkButton, SatsAmount } from "../../components/ui/display";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { isCacheStale, REFRESH_INTERVAL_MS, useWalletCacheStore } from "../../store/wallet-cache";
 import { withMinDelay } from "../../lib/timing";
@@ -89,22 +89,6 @@ function TabGroup<T extends string>({
         </button>
       ))}
     </div>
-  );
-}
-
-function ExternalLinkButton({ txid }: { txid: string }) {
-  return (
-    <button
-      type="button"
-      title="View on explorer"
-      onClick={(e) => {
-        e.stopPropagation();
-        void openUrl(explorerTxUrl(txid));
-      }}
-      className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-primary/60 hover:bg-primary/[0.14] hover:text-primary-hover"
-    >
-      <ExternalLink size={16} strokeWidth={1.8} />
-    </button>
   );
 }
 

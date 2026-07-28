@@ -37,6 +37,9 @@ pub struct AppState {
     /// on the public OfferSyncClient.
     pub is_offerbook_syncing: AtomicBool,
     pub last_offerbook_sync_ts: AtomicU64,
+    /// A host `tor` process we spawned via `tor::ensure_tor`, if any — killed on app exit since
+    /// nothing else owns it. `None` when Tor was already running, embedded, or unavailable.
+    pub managed_tor: Mutex<Option<std::process::Child>>,
 }
 
 pub struct ActiveSwap {

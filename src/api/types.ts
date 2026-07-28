@@ -33,6 +33,8 @@ export interface TorStatus {
   authenticated: boolean;
   bootstrapProgress?: number;
   error?: string;
+  /** Which tier `ensure_tor` used: "system" | "host_binary" | "embedded" | "none". */
+  source?: string;
 }
 
 export type ConnectionType = "tor" | "clearnet";
@@ -66,6 +68,10 @@ export interface AppError {
   code: ErrorCode;
   message: string;
   details?: unknown;
+}
+
+export function isAppError(e: unknown): e is AppError {
+  return typeof e === "object" && e !== null && "code" in e;
 }
 
 export type ErrorCode =
@@ -220,8 +226,7 @@ export interface SwapSummary {
   estimatedReceiveAmountSats: number;
 }
 
-// Coarse lifecycle only — see src-tauri/src/commands/swap.rs's module doc
-// for why per-maker live progress isn't available yet.
+// Coarse in-memory lifecycle — for live per-maker detail, see SwapTrackerProgress/getSwapTracker.
 export type SwapPhase = "prepared" | "running" | "recovering" | "finished" | "failed";
 
 export interface SwapProgress {
@@ -229,6 +234,32 @@ export interface SwapProgress {
   phase: SwapPhase;
   startedAt?: number;
   error?: string;
+}
+
+export interface MakerProgress {
+  address: string;
+  stepsDone: number;
+  stepsTotal: number;
+}
+
+export type TrackerPhase =
+  | "makers_discovered"
+  | "negotiated"
+  | "funding_created"
+  | "funds_broadcast"
+  | "contracts_exchanged"
+  | "finalizing"
+  | "privkeys_forwarded"
+  | "completed"
+  | "failed";
+
+// Read straight from the crate's own swap_tracker.cbor — same file the old Electron app polled.
+export interface SwapTrackerProgress {
+  phase: TrackerPhase;
+  sendAmountSats: number;
+  makerCount: number;
+  failureReason?: string;
+  makers: MakerProgress[];
 }
 
 export interface RecoveryStatus {
@@ -249,9 +280,18 @@ export interface SwapReportSummary {
   startTimestamp: number;
   endTimestamp: number;
   outgoingAmountSats: number;
-  incomingAmountSats: number;
+  receivedAmountSats: number;
   feePaidSats: number;
   makersCount: number;
+}
+
+export interface MakerFeeInfo {
+  makerIndex: number;
+  makerAddress: string;
+  baseFeeSats: number;
+  amountRelativeFeeSats: number;
+  timeRelativeFeeSats: number;
+  totalFeeSats: number;
 }
 
 export interface SwapReportDetail {
@@ -263,7 +303,7 @@ export interface SwapReportDetail {
   endTimestamp: number;
   errorMessage?: string;
   outgoingAmountSats: number;
-  incomingAmountSats: number;
+  receivedAmountSats: number;
   feePaidSats: number;
   miningFeeSats: number;
   feePercentage: number;
@@ -273,7 +313,14 @@ export interface SwapReportDetail {
   fundingTxids: string[][];
   makersCount: number;
   makerAddresses: string[];
-  hasDeniabilityProof: boolean;
+  makerFeeInfo: MakerFeeInfo[];
+  inputUtxoAmountsSats: number[];
+  outputChangeUtxos: [number, string][];
+  outputSwapUtxos: [number, string][];
+  /** The exact outpoint verify_deniability checks on-chain. */
+  provenOutpoint: Outpoint | null;
+  /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */
+  deniabilityProof: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------

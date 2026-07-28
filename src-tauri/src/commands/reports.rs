@@ -8,7 +8,7 @@ use coinswap::wallet::{SwapReportFile, SwapStatus};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, AppState};
-use crate::types::{SwapReportDetail, SwapReportSummary};
+use crate::types::{MakerFeeInfo, Outpoint, SwapReportDetail, SwapReportSummary};
 
 fn status_label(s: &SwapStatus) -> &'static str {
     match s {
@@ -63,7 +63,7 @@ pub async fn list_swap_reports(
             start_timestamp: r.start_timestamp,
             end_timestamp: r.end_timestamp,
             outgoing_amount_sats: r.outgoing_amount,
-            incoming_amount_sats: r.incoming_amount,
+            received_amount_sats: r.outgoing_amount.saturating_sub(r.fee_paid),
             fee_paid_sats: r.fee_paid,
             makers_count: r.makers_count,
         })
@@ -91,6 +91,28 @@ pub async fn get_swap_report(
             )
         })?;
 
+    let maker_fee_info = r
+        .maker_fee_info
+        .into_iter()
+        .map(|m| MakerFeeInfo {
+            maker_index: m.maker_index,
+            maker_address: m.maker_address,
+            base_fee_sats: m.base_fee,
+            amount_relative_fee_sats: m.amount_relative_fee,
+            time_relative_fee_sats: m.time_relative_fee,
+            total_fee_sats: m.total_fee,
+        })
+        .collect();
+
+    let proven_outpoint = r.deniability_proof.as_ref().map(|p| {
+        let op = p.proven_outpoint();
+        Outpoint { txid: op.txid.to_string(), vout: op.vout }
+    });
+    // Raw pass-through — see the field's doc comment in types.rs for why this isn't hand-mirrored.
+    let deniability_proof = r
+        .deniability_proof
+        .map(|p| serde_json::to_value(p).unwrap_or(serde_json::Value::Null));
+
     Ok(SwapReportDetail {
         swap_id: r.swap_id,
         status: status_label(&r.status).to_string(),
@@ -100,7 +122,7 @@ pub async fn get_swap_report(
         end_timestamp: r.end_timestamp,
         error_message: r.error_message,
         outgoing_amount_sats: r.outgoing_amount,
-        incoming_amount_sats: r.incoming_amount,
+        received_amount_sats: r.outgoing_amount.saturating_sub(r.fee_paid),
         fee_paid_sats: r.fee_paid,
         mining_fee_sats: r.mining_fee,
         fee_percentage: r.fee_percentage,
@@ -110,7 +132,12 @@ pub async fn get_swap_report(
         funding_txids: r.funding_txids,
         makers_count: r.makers_count,
         maker_addresses: r.maker_addresses,
-        has_deniability_proof: r.deniability_proof.is_some(),
+        maker_fee_info,
+        input_utxo_amounts_sats: r.input_utxos,
+        output_change_utxos: r.output_change_utxos,
+        output_swap_utxos: r.output_swap_utxos,
+        proven_outpoint,
+        deniability_proof,
     })
 }
 

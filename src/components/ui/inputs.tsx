@@ -1,5 +1,6 @@
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
-import { useId, useState, type ButtonHTMLAttributes, type InputHTMLAttributes } from "react";
+import { motion } from "framer-motion";
+import { useId, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
 
 type Variant = "primary" | "secondary" | "ghost";
 type Size = "md" | "sm";
@@ -144,5 +145,75 @@ export function FieldChip({ label, className = "", ...props }: FieldChipProps) {
         {...props}
       />
     </div>
+  );
+}
+
+const SEGMENTED_GLOW_TRANSITION = { type: "spring" as const, stiffness: 420, damping: 34, mass: 0.6 };
+
+/** Pill toggle with an animated glow that slides between options; used for unit/mode/protocol switches. */
+export function SegmentedToggle<T extends string>({
+  groupId,
+  value,
+  onChange,
+  options,
+}: {
+  groupId: string;
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string; disabled?: boolean; title?: string; suffix?: ReactNode }[];
+}) {
+  return (
+    <div className="inline-flex items-center gap-1 rounded-full bg-white/[0.02] p-1">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          disabled={opt.disabled}
+          onClick={() => onChange(opt.value)}
+          title={opt.title}
+          className={`relative flex min-h-[30px] items-center gap-1 whitespace-nowrap rounded-full px-3.5 text-[11.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+            value === opt.value ? "text-primary" : "text-muted hover:text-foreground"
+          }`}
+        >
+          {value === opt.value && (
+            <motion.span
+              layoutId={`toggle-glow-${groupId}`}
+              transition={SEGMENTED_GLOW_TRANSITION}
+              className="absolute inset-0 -z-10 rounded-full bg-primary/15 shadow-[0_0_12px_rgba(90,140,255,0.35)]"
+            />
+          )}
+          {opt.label}
+          {opt.suffix}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Two-state-per-key sort control built on `SegmentedToggle`: clicking the active key flips its direction. */
+export function SortToggle<T extends string>({
+  groupId,
+  sortKey,
+  sortDir,
+  onChange,
+  options,
+}: {
+  groupId: string;
+  sortKey: T;
+  sortDir: Record<T, "asc" | "desc">;
+  onChange: (key: T) => void;
+  options: { key: T; label: string }[];
+}) {
+  return (
+    <SegmentedToggle
+      groupId={groupId}
+      value={sortKey}
+      onChange={onChange}
+      options={options.map((opt) => ({
+        value: opt.key,
+        label: opt.label,
+        suffix: <span>{sortDir[opt.key] === "desc" ? "↓" : "↑"}</span>,
+      }))}
+    />
   );
 }

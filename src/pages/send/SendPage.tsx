@@ -1,88 +1,23 @@
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } from "lucide-react";
-import { motion } from "framer-motion";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress } from "../../api/commands";
-import type { AddressType, AppError, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
+import { isAppError } from "../../api/types";
+import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
 import { Card, Modal, SatsAmount } from "../../components/ui/display";
-import { Button, TextField } from "../../components/ui/inputs";
-import { classifySpendType, truncateMiddle } from "../../lib/wallet-format";
+import { Button, SegmentedToggle, TextField } from "../../components/ui/inputs";
+import {
+  classifySpendType,
+  formatFeeRate,
+  formatUnitAmount,
+  satsToUnitString,
+  truncateMiddle,
+  unitStringToSats,
+  type Unit,
+} from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
-type Unit = "sats" | "btc" | "usd";
 type FeeKey = "low" | "mid" | "high" | "custom";
-
-const SATS_PER_BTC = 100_000_000;
-const GLOW_TRANSITION = { type: "spring" as const, stiffness: 420, damping: 34, mass: 0.6 };
-
-function isAppError(e: unknown): e is AppError {
-  return typeof e === "object" && e !== null && "code" in e;
-}
-
-// Fee rates come back as raw floats from a live market API (e.g. 1.0070000000000001) — round for display.
-function formatFeeRate(rate: number): string {
-  return rate.toLocaleString(undefined, { maximumFractionDigits: 1 });
-}
-
-function trimTrailingZeros(s: string): string {
-  return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
-}
-
-/** amountSats -> a display string in `unit`, so switching units shows the equivalent amount, not a reinterpreted raw number. */
-function satsToUnitString(sats: number, unit: Unit, btcPriceUsd: number | null): string {
-  if (sats <= 0) return "";
-  if (unit === "sats") return String(Math.round(sats));
-  const btc = sats / SATS_PER_BTC;
-  if (unit === "btc") return trimTrailingZeros(btc.toFixed(8));
-  return btcPriceUsd ? (btc * btcPriceUsd).toFixed(2) : "";
-}
-
-function unitStringToSats(input: string, unit: Unit, btcPriceUsd: number | null): number {
-  const n = Number(input);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  if (unit === "sats") return Math.round(n);
-  if (unit === "btc") return Math.round(n * SATS_PER_BTC);
-  if (!btcPriceUsd) return 0;
-  return Math.round((n / btcPriceUsd) * SATS_PER_BTC);
-}
-
-function SegmentedToggle<T extends string>({
-  groupId,
-  value,
-  onChange,
-  options,
-}: {
-  groupId: string;
-  value: T;
-  onChange: (v: T) => void;
-  options: { value: T; label: string; disabled?: boolean }[];
-}) {
-  return (
-    <div className="inline-flex items-center gap-1 rounded-full bg-white/[0.02] p-1">
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          disabled={opt.disabled}
-          onClick={() => onChange(opt.value)}
-          title={opt.disabled ? "BTC price unavailable" : undefined}
-          className={`relative min-h-[30px] whitespace-nowrap rounded-full px-3.5 text-[11.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-            value === opt.value ? "text-primary" : "text-muted hover:text-foreground"
-          }`}
-        >
-          {value === opt.value && (
-            <motion.span
-              layoutId={`toggle-glow-${groupId}`}
-              transition={GLOW_TRANSITION}
-              className="absolute inset-0 -z-10 rounded-full bg-primary/15 shadow-[0_0_12px_rgba(90,140,255,0.35)]"
-            />
-          )}
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 function SendPanel() {
   const pushToast = useToastStore((s) => s.push);
@@ -127,6 +62,7 @@ function SendPanel() {
     () => unitStringToSats(amountInput, unit, btcPrice),
     [amountInput, unit, btcPrice],
   );
+  const otherUnits = useMemo(() => (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit), [unit]);
 
   const feeRate = useMemo(() => {
     if (feeKey === "custom") return Number(customFeeRate) || 0;
@@ -213,10 +149,16 @@ function SendPanel() {
           options={[
             { value: "sats", label: "sats" },
             { value: "btc", label: "BTC" },
-            { value: "usd", label: "USD", disabled: btcPrice === null },
+            { value: "usd", label: "USD", disabled: btcPrice === null, title: btcPrice === null ? "BTC price unavailable" : undefined },
           ]}
         />
       </div>
+      {!amountError && (
+        <div className="-mt-2 flex items-center justify-between px-1 text-[11px] text-subtle">
+          <span>{formatUnitAmount(amountSats, otherUnits[0], btcPrice) ?? "—"}</span>
+          <span>{formatUnitAmount(amountSats, otherUnits[1], btcPrice) ?? "—"}</span>
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <span className="font-mono text-[10px] font-extrabold uppercase tracking-widest text-subtle">Fee Rate</span>
