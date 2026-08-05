@@ -13,14 +13,15 @@ use coinswap::fee_estimation::FeeEstimator;
 use coinswap::nostr_coinswap::NOSTR_RELAYS;
 use coinswap::taker::api::ConnectionType;
 use coinswap::taker::{Taker, TakerInitConfig};
-use coinswap::utill::{get_taker_dir, setup_taker_logger};
+use coinswap::utill::get_taker_dir;
 use coinswap::wallet::{AddressType, BackendConfig, ElectrumConfig, Wallet};
 
 /// Hardcoded for PR citadel-tech/coinswap#945 testing (Electrum backend) — our signet Electrum
 /// node. Reached over Tor same as taker/maker traffic; not yet user-configurable.
 const ELECTRUM_URL: &str = "tcp://170.75.166.88:50001";
 
-fn electrum_backend(socks_port: Option<u16>) -> BackendConfig {
+/// `pub(crate)` so `commands::maker` can build the same backend for the maker's own wallet.
+pub(crate) fn electrum_backend(socks_port: Option<u16>) -> BackendConfig {
     BackendConfig::Electrum(ElectrumConfig {
         url: ELECTRUM_URL.to_string(),
         socks5: Some(format!("127.0.0.1:{}", socks_port.unwrap_or(9050))),
@@ -45,7 +46,8 @@ fn resolve_data_dir(data_dir: &Option<String>) -> Result<PathBuf, AppError> {
     }
 }
 
-fn wallet_path(data_dir: &std::path::Path, wallet_name: &str) -> PathBuf {
+/// `pub(crate)` so `commands::maker` can build the maker's own wallet path the same way.
+pub(crate) fn wallet_path(data_dir: &std::path::Path, wallet_name: &str) -> PathBuf {
     data_dir.join("wallets").join(wallet_name)
 }
 
@@ -73,7 +75,13 @@ pub async fn is_wallet_encrypted(
 
 /// Non-wallet files written into the same directory (crate's report/lock/temp, plus our own
 /// last-issued-address sidecar).
-const NON_WALLET_SUFFIXES: &[&str] = &["_swap_report.json", "_last_address.json", ".lock", ".partial", ".tmp"];
+const NON_WALLET_SUFFIXES: &[&str] = &[
+    "_swap_report.json",
+    "_last_address.json",
+    ".lock",
+    ".partial",
+    ".tmp",
+];
 
 #[tauri::command]
 pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
@@ -132,8 +140,8 @@ pub async fn init_taker(
     };
     let wallet_name = config.wallet_name;
 
-    // One-shot OnceLock inside the crate — must run before Taker::init.
-    setup_taker_logger(log::LevelFilter::Info, false, Some(data_dir.clone()));
+    // Our own dual-role logger, not the crate's setup_taker_logger — see logging.rs.
+    crate::logging::set_taker_dir(data_dir.clone());
 
     let taker = tauri::async_runtime::spawn_blocking(move || Taker::init(init_cfg))
         .await
@@ -237,7 +245,9 @@ pub async fn backup_wallet(
     let wallet = get_wallet_handle(&state)?;
 
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        wallet.read()?.backup_wallet_gui_app(destination_path, password)?;
+        wallet
+            .read()?
+            .backup_wallet_gui_app(destination_path, password)?;
         Ok(())
     })
     .await
@@ -345,20 +355,33 @@ pub async fn get_new_address(
         };
 
         if let Some(existing) = slot.clone() {
-            let used = wallet.read()?.get_transactions(None, None)?.into_iter().any(|tx| {
-                tx.detail
-                    .address
-                    .is_some_and(|a| a.assume_checked().to_string() == existing)
-            });
+            let used = wallet
+                .read()?
+                .get_transactions(None, None)?
+                .into_iter()
+                .any(|tx| {
+                    tx.detail
+                        .address
+                        .is_some_and(|a| a.assume_checked().to_string() == existing)
+                });
             if !used {
-                return Ok(NewAddress { address: existing, address_type: label.to_string() });
+                return Ok(NewAddress {
+                    address: existing,
+                    address_type: label.to_string(),
+                });
             }
         }
 
-        let address = wallet.write()?.get_next_external_address(addr_type)?.to_string();
+        let address = wallet
+            .write()?
+            .get_next_external_address(addr_type)?
+            .to_string();
         *slot = Some(address.clone());
         save_last_addresses(&path, &cached)?;
-        Ok(NewAddress { address, address_type: label.to_string() })
+        Ok(NewAddress {
+            address,
+            address_type: label.to_string(),
+        })
     })
     .await
     .map_err(AppError::internal)?
@@ -493,7 +516,12 @@ pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
         let usd = body
             .get("USD")
             .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| AppError::new(ErrorCode::Internal, "price response missing USD".to_string()))?;
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::Internal,
+                    "price response missing USD".to_string(),
+                )
+            })?;
         Ok(PriceEstimate { usd })
     })
     .await

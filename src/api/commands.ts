@@ -8,6 +8,8 @@ import type {
   InitResult,
   LogLine,
   Maker,
+  MakerSettings,
+  MakerStatus,
   NewAddress,
   OfferBookView,
   Outpoint,
@@ -166,6 +168,18 @@ export function pollMaker(address: string): Promise<Maker> {
 
 export function removeMaker(address: string): Promise<boolean> {
   return invoke("remove_maker", { address });
+}
+
+// ---------------------------------------------------------------------------
+// Maker operations
+// ---------------------------------------------------------------------------
+
+export function listMakers(): Promise<MakerSettings[]> {
+  return invoke("list_makers");
+}
+
+export function getMakerStatus(makerId: string): Promise<MakerStatus> {
+  return invoke("get_maker_status", { makerId });
 }
 
 // ---------------------------------------------------------------------------

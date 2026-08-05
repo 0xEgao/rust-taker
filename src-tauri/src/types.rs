@@ -181,6 +181,26 @@ pub struct SendResult {
     pub txid: String,
 }
 
+/// Structured equivalent of the crate's `Wallet::display_fidelity_bonds` string dump —
+/// `Wallet::get_fidelity_bonds()`/`calculate_bond_value` already expose everything needed
+/// directly, no coinswap-side change required (see `.claude/MAKER_INTEGRATION.md` §4).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FidelityBondDto {
+    pub bond_index: u32,
+    pub outpoint: Outpoint,
+    pub amount_sats: u64,
+    /// Absolute block height the bond unlocks at.
+    pub lock_time_height: u32,
+    pub is_spent: bool,
+    /// Not yet unlocked and not already redeemed.
+    pub is_locked: bool,
+    /// Coinswap's theoretical fidelity-value formula — only computable for a confirmed,
+    /// unspent bond, hence optional.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bond_value_sats: Option<u64>,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeeEstimate {
@@ -309,7 +329,7 @@ pub struct MakerProgressDto {
 }
 
 /// Live per-maker detail read straight from `coinswap::taker::swap_tracker::SwapTracker`
-/// (a public crate API — see `commands::swap`'s module doc).
+/// (a public crate API — see `commands::taker_swap`'s module doc).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapTrackerDto {
@@ -399,6 +419,182 @@ pub struct SwapReportDetail {
     pub proven_outpoint: Option<Outpoint>,
     /// Raw pass-through of the crate's `DeniabilityProof` (already `Serialize`) rather than
     /// hand-mirrored types — the frontend renders whatever shape comes through generically.
+    pub deniability_proof: Option<serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Maker
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerInitConfig {
+    /// Stable registration ID. Wallet name remains independently configurable.
+    pub maker_id: String,
+    pub wallet_name: String,
+    #[serde(default)]
+    pub wallet_password: Option<String>,
+    pub network_port: u16,
+    pub rpc_port: u16,
+    pub socks_port: u16,
+    pub control_port: u16,
+    #[serde(default)]
+    pub tor_auth_password: Option<String>,
+    pub min_swap_amount: u64,
+    pub fidelity_amount: u64,
+    pub fidelity_timelock: u32,
+    pub required_confirms: u32,
+    pub base_fee: u64,
+    pub amount_relative_fee_pct: f64,
+    pub time_relative_fee_pct: f64,
+    #[serde(default)]
+    pub data_dir: Option<String>,
+}
+
+/// Persisted registration settings. Wallet and Tor control passwords are
+/// process-only and omitted when this DTO is serialized to disk.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerSettingsDto {
+    pub maker_id: String,
+    pub wallet_name: String,
+    pub network_port: u16,
+    pub rpc_port: u16,
+    pub socks_port: u16,
+    pub control_port: u16,
+    /// Process-only credential. Deserialized for IPC but never written into
+    /// persisted maker registrations.
+    #[serde(default, skip_serializing)]
+    pub tor_auth_password: Option<String>,
+    pub min_swap_amount: u64,
+    pub fidelity_amount: u64,
+    pub fidelity_timelock: u32,
+    pub required_confirms: u32,
+    pub base_fee: u64,
+    pub amount_relative_fee_pct: f64,
+    pub time_relative_fee_pct: f64,
+    #[serde(default)]
+    pub data_dir: Option<String>,
+}
+
+impl MakerSettingsDto {
+    pub fn from_init(c: &MakerInitConfig, data_dir: &std::path::Path) -> Self {
+        Self {
+            maker_id: c.maker_id.clone(),
+            wallet_name: c.wallet_name.clone(),
+            network_port: c.network_port,
+            rpc_port: c.rpc_port,
+            socks_port: c.socks_port,
+            control_port: c.control_port,
+            tor_auth_password: c.tor_auth_password.clone(),
+            min_swap_amount: c.min_swap_amount,
+            fidelity_amount: c.fidelity_amount,
+            fidelity_timelock: c.fidelity_timelock,
+            required_confirms: c.required_confirms,
+            base_fee: c.base_fee,
+            amount_relative_fee_pct: c.amount_relative_fee_pct,
+            time_relative_fee_pct: c.time_relative_fee_pct,
+            data_dir: Some(data_dir.display().to_string()),
+        }
+    }
+
+    pub fn into_init(self, wallet_password: Option<String>) -> MakerInitConfig {
+        MakerInitConfig {
+            maker_id: self.maker_id,
+            wallet_name: self.wallet_name,
+            wallet_password,
+            network_port: self.network_port,
+            rpc_port: self.rpc_port,
+            socks_port: self.socks_port,
+            control_port: self.control_port,
+            tor_auth_password: self.tor_auth_password,
+            min_swap_amount: self.min_swap_amount,
+            fidelity_amount: self.fidelity_amount,
+            fidelity_timelock: self.fidelity_timelock,
+            required_confirms: self.required_confirms,
+            base_fee: self.base_fee,
+            amount_relative_fee_pct: self.amount_relative_fee_pct,
+            time_relative_fee_pct: self.time_relative_fee_pct,
+            data_dir: self.data_dir,
+        }
+    }
+}
+
+/// Coarse lifecycle for one entry in `AppState.makers`, pushed through a
+/// maker-ID-tagged `maker://phase-changed` event.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "phase")]
+pub enum MakerPhase {
+    #[default]
+    NotConfigured,
+    Initializing,
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Failed {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerPhaseEvent {
+    pub maker_id: String,
+    pub phase: MakerPhase,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerStatusDto {
+    pub maker_id: String,
+    pub phase: MakerPhase,
+    pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tor_address: Option<String>,
+    pub network_port: u16,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestedMakerPortsDto {
+    pub network_port: u16,
+    pub rpc_port: u16,
+}
+
+/// The maker's own perspective on one swap — one leg, not the whole
+/// multi-hop route a `SwapReportSummary`/`SwapReportDetail` (taker-side)
+/// describes, so this is a separate, simpler shape rather than reusing
+/// those. Mirrors `coinswap::wallet::MakerReport`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerSwapReportSummary {
+    pub swap_id: String,
+    pub status: String,
+    pub start_timestamp: u64,
+    pub end_timestamp: u64,
+    pub incoming_amount_sats: u64,
+    pub outgoing_amount_sats: u64,
+    pub fee_earned_sats: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerSwapReportDetail {
+    pub swap_id: String,
+    pub status: String,
+    pub network: String,
+    pub swap_duration_seconds: f64,
+    pub start_timestamp: u64,
+    pub end_timestamp: u64,
+    pub incoming_amount_sats: u64,
+    pub outgoing_amount_sats: u64,
+    pub fee_earned_sats: u64,
+    pub incoming_contract_txid: String,
+    pub outgoing_contract_txid: String,
+    pub timelock: u32,
+    /// Raw pass-through of the crate's `DeniabilityProof` — see the same
+    /// field's doc comment on `SwapReportDetail`.
     pub deniability_proof: Option<serde_json::Value>,
 }
 

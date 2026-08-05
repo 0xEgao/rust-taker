@@ -1,13 +1,17 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
+use std::thread::JoinHandle;
 use std::time::SystemTime;
 
+use coinswap::maker::MakerServer;
 use coinswap::taker::offers::OfferSyncClient;
 use coinswap::taker::Taker;
 use coinswap::wallet::Wallet;
 
 use crate::error::AppError;
+use crate::types::{MakerPhase, MakerSettingsDto};
 
 /// Non-blocking taker lock — fails fast with SwapInProgress instead of
 /// blocking for however long a running swap holds the mutex.
@@ -19,6 +23,35 @@ pub fn try_lock_taker(
         Err(TryLockError::WouldBlock) => Err(AppError::swap_in_progress()),
         Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
     }
+}
+
+/// Non-blocking maker-registry lock — lifecycle transitions fail fast rather
+/// than allowing two create/start/stop calls to overlap.
+pub fn try_lock_makers(
+    makers: &Mutex<HashMap<String, MakerHandle>>,
+) -> Result<MutexGuard<'_, HashMap<String, MakerHandle>>, AppError> {
+    match makers.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::WouldBlock) => Err(AppError::maker_busy()),
+        Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+    }
+}
+
+pub struct MakerRuntime {
+    pub server: Arc<MakerServer>,
+    pub thread: Option<JoinHandle<()>>,
+}
+
+/// One persisted maker registration plus its optional process-local runtime.
+/// Runtime objects are reconstructed after an app restart and after every
+/// explicit stop; only settings and wallet files survive those boundaries.
+pub struct MakerHandle {
+    pub settings: MakerSettingsDto,
+    pub wallet_password: Option<String>,
+    pub runtime: Option<MakerRuntime>,
+    pub phase: MakerPhase,
+    /// Prevents an old server/watcher thread from updating a newer lifecycle.
+    pub generation: u64,
 }
 
 #[derive(Default)]
@@ -40,6 +73,10 @@ pub struct AppState {
     /// A host `tor` process we spawned via `tor::ensure_tor`, if any — killed on app exit since
     /// nothing else owns it. `None` when Tor was already running, embedded, or unavailable.
     pub managed_tor: Mutex<Option<std::process::Child>>,
+
+    /// Maker registrations keyed by stable maker ID. Persisted registrations
+    /// are loaded into this map on demand; no maker auto-starts at app launch.
+    pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
 }
 
 pub struct ActiveSwap {

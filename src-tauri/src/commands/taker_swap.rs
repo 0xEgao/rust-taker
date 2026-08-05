@@ -114,12 +114,19 @@ fn to_maker_progress_dto(m: &MakerProgress) -> MakerProgressDto {
         ExchangeProgress::Legacy(p) => legacy_steps_done(p),
         ExchangeProgress::Taproot(p) => taproot_steps_done(p),
     };
-    done += [m.finalization.privkey_received, m.finalization.privkey_forwarded]
-        .iter()
-        .filter(|d| **d)
-        .count();
+    done += [
+        m.finalization.privkey_received,
+        m.finalization.privkey_forwarded,
+    ]
+    .iter()
+    .filter(|d| **d)
+    .count();
     total += 2;
-    MakerProgressDto { address: m.address.clone(), steps_done: done, steps_total: total }
+    MakerProgressDto {
+        address: m.address.clone(),
+        steps_done: done,
+        steps_total: total,
+    }
 }
 
 fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
@@ -155,7 +162,11 @@ pub async fn prepare_swap(
         ProtocolVersionDto::Legacy => ProtocolVersion::Legacy,
         ProtocolVersionDto::Taproot => ProtocolVersion::Taproot,
     };
-    let mut params = SwapParams::new(protocol, Amount::from_sat(request.amount_sats), request.maker_count);
+    let mut params = SwapParams::new(
+        protocol,
+        Amount::from_sat(request.amount_sats),
+        request.maker_count,
+    );
     if let Some(outpoints) = request.outpoints {
         let converted = outpoints
             .into_iter()
@@ -201,7 +212,9 @@ pub async fn start_swap(
     {
         let mut guard = state.active_swap.lock()?;
         match guard.as_mut() {
-            Some(active) if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared => {
+            Some(active)
+                if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared =>
+            {
                 active.phase = SwapLifecycle::Running;
                 active.started_at = Some(SystemTime::now());
             }
@@ -266,8 +279,10 @@ pub fn get_swap_progress(
     let guard = state.active_swap.lock()?;
     // Only Running/Recovering is worth reconciling after a remount — a terminal phase is stale
     // by definition and would otherwise resurrect the last outcome indefinitely.
-    Ok(guard.as_ref().filter(|a| matches!(a.phase, SwapLifecycle::Running | SwapLifecycle::Recovering)).map(|active| {
-        SwapProgressDto {
+    Ok(guard
+        .as_ref()
+        .filter(|a| matches!(a.phase, SwapLifecycle::Running | SwapLifecycle::Recovering))
+        .map(|active| SwapProgressDto {
             swap_id: active.swap_id.clone(),
             phase: phase_label(active.phase).to_string(),
             started_at: active
@@ -275,8 +290,7 @@ pub fn get_swap_progress(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs()),
             error: active.error.clone(),
-        }
-    }))
+        }))
 }
 
 /// Live per-maker detail for the active swap, straight off `<data_dir>/swap_tracker.cbor` —
@@ -286,8 +300,14 @@ pub fn get_swap_progress(
 pub async fn get_swap_tracker(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<SwapTrackerDto>, AppError> {
-    let swap_id = state.active_swap.lock()?.as_ref().map(|a| a.swap_id.clone());
-    let Some(swap_id) = swap_id else { return Ok(None) };
+    let swap_id = state
+        .active_swap
+        .lock()?
+        .as_ref()
+        .map(|a| a.swap_id.clone());
+    let Some(swap_id) = swap_id else {
+        return Ok(None);
+    };
     let data_dir = state
         .data_dir
         .read()?
@@ -347,4 +367,3 @@ pub fn get_recovery_status(state: tauri::State<'_, AppState>) -> Result<Recovery
         pending_contract_count,
     })
 }
-

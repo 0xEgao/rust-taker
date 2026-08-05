@@ -9,6 +9,7 @@ import { useToastStore } from "../../store/toast";
 const NAV_ITEMS: { path: string; label: string; d: string }[] = [
   { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
   { path: "/market", label: "Market", d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
+  { path: "/maker", label: "Maker", d: '<circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/>' },
   { path: "/send", label: "Send", d: '<path d="M7 17L17 7M9 7h8v8"/>' },
   { path: "/swap", label: "Swap", d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
 ];

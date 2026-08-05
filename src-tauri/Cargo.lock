@@ -3772,10 +3772,13 @@ name = "rust-taker"
 version = "0.1.0"
 dependencies = [
  "coinswap",
+ "dirs 6.0.0",
  "libtor",
  "log",
+ "log4rs",
  "minreq",
  "serde",
+ "serde_cbor",
  "serde_json",
  "tauri",
  "tauri-build",

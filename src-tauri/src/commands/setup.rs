@@ -1,6 +1,6 @@
 //! Setup & connectivity commands: wizard prechecks and version info.
 //! All blocking I/O runs via `spawn_blocking` — never on the async runtime.
-//! Wallet lifecycle (init/restore/backup) lives in `commands::wallet`.
+//! Wallet lifecycle (init/restore/backup) lives in `commands::taker_wallet`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};

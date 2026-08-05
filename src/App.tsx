@@ -1,6 +1,7 @@
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/app/AppShell";
 import { LogsPage } from "./pages/logs/LogsPage";
+import { MakerPage } from "./pages/maker/MakerPage";
 import { MarketPage } from "./pages/market/MarketPage";
 import { SendPage } from "./pages/send/SendPage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
@@ -24,6 +25,7 @@ function App() {
         <Route element={<AppShell />}>
           <Route path="/" element={<WalletPage />} />
           <Route path="/market" element={<MarketPage />} />
+          <Route path="/maker" element={<MakerPage />} />
           <Route path="/send" element={<SendPage />} />
           <Route path="/swap" element={<SwapPage />} />
           <Route path="/swap/reports" element={<SwapReportsPage />} />

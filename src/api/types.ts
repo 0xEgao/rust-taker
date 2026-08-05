@@ -192,6 +192,44 @@ export interface OfferBookView {
 }
 
 // ---------------------------------------------------------------------------
+// Maker operations
+// ---------------------------------------------------------------------------
+
+export interface MakerSettings {
+  makerId: string;
+  walletName: string;
+  networkPort: number;
+  rpcPort: number;
+  socksPort: number;
+  controlPort: number;
+  minSwapAmount: number;
+  fidelityAmount: number;
+  fidelityTimelock: number;
+  requiredConfirms: number;
+  baseFee: number;
+  amountRelativeFeePct: number;
+  timeRelativeFeePct: number;
+  dataDir?: string;
+}
+
+export type MakerPhase =
+  | { phase: "notConfigured" }
+  | { phase: "initializing" }
+  | { phase: "starting" }
+  | { phase: "running" }
+  | { phase: "stopping" }
+  | { phase: "stopped" }
+  | { phase: "failed"; message: string };
+
+export interface MakerStatus {
+  makerId: string;
+  phase: MakerPhase;
+  running: boolean;
+  torAddress?: string;
+  networkPort: number;
+}
+
+// ---------------------------------------------------------------------------
 // Swap
 // ---------------------------------------------------------------------------
 

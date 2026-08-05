@@ -19,7 +19,9 @@ struct SwapReportFile {
     taker: Vec<TakerReport>,
 }
 
-fn status_label(s: &SwapStatus) -> &'static str {
+/// Shared with `commands::maker_reports` — both read the same `SwapStatus` enum off the same
+/// on-disk report file, just different sections of it (`taker` vs `maker`).
+pub(crate) fn status_label(s: &SwapStatus) -> &'static str {
     match s {
         SwapStatus::Success => "success",
         SwapStatus::RecoveryHashlock => "recovery_hashlock",
@@ -115,7 +117,10 @@ pub async fn get_swap_report(
 
     let proven_outpoint = r.deniability_proof.as_ref().map(|p| {
         let op = p.proven_outpoint();
-        Outpoint { txid: op.txid.to_string(), vout: op.vout }
+        Outpoint {
+            txid: op.txid.to_string(),
+            vout: op.vout,
+        }
     });
     // Raw pass-through — see the field's doc comment in types.rs for why this isn't hand-mirrored.
     let deniability_proof = r
