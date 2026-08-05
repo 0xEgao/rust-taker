@@ -4,11 +4,20 @@
 
 use std::path::PathBuf;
 
-use coinswap::wallet::{SwapReportFile, SwapStatus};
+use coinswap::wallet::{SwapStatus, TakerReport};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, AppState};
 use crate::types::{MakerFeeInfo, Outpoint, SwapReportDetail, SwapReportSummary};
+
+/// Mirrors the `taker` field of the crate's `wallet::report::SwapReportFile` — that wrapper type
+/// isn't re-exported from `coinswap::wallet` on the electrum-sync branch (PR #945), so this reads
+/// the same on-disk JSON shape directly rather than waiting on the crate to fix the re-export.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct SwapReportFile {
+    #[serde(default)]
+    taker: Vec<TakerReport>,
+}
 
 fn status_label(s: &SwapStatus) -> &'static str {
     match s {

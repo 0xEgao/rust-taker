@@ -68,8 +68,6 @@ pub struct InitConfig {
     pub wallet_name: String,
     #[serde(default)]
     pub wallet_password: Option<String>,
-    pub rpc: RpcSettings,
-    pub zmq_addr: String,
     #[serde(default)]
     pub control_port: Option<u16>,
     #[serde(default)]

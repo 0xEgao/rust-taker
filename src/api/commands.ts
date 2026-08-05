@@ -79,7 +79,7 @@ export function getWalletInfo(): Promise<WalletInfo> {
 
 export function restoreWallet(
   walletName: string,
-  rpc: RpcSettings,
+  socksPort: number | undefined,
   backupFilePath: string,
   password?: string,
   dataDir?: string,
@@ -87,7 +87,7 @@ export function restoreWallet(
   return invoke("restore_wallet", {
     dataDir,
     walletName,
-    rpc,
+    socksPort,
     backupFilePath,
     password,
   });

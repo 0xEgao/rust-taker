@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { dirname } from "@tauri-apps/api/path";
 import { FolderOpen, FolderPlus, Plus } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { checkBitcoinCore, checkTor, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { checkPort, checkTor, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { InitResult } from "../../api/types";
 import { Modal, StatusRow, WalletCard, type CheckState } from "../../components/ui/display";
@@ -10,7 +10,8 @@ import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Headline } from "../../components/ui/layout";
 import { wait, withMinDelay } from "../../lib/timing";
 import {
-  RPC_HOST,
+  ELECTRUM_HOST,
+  ELECTRUM_PORT,
   loadConnectivityDefaults,
   saveConnectivityDefaults,
   type ConnectivityConfig,
@@ -28,7 +29,7 @@ interface SelectWalletStepProps {
 }
 
 type ViewMode = "grid" | "unlock" | "create" | "checking";
-type CheckStage = "rpc" | "tor" | "wallet";
+type CheckStage = "electrum" | "tor" | "wallet";
 
 interface CheckFailure {
   stage: CheckStage;
@@ -36,13 +37,13 @@ interface CheckFailure {
 }
 
 interface Steps {
-  rpc: CheckState;
+  electrum: CheckState;
   tor: CheckState;
   verify: CheckState;
   init: CheckState;
 }
 
-const IDLE_STEPS: Steps = { rpc: "idle", tor: "idle", verify: "idle", init: "idle" };
+const IDLE_STEPS: Steps = { electrum: "idle", tor: "idle", verify: "idle", init: "idle" };
 
 function randomWalletName() {
   return `taker-wallet-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -139,23 +140,24 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setPendingWallet(wallet);
     setFailure(null);
     setViewMode("checking");
-    setSteps({ rpc: "running", tor: "idle", verify: "idle", init: "idle" });
-
-    const rpc = {
-      host: RPC_HOST,
-      port: connectivity.rpcPort,
-      username: connectivity.rpcUsername,
-      password: connectivity.rpcPassword,
-    };
+    setSteps({ electrum: "running", tor: "idle", verify: "idle", init: "idle" });
 
     try {
-      await withMinDelay(checkBitcoinCore(rpc), MIN_STEP_MS);
+      await withMinDelay(
+        (async () => {
+          const status = await checkPort(ELECTRUM_HOST, ELECTRUM_PORT);
+          if (!status.reachable) {
+            throw new Error(status.error ?? "Could not reach the Electrum server.");
+          }
+        })(),
+        MIN_STEP_MS,
+      );
     } catch (e) {
-      setSteps((s) => ({ ...s, rpc: "failed" }));
-      setFailure({ stage: "rpc", message: (e as { message?: string })?.message ?? "Could not reach Bitcoin Core." });
+      setSteps((s) => ({ ...s, electrum: "failed" }));
+      setFailure({ stage: "electrum", message: (e as { message?: string })?.message ?? "Could not reach the Electrum server." });
       return;
     }
-    setSteps((s) => ({ ...s, rpc: "passed", tor: "running" }));
+    setSteps((s) => ({ ...s, electrum: "passed", tor: "running" }));
 
     try {
       await withMinDelay(
@@ -180,13 +182,11 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       const result = await withMinDelay(
         (async () => {
           if (wallet.mode === "restore") {
-            await restoreWallet(wallet.walletName, rpc, wallet.backupFilePath, wallet.password, dataDir);
+            await restoreWallet(wallet.walletName, connectivity.torSocksPort, wallet.backupFilePath, wallet.password, dataDir);
           }
           return initTaker({
             walletName: wallet.walletName,
             walletPassword: wallet.password,
-            rpc,
-            zmqAddr: `tcp://${RPC_HOST}:${connectivity.zmqPort}`,
             controlPort: connectivity.torControlPort,
             socksPort: connectivity.torSocksPort,
             torAuthPassword: connectivity.torAuthPassword,
@@ -337,7 +337,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
       {viewMode === "checking" && (
         <div className="mx-auto mt-8 flex max-w-sm flex-col gap-2.5">
-          <StatusRow label="Checking Bitcoin Core" state={steps.rpc} />
+          <StatusRow label="Checking Electrum server" state={steps.electrum} />
           <StatusRow label="Checking Tor" state={steps.tor} />
           <StatusRow label="Verifying wallet password" state={steps.verify} />
           <StatusRow label="Initializing taker" state={steps.init} />
@@ -347,8 +347,8 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       {failure && (
         <Modal
           title={
-            failure.stage === "rpc"
-              ? "Can't reach Bitcoin Core"
+            failure.stage === "electrum"
+              ? "Can't reach the Electrum server"
               : failure.stage === "tor"
                 ? "Can't reach Tor"
                 : "Couldn't unlock wallet"
@@ -364,27 +364,6 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           }
         >
           <p className="text-[12.5px] text-danger">{failure.message}</p>
-
-          {failure.stage === "rpc" && (
-            <>
-              <TextField
-                label="Port"
-                value={connectivity.rpcPort}
-                onChange={(e) => setConnectivity((c) => ({ ...c, rpcPort: Number(e.target.value) }))}
-              />
-              <TextField
-                label="Username"
-                value={connectivity.rpcUsername}
-                onChange={(e) => setConnectivity((c) => ({ ...c, rpcUsername: e.target.value }))}
-              />
-              <PasswordField
-                label="Password"
-                value={connectivity.rpcPassword}
-                onChange={(e) => setConnectivity((c) => ({ ...c, rpcPassword: e.target.value }))}
-                onKeyDown={onEnter(retry)}
-              />
-            </>
-          )}
 
           {failure.stage === "tor" && (
             <>

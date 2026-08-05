@@ -16,6 +16,11 @@ export interface ConnectivityConfig {
 // Host is fixed to 127.0.0.1 there too (a hidden field, never user-editable).
 export const RPC_HOST = "127.0.0.1";
 
+// Hardcoded for PR citadel-tech/coinswap#945 testing (Electrum backend) — matches
+// commands/wallet.rs's ELECTRUM_URL. Not yet user-configurable.
+export const ELECTRUM_HOST = "170.75.166.88";
+export const ELECTRUM_PORT = 50001;
+
 export const HARDCODED_DEFAULTS: ConnectivityConfig = {
   rpcPort: 38332,
   rpcUsername: "user",

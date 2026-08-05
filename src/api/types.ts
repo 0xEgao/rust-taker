@@ -42,8 +42,6 @@ export type ConnectionType = "tor" | "clearnet";
 export interface InitConfig {
   walletName: string;
   walletPassword?: string;
-  rpc: RpcSettings;
-  zmqAddr: string;
   controlPort?: number;
   socksPort?: number;
   torAuthPassword?: string;

@@ -9,27 +9,40 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use coinswap::bitcoin::{OutPoint, Txid};
-use coinswap::bitcoind::bitcoincore_rpc::Auth;
 use coinswap::fee_estimation::FeeEstimator;
 use coinswap::nostr_coinswap::NOSTR_RELAYS;
 use coinswap::taker::api::ConnectionType;
 use coinswap::taker::{Taker, TakerInitConfig};
 use coinswap::utill::{get_taker_dir, setup_taker_logger};
-use coinswap::wallet::{AddressType, RPCConfig, Wallet};
+use coinswap::wallet::{AddressType, BackendConfig, ElectrumConfig, Wallet};
+
+/// Hardcoded for PR citadel-tech/coinswap#945 testing (Electrum backend) — our signet Electrum
+/// node. Reached over Tor same as taker/maker traffic; not yet user-configurable.
+const ELECTRUM_URL: &str = "tcp://170.75.166.88:50001";
+
+fn electrum_backend(socks_port: Option<u16>) -> BackendConfig {
+    BackendConfig::Electrum(ElectrumConfig {
+        url: ELECTRUM_URL.to_string(),
+        socks5: Some(format!("127.0.0.1:{}", socks_port.unwrap_or(9050))),
+        timeout: None,
+        poll_interval_secs: None,
+        max_retries: 3,
+    })
+}
 
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{
     AddressTypeDto, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig, InitResult,
-    NewAddress, Outpoint, PriceEstimate, RpcSettings, SendResult, SwapLiquidity, TxSummary,
-    UtxoEntry, WalletInfo,
+    NewAddress, Outpoint, PriceEstimate, SendResult, SwapLiquidity, TxSummary, UtxoEntry,
+    WalletInfo,
 };
 
-fn resolve_data_dir(data_dir: &Option<String>) -> PathBuf {
-    data_dir
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(get_taker_dir)
+fn resolve_data_dir(data_dir: &Option<String>) -> Result<PathBuf, AppError> {
+    match data_dir {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => Ok(get_taker_dir()?),
+    }
 }
 
 fn wallet_path(data_dir: &std::path::Path, wallet_name: &str) -> PathBuf {
@@ -51,7 +64,7 @@ pub async fn is_wallet_encrypted(
     data_dir: Option<String>,
     wallet_name: String,
 ) -> Result<bool, AppError> {
-    let path = wallet_path(&resolve_data_dir(&data_dir), &wallet_name);
+    let path = wallet_path(&resolve_data_dir(&data_dir)?, &wallet_name);
     tauri::async_runtime::spawn_blocking(move || Wallet::is_wallet_encrypted(&path))
         .await
         .map_err(AppError::internal)?
@@ -64,7 +77,7 @@ const NON_WALLET_SUFFIXES: &[&str] = &["_swap_report.json", "_last_address.json"
 
 #[tauri::command]
 pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
-    let dir = resolve_data_dir(&data_dir).join("wallets");
+    let dir = resolve_data_dir(&data_dir)?.join("wallets");
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -100,7 +113,7 @@ pub async fn init_taker(
         }
     }
 
-    let data_dir = resolve_data_dir(&config.data_dir);
+    let data_dir = resolve_data_dir(&config.data_dir)?;
     let connection_type = match config.connection_type {
         ConnectionTypeDto::Tor => ConnectionType::Tor,
         ConnectionTypeDto::Clearnet => ConnectionType::Clearnet,
@@ -108,16 +121,11 @@ pub async fn init_taker(
 
     let init_cfg = TakerInitConfig {
         data_dir: Some(data_dir.clone()),
-        wallet_file_name: Some(config.wallet_name.clone()),
-        rpc_config: Some(RPCConfig {
-            url: format!("{}:{}", config.rpc.host, config.rpc.port),
-            auth: Auth::UserPass(config.rpc.username, config.rpc.password),
-            wallet_name: String::new(), // overwritten by Taker::init to the wallet file name
-        }),
+        wallet_name: config.wallet_name.clone(),
+        backend: electrum_backend(config.socks_port),
         control_port: config.control_port,
         tor_auth_password: config.tor_auth_password,
         socks_port: config.socks_port.unwrap_or(9050),
-        zmq_addr: config.zmq_addr,
         password: config.wallet_password,
         connection_type,
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
@@ -189,24 +197,20 @@ pub fn get_wallet_info(state: tauri::State<'_, AppState>) -> Result<WalletInfo, 
 pub async fn restore_wallet(
     data_dir: Option<String>,
     wallet_name: String,
-    rpc: RpcSettings,
+    socks_port: Option<u16>,
     backup_file_path: String,
     password: Option<String>,
 ) -> Result<(), AppError> {
-    let dir = resolve_data_dir(&data_dir);
+    let dir = resolve_data_dir(&data_dir)?;
     let restored_path = wallet_path(&dir, &wallet_name);
-    let rpc_config = RPCConfig {
-        url: format!("{}:{}", rpc.host, rpc.port),
-        auth: Auth::UserPass(rpc.username, rpc.password),
-        wallet_name: wallet_name.clone(),
-    };
+    let backend = electrum_backend(socks_port);
     let backup_path = PathBuf::from(backup_file_path);
 
     tauri::async_runtime::spawn_blocking(move || {
         coinswap::wallet::ffi::restore_wallet_gui_app(
             Some(dir),
             Some(wallet_name),
-            rpc_config,
+            backend,
             backup_path,
             password,
         )
