@@ -5,6 +5,8 @@ import { NavLink, Outlet } from "react-router-dom";
 import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { useToastStore } from "../../store/toast";
+import { REFRESH_INTERVAL_MS } from "../../store/wallet-cache";
+import { refreshWalletCache } from "../../lib/wallet-sync";
 
 const NAV_ITEMS: { path: string; label: string; d: string }[] = [
   { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
@@ -175,6 +177,13 @@ function ToastStack() {
 }
 
 export function AppShell() {
+  // Refresh regardless of the active route so Send/Swap never depend on the
+  // Wallet page having been mounted recently.
+  useEffect(() => {
+    const id = setInterval(() => void refreshWalletCache(), REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div className="relative h-screen">
       <Background />

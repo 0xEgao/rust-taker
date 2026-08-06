@@ -135,6 +135,14 @@ pub struct NewAddress {
     pub address_type: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddressValidation {
+    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Condensed from `bitcoind::bitcoincore_rpc::json::ListTransactionResult`.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -281,6 +289,16 @@ pub struct SwapRequest {
     pub outpoints: Option<Vec<Outpoint>>,
     #[serde(default)]
     pub preferred_makers: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapFundingEstimateDto {
+    pub input_count: usize,
+    pub vbytes: u64,
+    pub fee_sats: u64,
+    pub fee_rate: f64,
+    pub route_mining_fee_per_maker_sats: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AddressType,
+  AddressValidation,
   Balances,
   CoreStatus,
   FeeEstimate,
@@ -19,6 +20,7 @@ import type {
   RpcSettings,
   SendResult,
   SwapLiquidity,
+  SwapFundingEstimate,
   SwapProgress,
   SwapReportDetail,
   SwapReportSummary,
@@ -114,8 +116,16 @@ export function checkSwapLiquidity(): Promise<SwapLiquidity> {
   return invoke("check_swap_liquidity");
 }
 
+export function estimateSwapFunding(amountSats: number, outpoints?: Outpoint[]): Promise<SwapFundingEstimate> {
+  return invoke("estimate_swap_funding", { amountSats, outpoints });
+}
+
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {
   return invoke("get_new_address", { addressType });
+}
+
+export function validateAddress(address: string): Promise<AddressValidation> {
+  return invoke("validate_address", { address });
 }
 
 export function getTransactions(

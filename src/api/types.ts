@@ -116,6 +116,11 @@ export interface NewAddress {
   addressType: string;
 }
 
+export interface AddressValidation {
+  valid: boolean;
+  error?: string;
+}
+
 export interface TxSummary {
   txid: string;
   category: string;
@@ -241,6 +246,14 @@ export interface SwapRequest {
   makerCount: number;
   outpoints?: Outpoint[];
   preferredMakers?: string[];
+}
+
+export interface SwapFundingEstimate {
+  inputCount: number;
+  vbytes: number;
+  feeSats: number;
+  feeRate: number;
+  routeMiningFeePerMakerSats: number;
 }
 
 export interface MakerFeeInfo {

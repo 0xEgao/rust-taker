@@ -1,7 +1,7 @@
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } from "lucide-react";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress } from "../../api/commands";
+import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
 import { Card, Modal, SatsAmount } from "../../components/ui/display";
@@ -16,17 +16,22 @@ import {
   type Unit,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
+import { useWalletCacheStore } from "../../store/wallet-cache";
 
 type FeeKey = "low" | "mid" | "high" | "custom";
 
 function SendPanel() {
   const pushToast = useToastStore((s) => s.push);
+  const walletSyncStatus = useWalletCacheStore((s) => s.syncStatus);
+  const walletSyncError = useWalletCacheStore((s) => s.syncError);
   const [balances, setBalances] = useState<Balances | null>(null);
   const [utxos, setUtxos] = useState<UtxoEntry[]>([]);
   const [fees, setFees] = useState<FeeEstimate | null>(null);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
 
   const [recipient, setRecipient] = useState("");
+  const [recipientValidation, setRecipientValidation] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
+  const [recipientError, setRecipientError] = useState<string | undefined>();
   const [unit, setUnit] = useState<Unit>("sats");
   const [amountInput, setAmountInput] = useState("");
   const [feeKey, setFeeKey] = useState<FeeKey>("mid");
@@ -87,9 +92,43 @@ function SendPanel() {
 
   const amountError = amountInput.length > 0 && amountSats <= 0 ? "Enter a valid amount." : undefined;
 
-  const canReview = recipient.trim().length > 0 && amountSats > 0 && feeRate > 0;
+  useEffect(() => {
+    let cancelled = false;
+    const address = recipient.trim();
+    setRecipientError(undefined);
+    if (!address) {
+      setRecipientValidation("idle");
+      return () => { cancelled = true; };
+    }
+
+    setRecipientValidation("checking");
+    const timer = setTimeout(() => {
+      void validateAddress(address)
+        .then((result) => {
+          if (cancelled) return;
+          setRecipientValidation(result.valid ? "valid" : "invalid");
+          setRecipientError(result.error);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setRecipientValidation("invalid");
+          setRecipientError("Could not validate this address.");
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [recipient]);
+
+  const walletReadyToSpend = walletSyncStatus === "synced";
+  const canReview = walletReadyToSpend && recipientValidation === "valid" && amountSats > 0 && feeRate > 0;
 
   async function confirmSend() {
+    if (useWalletCacheStore.getState().syncStatus !== "synced") {
+      pushToast("error", "Wait for wallet synchronization before sending.");
+      return;
+    }
     setSending(true);
     try {
       const result = await sendToAddress(
@@ -126,11 +165,29 @@ function SendPanel() {
         </span>
       </div>
 
+      {!walletReadyToSpend && (
+        <div className="rounded-control border border-warning/35 bg-warning/[0.08] px-3.5 py-2.5 text-[12px] text-warning">
+          {walletSyncStatus === "error"
+            ? `Sending disabled: ${walletSyncError ?? "wallet synchronization failed."}`
+            : "Sending is enabled after the initial wallet sync completes."}
+        </div>
+      )}
+
       <TextField
         label="Recipient Address"
-        placeholder="bc1q..."
+        placeholder="bc1… or tb1…"
         value={recipient}
         onChange={(e) => setRecipient(e.target.value)}
+        error={recipientError}
+        hint={
+          recipientValidation === "checking"
+            ? "Checking address…"
+            : recipientValidation === "valid"
+              ? "Valid Bitcoin address. Network is checked before sending."
+              : undefined
+        }
+        autoComplete="off"
+        spellCheck={false}
       />
 
       <div className="grid grid-cols-[1fr_auto] items-end gap-3">
@@ -253,7 +310,7 @@ function SendPanel() {
               <Button variant="secondary" onClick={() => setReviewing(false)} disabled={sending}>
                 Cancel
               </Button>
-              <Button onClick={() => void confirmSend()} loading={sending}>
+              <Button onClick={() => void confirmSend()} loading={sending} disabled={!walletReadyToSpend}>
                 Confirm &amp; Broadcast
               </Button>
             </>

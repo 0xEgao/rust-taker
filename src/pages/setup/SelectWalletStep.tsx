@@ -25,7 +25,7 @@ import {
 } from "./types";
 
 interface SelectWalletStepProps {
-  onSuccess: (result: InitResult) => void;
+  onSuccess: (result: InitResult, restored: boolean) => void;
 }
 
 type ViewMode = "grid" | "unlock" | "create" | "checking";
@@ -202,7 +202,9 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       // maker data by the time the user looks at it — not just whatever offerbook.json had from
       // the last session. Not awaited: this can take 30-60s+ and shouldn't block navigation.
       void syncOfferbook().catch(() => {});
-      onSuccess(result);
+      // restore_wallet completes its own sync_and_save before init_taker, so a
+      // successful restore already satisfies the mandatory first scan.
+      onSuccess(result, wallet.mode === "restore");
     } catch (e) {
       const err = isAppError(e) ? e : null;
       setSteps((s) => ({ ...s, verify: "failed", init: "failed" }));

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use coinswap::bitcoin::{OutPoint, Txid};
+use coinswap::bitcoin::{Address, OutPoint, Txid};
 use coinswap::fee_estimation::FeeEstimator;
 use coinswap::nostr_coinswap::NOSTR_RELAYS;
 use coinswap::taker::api::ConnectionType;
@@ -34,9 +34,9 @@ pub(crate) fn electrum_backend(socks_port: Option<u16>) -> BackendConfig {
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{
-    AddressTypeDto, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig, InitResult,
-    NewAddress, Outpoint, PriceEstimate, SendResult, SwapLiquidity, TxSummary, UtxoEntry,
-    WalletInfo,
+    AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
+    InitResult, NewAddress, Outpoint, PriceEstimate, SendResult, SwapLiquidity, TxSummary,
+    UtxoEntry, WalletInfo,
 };
 
 fn resolve_data_dir(data_dir: &Option<String>) -> Result<PathBuf, AppError> {
@@ -52,7 +52,7 @@ pub(crate) fn wallet_path(data_dir: &std::path::Path, wallet_name: &str) -> Path
 }
 
 /// Cloning the Arc (not the Wallet) keeps this independent of the taker mutex.
-fn get_wallet_handle(state: &AppState) -> Result<Arc<RwLock<Wallet>>, AppError> {
+pub(crate) fn get_wallet_handle(state: &AppState) -> Result<Arc<RwLock<Wallet>>, AppError> {
     state
         .wallet
         .read()?
@@ -255,6 +255,33 @@ pub async fn backup_wallet(
 }
 
 // --- Wallet operations: balances, addresses, history, UTXOs, send, sync, fees ---
+
+/// Validate address encoding before review without coupling the UI to a
+/// particular Bitcoin network. send_to_address performs the authoritative
+/// active-wallet network check before constructing a transaction.
+#[tauri::command]
+pub fn validate_address(address: String) -> AddressValidation {
+    let address = address.trim();
+    if address.is_empty() {
+        return AddressValidation {
+            valid: false,
+            error: Some("Enter a recipient address.".to_string()),
+        };
+    }
+
+    match Address::from_str(address) {
+        Ok(_) => AddressValidation {
+            valid: true,
+            error: None,
+        },
+        Err(_) => {
+            AddressValidation {
+                valid: false,
+                error: Some("Enter a valid Bitcoin address.".to_string()),
+            }
+        }
+    }
+}
 
 #[tauri::command]
 pub async fn get_balances(state: tauri::State<'_, AppState>) -> Result<BalancesDto, AppError> {

@@ -15,14 +15,18 @@ use coinswap::taker::swap_tracker::{
     TaprootExchangeProgress,
 };
 use coinswap::taker::{SwapParams, SwapSummary};
+use coinswap::utill::{estimate_funding_tx_fee_sats, MIN_FEE_RATE};
+use coinswap::wallet::AddressType;
 use tauri::{Emitter, Manager};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
-    MakerFeeInfoDto, MakerProgressDto, ProtocolVersionDto, RecoveryStatus, SwapProgressDto,
-    SwapRequest, SwapSummaryDto, SwapTrackerDto,
+    MakerFeeInfoDto, MakerProgressDto, ProtocolVersionDto, RecoveryStatus, SwapFundingEstimateDto,
+    SwapProgressDto, SwapRequest, SwapSummaryDto, SwapTrackerDto,
 };
+
+use super::taker_wallet::get_wallet_handle;
 
 fn protocol_label(p: ProtocolVersion) -> &'static str {
     match p {
@@ -137,6 +141,63 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
         failure_reason: r.failure_reason.clone(),
         makers: r.makers.iter().map(to_maker_progress_dto).collect(),
     }
+}
+
+/// Quote the taker's initial funding transaction using the same wallet coin
+/// selection and fixed protocol fee rate used when the swap actually starts.
+#[tauri::command]
+pub async fn estimate_swap_funding(
+    state: tauri::State<'_, AppState>,
+    amount_sats: u64,
+    outpoints: Option<Vec<crate::types::Outpoint>>,
+) -> Result<SwapFundingEstimateDto, AppError> {
+    let wallet = get_wallet_handle(&state)?;
+    let outpoints = outpoints
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|item| {
+                    let txid = Txid::from_str(&item.txid)
+                        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
+                    Ok(OutPoint::new(txid, item.vout))
+                })
+                .collect::<Result<Vec<_>, AppError>>()
+        })
+        .transpose()?;
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<SwapFundingEstimateDto, AppError> {
+        let wallet = wallet.read()?;
+        let selected = wallet.coin_select(
+            Amount::from_sat(amount_sats),
+            MIN_FEE_RATE,
+            AddressType::P2TR,
+            outpoints,
+            None,
+        )?;
+
+        // Exact weight constants used by Wallet::coin_select: base transaction,
+        // selected inputs, one P2TR swap output, and one P2TR change output.
+        const BASE_TX_WEIGHT: u64 = 42;
+        const INPUT_BASE_WEIGHT: u64 = 164;
+        const P2TR_OUTPUT_WEIGHT: u64 = 172;
+        let input_weight: u64 = selected
+            .iter()
+            .map(|(_, spend)| INPUT_BASE_WEIGHT + spend.estimate_witness_size() as u64)
+            .sum();
+        let weight = BASE_TX_WEIGHT + input_weight + 2 * P2TR_OUTPUT_WEIGHT;
+        let vbytes = weight.div_ceil(4);
+        let fee_sats = (vbytes as f64 * MIN_FEE_RATE).ceil() as u64;
+
+        Ok(SwapFundingEstimateDto {
+            input_count: selected.len(),
+            vbytes,
+            fee_sats,
+            fee_rate: MIN_FEE_RATE,
+            route_mining_fee_per_maker_sats: estimate_funding_tx_fee_sats(),
+        })
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
 /// Phase 1: maker discovery + negotiation, no funds committed. Summary is

@@ -34,6 +34,7 @@ pub fn run() {
             // taker wallet operations
             taker_wallet::get_balances,
             taker_wallet::check_swap_liquidity,
+            taker_wallet::validate_address,
             taker_wallet::get_new_address,
             taker_wallet::get_transactions,
             taker_wallet::list_utxos,
@@ -48,6 +49,7 @@ pub fn run() {
             market::remove_maker,
             // taker swap
             taker_swap::prepare_swap,
+            taker_swap::estimate_swap_funding,
             taker_swap::start_swap,
             taker_swap::get_swap_progress,
             taker_swap::get_swap_tracker,

@@ -4,15 +4,13 @@ import { AlertTriangle, ArrowLeftRight, CheckCircle2, FileText, Globe, RefreshCw
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  checkSwapLiquidity,
-  estimateFees,
+  estimateSwapFunding,
   getBtcPrice,
   getLogs,
   getOffers,
   getRecoveryStatus,
   getSwapProgress,
   getSwapTracker,
-  listUtxos,
   prepareSwap,
   recoverSwap,
   startSwap,
@@ -20,13 +18,13 @@ import {
 import { isAppError } from "../../api/types";
 import type {
   AppError,
-  FeeEstimate,
   LogLine,
   Maker,
   Outpoint,
   ProtocolVersion,
   RecoveryStatus,
   SwapLiquidity,
+  SwapFundingEstimate,
   SwapRequest,
   SwapSummary,
   SwapTrackerProgress,
@@ -35,11 +33,10 @@ import type {
 } from "../../api/types";
 import { Card, Disclosure, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Button, SegmentedToggle, TextField } from "../../components/ui/inputs";
-import { estimateMakerFee, formatTorEndpoint } from "../../lib/market-format";
+import { estimateRouteMakerFees, formatTorEndpoint } from "../../lib/market-format";
 import {
   classifySpendType,
   formatDuration,
-  formatFeeRate,
   formatUnitAmount,
   satsToUnitString,
   SATS_PER_BTC,
@@ -48,19 +45,20 @@ import {
   type Unit,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
+import { useWalletCacheStore } from "../../store/wallet-cache";
 
 type CoinMode = "auto" | "manual";
 type MakerMode = "auto" | "manual";
-type FeeKey = "low" | "mid" | "high" | "custom";
 type UtxoFilter = "regular" | "swap";
 type Lifecycle = "configure" | "running" | "finished" | "failed";
 type RouteTone = "idle" | "active" | "success" | "danger";
 type RouteNodeInfo = { tone: RouteTone; badge?: string };
 
-// Matches the old app's fixed per-tier illustrative estimate — a rough guide, not a real forecast.
-const FEE_TIME_LABEL: Record<"low" | "mid" | "high", string> = { low: "~60 min", mid: "~20 min", high: "~10 min" };
-const AVG_FUNDING_TX_VBYTES = 300;
-const MAKER_COUNT_PRESETS = [1, 2, 3, 4] as const;
+function EstimatedSats({ sats, className }: { sats: number | null; className: string }) {
+  return sats === null ? <strong className="font-mono text-subtle">—</strong> : <SatsAmount sats={sats} className={className} />;
+}
+
+const MAKER_COUNT_PRESETS = [2, 3, 4] as const;
 
 function elapsedLabel(startedAt: number | null): string {
   if (!startedAt) return "0s";
@@ -267,12 +265,24 @@ function SwapRouteAnimation({
 export function SwapPage() {
   const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
+  const walletSyncStatus = useWalletCacheStore((s) => s.syncStatus);
+  const walletSyncError = useWalletCacheStore((s) => s.syncError);
+  const balances = useWalletCacheStore((s) => s.balances);
+  const utxos = useWalletCacheStore((s) => s.utxos);
 
-  const [liquidity, setLiquidity] = useState<SwapLiquidity | null>(null);
-  const [utxos, setUtxos] = useState<UtxoEntry[]>([]);
-  const [fees, setFees] = useState<FeeEstimate | null>(null);
+  const liquidity = useMemo<SwapLiquidity | null>(() => {
+    if (!balances) return null;
+    return {
+      spendable: balances.spendable,
+      regular: balances.regular,
+      swap: balances.swap,
+      maxSwappable: Math.max(balances.regular, balances.swap) - Math.min(3000, Math.max(balances.regular, balances.swap)),
+    };
+  }, [balances]);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [makers, setMakers] = useState<Maker[]>([]);
+  const [fundingEstimate, setFundingEstimate] = useState<SwapFundingEstimate | null>(null);
+  const [fundingEstimateStatus, setFundingEstimateStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
 
   const [unit, setUnit] = useState<Unit>("sats");
   const [amountInput, setAmountInput] = useState("");
@@ -284,8 +294,6 @@ export function SwapPage() {
   const [makerCount, setMakerCount] = useState(3);
   const [customMakerCount, setCustomMakerCount] = useState("5");
   const [selectedMakers, setSelectedMakers] = useState<string[]>([]);
-  const [feeKey, setFeeKey] = useState<FeeKey>("mid");
-  const [customFeeRate, setCustomFeeRate] = useState("");
 
   const [phase, setPhase] = useState<Lifecycle>("configure");
   const [summary, setSummary] = useState<SwapSummary | null>(null);
@@ -300,15 +308,7 @@ export function SwapPage() {
   const [logsOpen, setLogsOpen] = useState(false);
 
   const loadReference = useCallback(async () => {
-    const [nextLiquidity, nextUtxos, nextFees, nextOffers] = await Promise.all([
-      checkSwapLiquidity(),
-      listUtxos(),
-      estimateFees(),
-      getOffers(),
-    ]);
-    setLiquidity(nextLiquidity);
-    setUtxos(nextUtxos);
-    setFees(nextFees);
+    const nextOffers = await getOffers();
     setMakers(nextOffers.good);
   }, []);
 
@@ -422,10 +422,11 @@ export function SwapPage() {
       ),
     [spendableUtxos, utxoFilter],
   );
-  const selectedTotal = useMemo(() => {
+  const selectedUtxos = useMemo(() => {
     const set = new Set(selectedOutpoints.map((o) => `${o.txid}:${o.vout}`));
-    return spendableUtxos.filter((u) => set.has(`${u.txid}:${u.vout}`)).reduce((sum, u) => sum + u.amountSats, 0);
+    return spendableUtxos.filter((u) => set.has(`${u.txid}:${u.vout}`));
   }, [selectedOutpoints, spendableUtxos]);
+  const selectedTotal = useMemo(() => selectedUtxos.reduce((sum, u) => sum + u.amountSats, 0), [selectedUtxos]);
 
   function toggleOutpoint(u: UtxoEntry) {
     const key = `${u.txid}:${u.vout}`;
@@ -459,51 +460,86 @@ export function SwapPage() {
   }
 
   const effectiveMakerCount =
-    makerMode === "auto" ? (makerCount === 5 ? Math.max(1, Number(customMakerCount) || 5) : makerCount) : selectedMakers.length;
-
-  const feeRate = useMemo(() => {
-    if (feeKey === "custom") return Number(customFeeRate) || 0;
-    if (!fees) return 0;
-    return fees[feeKey];
-  }, [feeKey, customFeeRate, fees]);
+    makerMode === "auto" ? (makerCount === 5 ? Math.max(2, Number(customMakerCount) || 5) : makerCount) : selectedMakers.length;
 
   const estimateMakers = useMemo(() => {
     if (makerMode === "manual") return compatibleMakers.filter((m) => selectedMakers.includes(m.address));
     return compatibleMakers.slice(0, Math.max(0, effectiveMakerCount));
   }, [compatibleMakers, makerMode, selectedMakers, effectiveMakerCount]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setFundingEstimate(null);
+    setFundingEstimateStatus("idle");
+    if (amountSats <= 0 || walletSyncStatus !== "synced") return () => { cancelled = true; };
+    const timer = setTimeout(() => {
+      setFundingEstimateStatus("loading");
+      const outpoints = coinMode === "manual" && selectedOutpoints.length > 0 ? selectedOutpoints : undefined;
+      void estimateSwapFunding(amountSats, outpoints)
+        .then((estimate) => {
+          if (cancelled) return;
+          setFundingEstimate(estimate);
+          setFundingEstimateStatus("ready");
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setFundingEstimate(null);
+          setFundingEstimateStatus("error");
+        });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [amountSats, coinMode, selectedOutpoints, walletSyncStatus]);
+
   const feeSummary = useMemo(() => {
-    const totalMakers = Math.max(1, estimateMakers.length || effectiveMakerCount || 1);
-    const makerFee = estimateMakers.reduce((sum, m, i) => {
-      if (!m.offer) return sum;
-      return (
-        sum +
-        estimateMakerFee({
-          baseFee: m.offer.baseFee,
-          amountRelativeFeePct: m.offer.amountRelativeFeePct,
-          timeRelativeFeePct: m.offer.timeRelativeFeePct,
+    const hasCompleteRoute = amountSats > 0 && effectiveMakerCount > 0 && estimateMakers.length === effectiveMakerCount;
+    const route = hasCompleteRoute
+      ? estimateRouteMakerFees(
+          estimateMakers.map((maker) => ({
+            baseFee: maker.offer!.baseFee,
+            amountRelativeFeePct: maker.offer!.amountRelativeFeePct,
+            timeRelativeFeePct: maker.offer!.timeRelativeFeePct,
+          })),
           amountSats,
-          makerPosition: i + 1,
-          totalMakers,
-        }).totalFee
-      );
-    }, 0);
-    const fundingTransactions = coinMode === "manual" && selectedOutpoints.length > 0 ? selectedOutpoints.length : 1;
-    const networkFee = fundingTransactions * AVG_FUNDING_TX_VBYTES * feeRate;
-    const totalFee = makerFee + networkFee;
-    return { makerFee, networkFee, fundingTransactions, totalFee, receiveAmount: Math.max(0, amountSats - totalFee) };
-  }, [estimateMakers, effectiveMakerCount, amountSats, coinMode, selectedOutpoints, feeRate]);
+        )
+      : null;
+    const makerFee = route?.totalFeeSats ?? null;
+    const routeMiningFee = fundingEstimate
+      ? fundingEstimate.routeMiningFeePerMakerSats * effectiveMakerCount
+      : null;
+    const networkFee = fundingEstimate && routeMiningFee !== null ? fundingEstimate.feeSats + routeMiningFee : null;
+    const totalFee = makerFee !== null && networkFee !== null ? makerFee + networkFee : null;
+    const receiveAmount = route && routeMiningFee !== null
+      ? Math.max(0, route.receiveAmountSats - routeMiningFee)
+      : null;
+    return { makerFee, networkFee, totalFee, receiveAmount };
+  }, [estimateMakers, effectiveMakerCount, amountSats, fundingEstimate]);
 
   const warnings = useMemo(() => {
     const list: string[] = [];
+    if (walletSyncStatus !== "synced") {
+      list.push(
+        walletSyncStatus === "error"
+          ? `Wallet sync failed: ${walletSyncError ?? "Electrum is unavailable."}`
+          : "Wait for the initial wallet sync before starting a swap.",
+      );
+    }
+    if (fundingEstimateStatus === "error") {
+      list.push("The wallet could not calculate a funding transaction for this amount and coin selection.");
+    }
     if (amountInput.length > 0 && amountSats <= 0) list.push("Enter a valid amount.");
     if (amountSats > 0 && liquidity && amountSats > liquidity.maxSwappable) list.push("Amount exceeds your swappable balance.");
     if (coinMode === "manual" && selectedOutpoints.length === 0) list.push("Select at least one UTXO, or switch to Auto select.");
     if (coinMode === "manual" && selectedOutpoints.length > 0 && selectedTotal < amountSats) {
       list.push("Selected UTXOs don't cover the swap amount.");
     }
-    if (amountSats > 0 && feeSummary.receiveAmount < 10_000) list.push("Estimated receive amount is too small after fees.");
+    if (amountSats > 0 && feeSummary.receiveAmount !== null && feeSummary.receiveAmount < 10_000) {
+      list.push("Estimated receive amount is too small after fees.");
+    }
     if (makerMode === "manual" && selectedMakers.length === 0) list.push("Select at least one maker, or switch to Auto select.");
+    if (effectiveMakerCount < 2) list.push("A coinswap route requires at least two makers.");
     if (compatibleMakers.length === 0) {
       list.push(`No compatible ${protocol} makers found in the offerbook.`);
     } else if (makerMode === "auto" && effectiveMakerCount > compatibleMakers.length) {
@@ -511,7 +547,6 @@ export function SwapPage() {
         `Only ${compatibleMakers.length} compatible maker${compatibleMakers.length === 1 ? "" : "s"} available for ${effectiveMakerCount} hops.`,
       );
     }
-    if (feeRate <= 0) list.push("Set a network fee rate.");
     return list;
   }, [
     amountInput,
@@ -526,15 +561,21 @@ export function SwapPage() {
     compatibleMakers,
     effectiveMakerCount,
     protocol,
-    feeRate,
+    walletSyncStatus,
+    walletSyncError,
+    fundingEstimateStatus,
   ]);
 
-  const canStart = amountSats > 0 && warnings.length === 0 && !submitting;
+  const canStart = amountSats > 0 && fundingEstimate !== null && warnings.length === 0 && !submitting;
 
   // prepareSwap + startSwap in one action — the crate's negotiated SwapSummary is shown on the
   // progress screen itself rather than gating on a separate confirm click (see also §3.2 of the
   // design notes, which suggested a confirm step; kept as one action per direct product feedback).
   async function handleStartSwap() {
+    if (useWalletCacheStore.getState().syncStatus !== "synced") {
+      pushToast("error", "Wait for wallet synchronization before starting a swap.");
+      return;
+    }
     setSubmitting(true);
     try {
       const request: SwapRequest = {
@@ -887,7 +928,7 @@ export function SwapPage() {
                     makers is 2.
                   </span>
                 </div>
-                <div className="grid grid-cols-5 gap-2">
+                <div className="grid grid-cols-4 gap-2">
                   {MAKER_COUNT_PRESETS.map((n) => (
                     <button
                       key={n}
@@ -898,7 +939,7 @@ export function SwapPage() {
                       }`}
                     >
                       <div className={`font-mono text-[18px] font-bold ${makerCount === n ? "text-primary" : "text-foreground"}`}>{n}</div>
-                      <div className="mt-0.5 font-mono text-[9px] uppercase tracking-wide text-subtle">{n === 1 ? "Maker" : "Makers"}</div>
+                      <div className="mt-0.5 font-mono text-[9px] uppercase tracking-wide text-subtle">Makers</div>
                     </button>
                   ))}
                   <button
@@ -950,44 +991,14 @@ export function SwapPage() {
             )}
           </div>
 
-          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
-            <h2 className="font-header text-[13.5px] font-bold text-foreground">Network Fee Rate</h2>
-            <div className="grid grid-cols-4 gap-2">
-              {(["low", "mid", "high"] as const).map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setFeeKey(key)}
-                  className={`rounded-control border px-2 py-2 text-center transition-colors ${
-                    feeKey === key ? "border-primary/55 bg-primary/10" : "border-line-strong bg-surface-raised hover:border-line-strong/80"
-                  }`}
-                >
-                  <div className="font-mono text-[10px] uppercase tracking-wide text-subtle">{key === "mid" ? "Medium" : key}</div>
-                  <div className={`mt-0.5 font-mono text-[13px] font-semibold ${feeKey === key ? "text-primary" : "text-foreground"}`}>
-                    {fees ? `${formatFeeRate(fees[key])} s/vB` : "…"}
-                  </div>
-                  <div className="mt-0.5 font-mono text-[9px] text-subtle">{FEE_TIME_LABEL[key]}</div>
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => setFeeKey("custom")}
-                className={`grid place-items-center rounded-control border px-2 py-2 text-[11px] text-subtle transition-colors ${
-                  feeKey === "custom" ? "border-primary/55 bg-primary/10 text-primary" : "border-line-strong bg-surface-raised hover:border-line-strong/80"
-                }`}
-              >
-                Custom
-              </button>
+          <div className="flex items-center justify-between gap-3 border-t border-line pt-5">
+            <div>
+              <h2 className="font-header text-[13.5px] font-bold text-foreground">Protocol Funding Rate</h2>
+              <p className="mt-1 text-[11.5px] text-subtle">Set by the coinswap protocol for the actual funding transaction.</p>
             </div>
-            {feeKey === "custom" && (
-              <TextField
-                label="Custom rate (sats/vB)"
-                inputMode="decimal"
-                placeholder="e.g. 8"
-                value={customFeeRate}
-                onChange={(e) => setCustomFeeRate(e.target.value)}
-              />
-            )}
+            <strong className="font-mono text-[13px] text-primary">
+              {fundingEstimate ? `${fundingEstimate.feeRate} sat/vB` : "…"}
+            </strong>
           </div>
 
           {warnings.length > 0 && (
@@ -1026,7 +1037,15 @@ export function SwapPage() {
             <div className="flex items-center justify-between">
               <h3 className="font-header text-[14px] font-bold text-foreground">Swap Summary</h3>
               <span className="rounded-pill border border-primary/35 bg-primary/[0.08] px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-primary">
-                Estimated time {feeKey === "custom" ? "—" : FEE_TIME_LABEL[feeKey]}
+                {walletSyncStatus !== "synced"
+                  ? "Waiting for wallet sync"
+                  : fundingEstimateStatus === "loading"
+                    ? "Calculating wallet quote"
+                    : fundingEstimateStatus === "error"
+                      ? "Quote unavailable"
+                      : fundingEstimate
+                        ? "Live wallet quote"
+                        : "Enter an amount"}
               </span>
             </div>
 
@@ -1037,37 +1056,37 @@ export function SwapPage() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-subtle">Makers</span>
-                <strong className="font-mono text-foreground">{estimateMakers.length || effectiveMakerCount}</strong>
+                <strong className="font-mono text-foreground">{effectiveMakerCount}</strong>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Funding transactions</span>
-                <strong className="font-mono text-foreground">{feeSummary.fundingTransactions}</strong>
+                <span className="text-subtle">Funding inputs</span>
+                <strong className="font-mono text-foreground">{fundingEstimate?.inputCount ?? "—"}</strong>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Avg funding tx size</span>
-                <strong className="font-mono text-foreground">{AVG_FUNDING_TX_VBYTES} vB</strong>
+                <span className="text-subtle">Funding tx size</span>
+                <strong className="font-mono text-foreground">{fundingEstimate ? `${fundingEstimate.vbytes} vB` : "—"}</strong>
               </div>
             </div>
 
             <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-3 text-[12px]">
               <div className="flex items-center justify-between">
                 <span className="text-subtle">Estimated maker fee</span>
-                <SatsAmount sats={feeSummary.makerFee} className="font-semibold text-foreground" />
+                <EstimatedSats sats={feeSummary.makerFee} className="font-semibold text-foreground" />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Network fee</span>
-                <SatsAmount sats={feeSummary.networkFee} className="font-semibold text-foreground" />
+                <span className="text-subtle">Network costs</span>
+                <EstimatedSats sats={feeSummary.networkFee} className="font-semibold text-foreground" />
               </div>
               <div className="flex items-center justify-between border-t border-line pt-1.5">
                 <span className="text-subtle">Total estimated fee</span>
-                <SatsAmount sats={feeSummary.totalFee} className="font-bold text-primary" />
+                <EstimatedSats sats={feeSummary.totalFee} className="font-bold text-primary" />
               </div>
             </div>
 
             <div className="rounded-control bg-success/[0.06] px-3.5 py-3">
               <span className="font-mono text-[10px] uppercase tracking-widest text-subtle">You receive</span>
               <div className="mt-0.5">
-                <SatsAmount sats={feeSummary.receiveAmount} className="text-[19px] font-bold text-success" />
+                <EstimatedSats sats={feeSummary.receiveAmount} className="text-[19px] font-bold text-success" />
               </div>
             </div>
           </Card>

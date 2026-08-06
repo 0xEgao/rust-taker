@@ -2,11 +2,10 @@ import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../../api/commands";
 import { Card, ExternalLinkButton, SatsAmount } from "../../components/ui/display";
+import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
 import { useHeaderActionsStore } from "../../store/header-actions";
-import { isCacheStale, REFRESH_INTERVAL_MS, useWalletCacheStore } from "../../store/wallet-cache";
-import { withMinDelay } from "../../lib/timing";
+import { useWalletCacheStore } from "../../store/wallet-cache";
 import {
   classifySpendType,
   explorerTxUrl,
@@ -111,55 +110,49 @@ function Pill({ label, className }: { label: string; className: string }) {
 }
 
 export function WalletPage() {
+  const [, updateClock] = useState(0);
   const info = useWalletCacheStore((s) => s.info);
   const balances = useWalletCacheStore((s) => s.balances);
   const utxos = useWalletCacheStore((s) => s.utxos);
   const transactions = useWalletCacheStore((s) => s.transactions);
-  const lastUpdated = useWalletCacheStore((s) => s.lastUpdated);
-  const setWalletCache = useWalletCacheStore((s) => s.setData);
-  const setLastUpdatedCache = useWalletCacheStore((s) => s.setLastUpdated);
+  const syncStatus = useWalletCacheStore((s) => s.syncStatus);
+  const syncError = useWalletCacheStore((s) => s.syncError);
+  const lastSuccessfulSyncAt = useWalletCacheStore((s) => s.lastSuccessfulSyncAt);
 
-  const [refreshing, setRefreshing] = useState(false);
-  // Skip the full loading screen only if the cache is still fresh; past CACHE_TTL_MS it's treated as absent.
-  const [initialLoading, setInitialLoading] = useState(() => isCacheStale(useWalletCacheStore.getState().updatedAt));
+  const refreshing = syncStatus === "syncing";
+  // A process-local snapshot can paint immediately. On a fresh process, only
+  // wait for the persisted wallet data read, never for Electrum synchronization.
+  const [initialLoading, setInitialLoading] = useState(() => useWalletCacheStore.getState().balances === null);
+  const [initialError, setInitialError] = useState<string | null>(null);
 
   const [utxoFilter, setUtxoFilter] = useState<UtxoFilter>("all");
   const [txFilter, setTxFilter] = useState<TxFilter>("all");
   const [txSort, setTxSort] = useState<TxSortKey>("newest");
   const [sortDir, setSortDir] = useState<Record<TxSortKey, SortDir>>({ newest: "desc", amount: "desc" });
 
-  const load = useCallback(async () => {
-    const [nextInfo, nextBalances, nextUtxos, nextTx] = await Promise.all([
-      getWalletInfo(),
-      getBalances(),
-      listUtxos(),
-      getTransactions(50, 0),
-    ]);
-    setWalletCache({ info: nextInfo, balances: nextBalances, utxos: nextUtxos, transactions: nextTx });
-  }, [setWalletCache]);
+  const loadStored = useCallback(hydrateWalletCache, []);
 
   const refresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      try {
-        await syncWallet();
-      } catch {
-        // Best-effort — stale data is still worth showing.
-      }
-      await load();
-      setLastUpdatedCache("Just now");
-    } finally {
-      setRefreshing(false);
-    }
-  }, [load, setLastUpdatedCache]);
+    await refreshWalletCache();
+  }, []);
 
-  // Every mount needs sync-then-load, same as Refresh — a plain load() reads stale/empty state.
+  // Hydrate the encrypted wallet file's last saved UTXO snapshot first. Once it
+  // is visible, refresh it from Electrum without blocking the wallet screen.
   useEffect(() => {
-    if (!initialLoading) {
+    if (useWalletCacheStore.getState().balances !== null) {
       void refresh();
       return;
     }
-    void withMinDelay(refresh(), 700).finally(() => setInitialLoading(false));
+    void loadStored().then(
+      () => {
+        setInitialLoading(false);
+        void refresh();
+      },
+      (error: unknown) => {
+        setInitialLoading(false);
+        setInitialError((error as { message?: string })?.message ?? "Could not read the saved wallet data.");
+      },
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -168,17 +161,14 @@ export function WalletPage() {
     return () => useHeaderActionsStore.getState().register(null);
   }, [refresh]);
 
-  // Keeps the cache from ever actually reaching CACHE_TTL_MS during a
-  // continuous session — real swaps/sends elsewhere shouldn't require the
-  // user to bounce off the page to see updated balances.
-  useEffect(() => {
-    const id = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [refresh]);
-
   useEffect(() => {
     useHeaderActionsStore.getState().setRefreshing(refreshing);
   }, [refreshing]);
+
+  useEffect(() => {
+    const id = setInterval(() => updateClock((value) => value + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   const utxoCounts = useMemo(() => {
     const counts = { all: utxos.length, regular: 0, contract: 0, swap: 0 };
@@ -222,6 +212,9 @@ export function WalletPage() {
   }
 
   const totalBalance = (balances?.regular ?? 0) + (balances?.swap ?? 0);
+  const lastSyncLabel = lastSuccessfulSyncAt
+    ? formatRelativeTime(Math.floor(lastSuccessfulSyncAt / 1000))
+    : "never";
 
   if (initialLoading) {
     return (
@@ -234,14 +227,63 @@ export function WalletPage() {
     );
   }
 
+  if (initialError || balances === null || info === null) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
+        <span className="font-header text-[13px] uppercase tracking-widest text-danger">Wallet data unavailable</span>
+        <p className="max-w-md text-[13px] text-muted">{initialError ?? "Could not read the saved wallet snapshot."}</p>
+        <button
+          type="button"
+          className="rounded-control border border-line-strong px-4 py-2 text-[12px] text-foreground hover:bg-white/[0.04]"
+          onClick={() => {
+            setInitialError(null);
+            setInitialLoading(true);
+            void loadStored().then(
+              () => {
+                setInitialLoading(false);
+                void refresh();
+              },
+              (error: unknown) => {
+                setInitialLoading(false);
+                setInitialError((error as { message?: string })?.message ?? "Could not read the saved wallet data.");
+              },
+            );
+          }}
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center gap-2 text-[13px] text-subtle">
-        <span className="h-[7px] w-[7px] rounded-full bg-success shadow-[0_0_8px_rgba(49,209,88,0.7)]" />
-        <span>Synced {lastUpdated.toLowerCase()}</span>
+        <span
+          className={`h-[7px] w-[7px] rounded-full ${
+            refreshing
+              ? "animate-pulse bg-warning shadow-[0_0_8px_rgba(245,196,81,0.7)]"
+              : syncStatus === "error"
+                ? "bg-danger shadow-[0_0_8px_rgba(255,69,90,0.7)]"
+                : "bg-success shadow-[0_0_8px_rgba(49,209,88,0.7)]"
+          }`}
+        />
+        <span title={syncError ?? undefined}>
+          {refreshing
+            ? `Last synced ${lastSyncLabel} · Updating…`
+            : syncStatus === "error"
+              ? `Sync unavailable · Last synced ${lastSyncLabel}`
+              : `Last synced ${lastSyncLabel}`}
+        </span>
         <span>·</span>
         <span className="font-mono uppercase">{info?.walletName ?? "—"}</span>
       </div>
+
+      {syncStatus === "error" && (
+        <div className="mt-3 shrink-0 rounded-control border border-warning/35 bg-warning/[0.08] px-3.5 py-2.5 text-[12px] text-warning">
+          {syncError ?? "Wallet synchronization failed."} Saved balances remain visible, but sending and swaps are disabled.
+        </div>
+      )}
 
       <section className="mt-5 grid shrink-0 grid-cols-[minmax(320px,1.45fr)_repeat(3,minmax(210px,1fr))] gap-3">
         <BalanceCard label="Total Balance" sats={totalBalance} caption="Swap + Regular Coins" hero />
@@ -352,7 +394,13 @@ export function WalletPage() {
           </header>
           <div className="flex min-h-0 flex-1 flex-col divide-y divide-line overflow-y-auto px-3.5">
             {filteredTx.length === 0 && (
-              <p className="px-3 py-6 text-center text-[13px] text-subtle">No transactions match this filter.</p>
+              <p className="px-3 py-6 text-center text-[13px] text-subtle">
+                {refreshing
+                  ? "Updating transaction history…"
+                  : syncStatus === "error"
+                    ? "Transaction history unavailable while offline."
+                    : "No transactions match this filter."}
+              </p>
             )}
             {filteredTx.map((tx) => {
               const isReceive = tx.amountSats >= 0;
