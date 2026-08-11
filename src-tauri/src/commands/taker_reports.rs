@@ -2,7 +2,7 @@
 //! (`<wallet_name>_swap_report.json`, not per swap id) written by the crate
 //! itself — we only read it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use coinswap::wallet::{SwapStatus, TakerReport};
 
@@ -11,12 +11,29 @@ use crate::state::{try_lock_taker, AppState};
 use crate::types::{MakerFeeInfo, Outpoint, SwapReportDetail, SwapReportSummary};
 
 /// Mirrors the `taker` field of the crate's `wallet::report::SwapReportFile` — that wrapper type
-/// isn't re-exported from `coinswap::wallet` on the electrum-sync branch (PR #945), so this reads
-/// the same on-disk JSON shape directly rather than waiting on the crate to fix the re-export.
+/// isn't re-exported from `coinswap::wallet`, so this reads the same on-disk JSON shape directly
+/// rather than waiting on the crate to fix the re-export.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct SwapReportFile {
     #[serde(default)]
     taker: Vec<TakerReport>,
+}
+
+/// Shared with `commands::maker_reports` — both resolve the same per-wallet report file.
+///
+/// The crate writes `<stem>_swap_report.json`, taking the *stem* of the wallet file name
+/// (`wallet::report::wallet_name_for_report`), so a wallet named `wallet.dat` reports to
+/// `wallet_swap_report.json`. Formatting the full file name here instead would silently
+/// read a path that never exists and report zero swaps.
+pub(crate) fn report_path(data_dir: &Path, wallet_name: &str) -> PathBuf {
+    let stem = Path::new(wallet_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(wallet_name);
+    data_dir
+        .join("wallets")
+        .join(format!("{stem}_swap_report.json"))
 }
 
 /// Shared with `commands::maker_reports` — both read the same `SwapStatus` enum off the same
@@ -42,9 +59,7 @@ fn resolve_report_path(state: &AppState) -> Result<PathBuf, AppError> {
         .clone()
         .ok_or_else(AppError::not_initialized)?;
     let wallet_name = wallet.read()?.get_name().to_string();
-    Ok(data_dir
-        .join("wallets")
-        .join(format!("{wallet_name}_swap_report.json")))
+    Ok(report_path(&data_dir, &wallet_name))
 }
 
 fn load_report_file(path: &PathBuf) -> Result<SwapReportFile, AppError> {
@@ -147,9 +162,6 @@ pub async fn get_swap_report(
         makers_count: r.makers_count,
         maker_addresses: r.maker_addresses,
         maker_fee_info,
-        input_utxo_amounts_sats: r.input_utxos,
-        output_change_utxos: r.output_change_utxos,
-        output_swap_utxos: r.output_swap_utxos,
         proven_outpoint,
         deniability_proof,
     })
@@ -170,4 +182,34 @@ pub async fn verify_deniability(
     })
     .await
     .map_err(AppError::internal)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The crate writes reports under the wallet file's *stem*, so a dotted wallet name must
+    /// not produce `wallet.dat_swap_report.json` — that path never exists and reads as zero swaps.
+    #[test]
+    fn report_path_uses_the_wallet_file_stem() {
+        let dir = Path::new("/data");
+        assert_eq!(
+            report_path(dir, "wallet.dat"),
+            dir.join("wallets").join("wallet_swap_report.json")
+        );
+        assert_eq!(
+            report_path(dir, "taker-wallet"),
+            dir.join("wallets").join("taker-wallet_swap_report.json")
+        );
+    }
+
+    /// A dotfile name is all extension and no stem; falling back to the raw name keeps the
+    /// path in the wallets directory instead of collapsing to `_swap_report.json`.
+    #[test]
+    fn report_path_falls_back_when_there_is_no_stem() {
+        assert_eq!(
+            report_path(Path::new("/data"), ".wallet"),
+            Path::new("/data").join("wallets").join(".wallet_swap_report.json")
+        );
+    }
 }

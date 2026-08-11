@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 use coinswap::bitcoin::{Address, OutPoint, Txid};
@@ -16,8 +17,8 @@ use coinswap::taker::{Taker, TakerInitConfig};
 use coinswap::utill::get_taker_dir;
 use coinswap::wallet::{AddressType, BackendConfig, ElectrumConfig, Wallet};
 
-/// Hardcoded for PR citadel-tech/coinswap#945 testing (Electrum backend) — our signet Electrum
-/// node. Reached over Tor same as taker/maker traffic; not yet user-configurable.
+/// Our signet Electrum node. Reached over Tor same as taker/maker traffic; not yet
+/// user-configurable.
 const ELECTRUM_URL: &str = "tcp://170.75.166.88:50001";
 
 /// `pub(crate)` so `commands::maker` can build the same backend for the maker's own wallet.
@@ -154,6 +155,9 @@ pub async fn init_taker(
         .map(|w| !w.list_live_contract_spend_info().is_empty())
         .unwrap_or(false);
 
+    // A previous `shutdown` latched this; re-arm so syncs on the new taker aren't
+    // cancelled the moment they start.
+    state.sync_cancel.store(false, Ordering::Relaxed);
     *state.wallet.write()? = Some(taker.get_wallet().clone());
     *state.offer_sync.write()? = Some(taker.offer_sync_client());
     *state.data_dir.write()? = Some(data_dir.clone());
@@ -170,6 +174,9 @@ pub async fn init_taker(
 /// if a swap is running we skip it rather than hang shutdown — abandoning it
 /// is safe, startup recovery picks up unfinished swaps on next init.
 pub fn shutdown(state: &AppState) -> Result<(), AppError> {
+    // Released before the handles below, so a sync already inside the crate's retry loop
+    // unwinds instead of holding a blocking thread against a backend that is going away.
+    state.sync_cancel.store(true, Ordering::Relaxed);
     if let Ok(mut guard) = state.taker.try_lock() {
         guard.take();
     }
@@ -213,6 +220,16 @@ pub async fn restore_wallet(
     let restored_path = wallet_path(&dir, &wallet_name);
     let backend = electrum_backend(socks_port);
     let backup_path = PathBuf::from(backup_file_path);
+
+    // `Wallet::restore` refuses to overwrite an existing file and only logs the
+    // refusal, which would leave the post-restore `exists()` check below passing
+    // on the *old* wallet and reporting a restore that never happened.
+    if restored_path.exists() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("a wallet named '{wallet_name}' already exists — pick another name"),
+        ));
+    }
 
     tauri::async_runtime::spawn_blocking(move || {
         coinswap::wallet::ffi::restore_wallet_gui_app(
@@ -501,8 +518,9 @@ pub async fn send_to_address(
 #[tauri::command]
 pub async fn sync_wallet(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
     let wallet = get_wallet_handle(&state)?;
+    let cancel = state.sync_cancel.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        wallet.write()?.sync_and_save()?;
+        wallet.write()?.sync_and_save(&cancel)?;
         Ok(())
     })
     .await

@@ -20,6 +20,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // setup / connectivity
             setup::check_port,
+            setup::check_electrum,
             setup::check_bitcoin_core,
             setup::check_tor,
             setup::get_version_info,
@@ -63,6 +64,7 @@ pub fn run() {
             logs::get_logs,
             // maker lifecycle
             maker::init_maker,
+            maker::update_maker_settings,
             maker::start_maker,
             maker::stop_maker,
             maker::get_maker_status,

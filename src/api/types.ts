@@ -84,6 +84,12 @@ export type ErrorCode =
   | "SWAP_IN_PROGRESS"
   | "INSUFFICIENT_FUNDS"
   | "NOT_ENOUGH_MAKERS"
+  | "MAKER_NOT_FOUND"
+  | "MAKER_NOT_INITIALIZED"
+  | "MAKER_ALREADY_RUNNING"
+  | "MAKER_NOT_RUNNING"
+  | "MAKER_BUSY"
+  | "REPORT_NOT_FOUND"
   | "CONTRACTS_BROADCASTED"
   | "INVALID_INPUT"
   | "STATE_POISONED"
@@ -217,6 +223,16 @@ export interface MakerSettings {
   dataDir?: string;
 }
 
+export interface MakerInitConfig extends MakerSettings {
+  walletPassword?: string;
+  torAuthPassword?: string;
+}
+
+export interface SuggestedMakerPorts {
+  networkPort: number;
+  rpcPort: number;
+}
+
 export type MakerPhase =
   | { phase: "notConfigured" }
   | { phase: "initializing" }
@@ -232,6 +248,35 @@ export interface MakerStatus {
   running: boolean;
   torAddress?: string;
   networkPort: number;
+}
+
+export interface FidelityBond {
+  bondIndex: number;
+  outpoint: Outpoint;
+  amountSats: number;
+  lockTimeHeight: number;
+  isSpent: boolean;
+  isLocked: boolean;
+  bondValueSats?: number;
+}
+
+export interface MakerSwapReportSummary {
+  swapId: string;
+  status: string;
+  startTimestamp: number;
+  endTimestamp: number;
+  incomingAmountSats: number;
+  outgoingAmountSats: number;
+  feeEarnedSats: number;
+}
+
+export interface MakerSwapReportDetail extends MakerSwapReportSummary {
+  network: string;
+  swapDurationSeconds: number;
+  incomingContractTxid: string;
+  outgoingContractTxid: string;
+  timelock: number;
+  deniabilityProof: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -363,9 +408,6 @@ export interface SwapReportDetail {
   makersCount: number;
   makerAddresses: string[];
   makerFeeInfo: MakerFeeInfo[];
-  inputUtxoAmountsSats: number[];
-  outputChangeUtxos: [number, string][];
-  outputSwapUtxos: [number, string][];
   /** The exact outpoint verify_deniability checks on-chain. */
   provenOutpoint: Outpoint | null;
   /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */

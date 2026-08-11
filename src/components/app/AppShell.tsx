@@ -6,31 +6,34 @@ import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { useToastStore } from "../../store/toast";
 import { REFRESH_INTERVAL_MS } from "../../store/wallet-cache";
+import { useSessionStore } from "../../store/session";
 import { refreshWalletCache } from "../../lib/wallet-sync";
 
-const NAV_ITEMS: { path: string; label: string; d: string }[] = [
-  { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
-  { path: "/market", label: "Market", d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
+/** `takerOnly` items need an unlocked taker; Maker works without one. */
+const NAV_ITEMS: { path: string; label: string; d: string; takerOnly?: boolean }[] = [
+  { path: "/", label: "Wallet", takerOnly: true, d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
+  { path: "/market", label: "Market", takerOnly: true, d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
   { path: "/maker", label: "Maker", d: '<circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/>' },
-  { path: "/send", label: "Send", d: '<path d="M7 17L17 7M9 7h8v8"/>' },
-  { path: "/swap", label: "Swap", d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
+  { path: "/send", label: "Send", takerOnly: true, d: '<path d="M7 17L17 7M9 7h8v8"/>' },
+  { path: "/swap", label: "Swap", takerOnly: true, d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
 ];
 
 function Logo() {
   return (
     <div className="flex items-center gap-3">
       <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-white">
-        T
+        C
       </div>
       <div className="min-w-0 leading-tight">
-        <div className="font-header text-[15px] font-bold text-foreground">Taker</div>
-        <div className="text-[11px] text-subtle">Coinswap Protocol</div>
+        <div className="font-header text-[15px] font-bold text-foreground">Coinswap</div>
+        <div className="text-[11px] text-subtle">Taker &amp; Maker</div>
       </div>
     </div>
   );
 }
 
 function TopNav() {
+  const takerReady = useSessionStore((s) => s.initialized);
   const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
   const refreshing = useHeaderActionsStore((s) => s.refreshing);
   const [justRefreshed, setJustRefreshed] = useState(false);
@@ -58,7 +61,27 @@ function TopNav() {
       <Logo />
 
       <nav className="flex items-center gap-1" aria-label="Main navigation">
-        {NAV_ITEMS.map((item) => (
+        {NAV_ITEMS.map((item) =>
+          item.takerOnly && !takerReady ? (
+            <span
+              key={item.path}
+              title="Unlock a wallet to use this"
+              aria-disabled="true"
+              className="flex cursor-not-allowed items-center gap-2 rounded-control px-3.5 py-2 text-[13.5px] font-medium text-subtle/55"
+            >
+              <svg
+                className="h-4 w-4 flex-none stroke-current"
+                viewBox="0 0 24 24"
+                fill="none"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                dangerouslySetInnerHTML={{ __html: item.d }}
+              />
+              <span>{item.label}</span>
+            </span>
+          ) : (
           <NavLink
             key={item.path}
             to={item.path}
@@ -106,7 +129,8 @@ function TopNav() {
               </>
             )}
           </NavLink>
-        ))}
+          ),
+        )}
       </nav>
 
       <div className="flex items-center gap-2">
@@ -177,12 +201,16 @@ function ToastStack() {
 }
 
 export function AppShell() {
+  const takerReady = useSessionStore((s) => s.initialized);
+
   // Refresh regardless of the active route so Send/Swap never depend on the
-  // Wallet page having been mounted recently.
+  // Wallet page having been mounted recently. Gated on the taker session because the shell
+  // now also hosts maker-only routes, where every wallet command would fail as NotInitialized.
   useEffect(() => {
+    if (!takerReady) return;
     const id = setInterval(() => void refreshWalletCache(), REFRESH_INTERVAL_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [takerReady]);
 
   return (
     <div className="relative h-screen">

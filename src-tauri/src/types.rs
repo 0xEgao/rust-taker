@@ -429,9 +429,6 @@ pub struct SwapReportDetail {
     pub makers_count: usize,
     pub maker_addresses: Vec<String>,
     pub maker_fee_info: Vec<MakerFeeInfo>,
-    pub input_utxo_amounts_sats: Vec<u64>,
-    pub output_change_utxos: Vec<(u64, String)>,
-    pub output_swap_utxos: Vec<(u64, String)>,
     /// The exact outpoint `verify_deniability` checks on-chain — the one field of the proof the
     /// UI reasons about, so it's typed rather than pulled out of the raw JSON below.
     pub proven_outpoint: Option<Outpoint>,

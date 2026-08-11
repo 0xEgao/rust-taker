@@ -1,4 +1,4 @@
-import { AlertCircle, Check, ChevronDown, ExternalLink, Wallet } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Copy, ExternalLink, Wallet } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import type { HTMLAttributes, ReactNode } from "react";
@@ -262,6 +262,32 @@ export function ExternalLinkButton({ txid }: { txid: string }) {
       className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-primary/60 hover:bg-primary/[0.14] hover:text-primary-hover"
     >
       <ExternalLink size={16} strokeWidth={1.8} />
+    </button>
+  );
+}
+
+/** Pairs with `ExternalLinkButton` on txid/address rows — same 34px footprint. */
+export function CopyButton({ text, title = "Copy" }: { text: string; title?: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1200);
+    return () => clearTimeout(id);
+  }, [copied]);
+
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        void navigator.clipboard.writeText(text).then(() => setCopied(true));
+      }}
+      className={`flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border transition-colors ${
+        copied ? "border-success/60 bg-success/[0.14] text-success" : "border-line text-muted hover:border-primary/60 hover:bg-primary/[0.14] hover:text-primary-hover"
+      }`}
+    >
+      {copied ? <Check size={16} strokeWidth={2} /> : <Copy size={16} strokeWidth={1.8} />}
     </button>
   );
 }

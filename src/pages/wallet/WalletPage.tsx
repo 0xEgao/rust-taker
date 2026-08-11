@@ -1,6 +1,7 @@
-import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Card, ExternalLinkButton, SatsAmount } from "../../components/ui/display";
 import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
@@ -118,6 +119,8 @@ export function WalletPage() {
   const syncStatus = useWalletCacheStore((s) => s.syncStatus);
   const syncError = useWalletCacheStore((s) => s.syncError);
   const lastSuccessfulSyncAt = useWalletCacheStore((s) => s.lastSuccessfulSyncAt);
+  const historyStatus = useWalletCacheStore((s) => s.historyStatus);
+  const historyError = useWalletCacheStore((s) => s.historyError);
 
   const refreshing = syncStatus === "syncing";
   // A process-local snapshot can paint immediately. On a fresh process, only
@@ -285,6 +288,26 @@ export function WalletPage() {
         </div>
       )}
 
+      {/* A freshly initialized wallet has nothing to show and no obvious next step; the empty
+          tables below read as a broken dashboard without this. Disappears on the first deposit. */}
+      {totalBalance === 0 && transactions.length === 0 && syncStatus !== "error" && (
+        <div className="mt-3 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-control border border-primary/35 bg-primary/[0.06] px-4 py-3">
+          <span className="flex items-center gap-2.5">
+            <Sparkles size={16} strokeWidth={1.9} className="flex-none text-primary" />
+            <span className="text-[12.5px] text-muted">
+              <strong className="font-semibold text-foreground">This wallet is empty.</strong> Receive
+              bitcoin into it before starting a swap.
+            </span>
+          </span>
+          <Link
+            to="/send"
+            className="inline-flex h-8 items-center gap-1.5 rounded-control bg-primary px-3.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover"
+          >
+            Receive bitcoin
+          </Link>
+        </div>
+      )}
+
       <section className="mt-5 grid shrink-0 grid-cols-[minmax(320px,1.45fr)_repeat(3,minmax(210px,1fr))] gap-3">
         <BalanceCard label="Total Balance" sats={totalBalance} caption="Swap + Regular Coins" hero />
         <BalanceCard label="Swaps" sats={balances?.swap ?? 0} caption="Coins Received by swap txs" />
@@ -395,11 +418,15 @@ export function WalletPage() {
           <div className="flex min-h-0 flex-1 flex-col divide-y divide-line overflow-y-auto px-3.5">
             {filteredTx.length === 0 && (
               <p className="px-3 py-6 text-center text-[13px] text-subtle">
-                {refreshing
-                  ? "Updating transaction history…"
-                  : syncStatus === "error"
-                    ? "Transaction history unavailable while offline."
-                    : "No transactions match this filter."}
+                {historyStatus === "loading" || refreshing
+                  ? "Loading recent transaction history from Electrum…"
+                  : historyStatus === "error"
+                    ? `Transaction history unavailable: ${historyError ?? "Electrum query failed."}`
+                    : syncStatus === "error"
+                      ? "Transaction history unavailable until wallet sync succeeds."
+                    : transactions.length === 0
+                      ? "No wallet transactions were returned."
+                      : "No transactions match the selected filter."}
               </p>
             )}
             {filteredTx.map((tx) => {

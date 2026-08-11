@@ -19,6 +19,12 @@ use crate::types::{MakerSettingsDto, SuggestedMakerPortsDto};
 struct StoredMakers {
     #[serde(default)]
     makers: HashMap<String, MakerSettingsDto>,
+    /// Distinguishes "the Maker Dashboard import has never run" from "it has run,
+    /// or the user has curated this registry". Without it, an empty `makers` map
+    /// reads as a pending migration, so removing the last maker re-runs the
+    /// import and resurrects every registration the user just deleted.
+    #[serde(default)]
+    dashboard_migrated: bool,
 }
 
 /// Compatibility shape for Maker Dashboard's registration store. Credentials
@@ -179,11 +185,17 @@ pub(crate) fn load_all() -> Result<HashMap<String, MakerSettingsDto>, AppError> 
     let _guard = SETTINGS_IO.lock()?;
     let path = settings_path()?;
     let mut stored = load_file(&path)?;
-    if stored.makers.is_empty() {
+    // An empty registry that has already been imported from is a user decision,
+    // not a pending migration. Registries predating `dashboard_migrated` default
+    // it to false, so a populated one must still suppress the import.
+    if stored.makers.is_empty() && !stored.dashboard_migrated {
         if let Some(dashboard_path) = dashboard_settings_path() {
             let discovered = load_dashboard_registrations(&dashboard_path)?;
+            // Leave the flag clear when nothing was found, so a dashboard
+            // installed or decrypted later still migrates.
             if !discovered.is_empty() {
                 stored.makers = discovered;
+                stored.dashboard_migrated = true;
                 save_file(&path, &stored)?;
             }
         }
@@ -234,6 +246,9 @@ pub fn clear_maker_settings(
     let path = settings_path()?;
     let mut stored = load_file(&path)?;
     stored.makers.remove(&maker_id);
+    // An explicit delete settles the migration even for a registry that was
+    // populated natively, so emptying it can never re-run the dashboard import.
+    stored.dashboard_migrated = true;
     save_file(&path, &stored)?;
     state.makers.lock()?.remove(&maker_id);
     crate::logging::unregister_maker(&maker_id);
@@ -304,13 +319,36 @@ mod tests {
     fn stored_makers_default_when_makers_field_is_missing() {
         let decoded: StoredMakers = serde_json::from_str("{}").unwrap();
         assert!(decoded.makers.is_empty());
+        assert!(!decoded.dashboard_migrated);
+    }
+
+    /// An emptied registry must not read as a pending dashboard migration, or removing the
+    /// last imported maker silently resurrects every registration on the next `load_all`.
+    #[test]
+    fn emptied_registry_is_distinguishable_from_an_unmigrated_one() {
+        let unmigrated: StoredMakers = serde_json::from_str(r#"{"makers":{}}"#).unwrap();
+        assert!(unmigrated.makers.is_empty() && !unmigrated.dashboard_migrated);
+
+        let mut emptied = StoredMakers {
+            makers: HashMap::from([("maker-one".to_string(), settings())]),
+            dashboard_migrated: true,
+        };
+        emptied.makers.remove("maker-one");
+        let round_tripped: StoredMakers =
+            serde_json::from_slice(&serde_json::to_vec(&emptied).unwrap()).unwrap();
+        assert!(round_tripped.makers.is_empty());
+        assert!(round_tripped.dashboard_migrated);
     }
 
     #[test]
     fn persisted_registration_omits_tor_password() {
         let mut makers = HashMap::new();
         makers.insert("maker-one".to_string(), settings());
-        let value = serde_json::to_value(StoredMakers { makers }).unwrap();
+        let value = serde_json::to_value(StoredMakers {
+            makers,
+            dashboard_migrated: true,
+        })
+        .unwrap();
         assert!(value["makers"]["maker-one"]
             .get("torAuthPassword")
             .is_none());

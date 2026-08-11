@@ -6,6 +6,7 @@ export const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 const SYNC_TIME_STORAGE_KEY = "coinswap_wallet_last_sync";
 
 export type WalletSyncStatus = "idle" | "syncing" | "synced" | "error";
+export type WalletHistoryStatus = "idle" | "loading" | "loaded" | "error";
 
 function loadSyncTimes(): Record<string, number> {
   try {
@@ -35,12 +36,16 @@ interface WalletCacheState {
   syncStatus: WalletSyncStatus;
   syncError: string | null;
   lastSuccessfulSyncAt: number | null;
+  historyStatus: WalletHistoryStatus;
+  historyError: string | null;
   beginSession: (walletName: string, dataDir: string, restored: boolean) => void;
   setSyncing: () => void;
   setSyncSuccess: (timestamp?: number) => void;
   setSyncError: (message: string) => void;
+  setHistoryLoading: () => void;
+  setHistoryData: (transactions: TxSummary[]) => void;
+  setHistoryError: (message: string) => void;
   setStoredData: (data: { info: WalletInfo; balances: Balances; utxos: UtxoEntry[] }) => void;
-  setData: (data: { info: WalletInfo; balances: Balances; utxos: UtxoEntry[]; transactions: TxSummary[] }) => void;
 }
 
 export const useWalletCacheStore = create<WalletCacheState>((set) => ({
@@ -52,6 +57,8 @@ export const useWalletCacheStore = create<WalletCacheState>((set) => ({
   syncStatus: "idle",
   syncError: null,
   lastSuccessfulSyncAt: null,
+  historyStatus: "idle",
+  historyError: null,
   beginSession: (walletName, dataDir, restored) => {
     const walletKey = `${dataDir}/wallets/${walletName}`;
     const lastSuccessfulSyncAt = restored ? Date.now() : (loadSyncTimes()[walletKey] ?? null);
@@ -63,7 +70,14 @@ export const useWalletCacheStore = create<WalletCacheState>((set) => ({
       lastSuccessfulSyncAt,
       // Never let a process-local snapshot from another wallet flash on screen.
       ...(state.walletKey !== null && state.walletKey !== walletKey
-        ? { info: null, balances: null, utxos: [], transactions: [] }
+        ? {
+            info: null,
+            balances: null,
+            utxos: [],
+            transactions: [],
+            historyStatus: "idle" as const,
+            historyError: null,
+          }
         : {}),
     }));
   },
@@ -74,8 +88,10 @@ export const useWalletCacheStore = create<WalletCacheState>((set) => ({
       return { syncStatus: "synced", syncError: null, lastSuccessfulSyncAt: timestamp };
     }),
   setSyncError: (message) => set({ syncStatus: "error", syncError: message }),
-  // Wallet balances and UTXOs are backed by the encrypted wallet file's persisted
-  // UTXO cache. Hydrating them is local and must not claim that a network sync ran.
+  setHistoryLoading: () => set({ historyStatus: "loading", historyError: null }),
+  setHistoryData: (transactions) => set({ transactions, historyStatus: "loaded", historyError: null }),
+  setHistoryError: (message) => set({ historyStatus: "error", historyError: message }),
+  // Wallet balances and UTXOs are backed by the encrypted wallet file. Transaction
+  // history is rebuilt from the chain backend and has a separate loading state.
   setStoredData: (data) => set(data),
-  setData: (data) => set(data),
 }));

@@ -66,6 +66,10 @@ pub struct AppState {
     pub data_dir: RwLock<Option<PathBuf>>,
     /// Single active swap slot; one swap at a time by design.
     pub active_swap: Mutex<Option<ActiveSwap>>,
+    /// Aborts an in-flight `Wallet::sync_and_save`. The crate's `sync_no_fail` retries a failing
+    /// backend forever and only exits on success or this flag, so without it an Electrum outage
+    /// pins a blocking thread for the rest of the process's life.
+    pub sync_cancel: Arc<AtomicBool>,
     /// Own bookkeeping for syncs we trigger — the crate doesn't expose this
     /// on the public OfferSyncClient.
     pub is_offerbook_syncing: AtomicBool,

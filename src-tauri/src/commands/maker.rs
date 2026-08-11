@@ -1,6 +1,7 @@
 //! Multi-maker lifecycle. Registrations and wallets persist on disk; live
 //! `MakerServer` objects exist only in this app process and never auto-start.
 
+use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -147,6 +148,42 @@ async fn construct_server(
     Ok(Arc::new(server))
 }
 
+/// Unwinds a failed `init_maker` so the attempt can be retried.
+///
+/// `init_maker` proves the wallet file is absent before `MakerServer::init` runs, so anything
+/// at that path afterwards was created by this attempt — `MakerServer::init` goes through
+/// `Wallet::load_or_init` and can create the wallet before a later step (sync, watch service,
+/// report load) fails. Leaving it behind would make the pre-existence check reject every
+/// retry of the same wallet name, and no command can register an already-created wallet.
+fn abort_failed_creation(
+    app: &tauri::AppHandle,
+    maker_id: &str,
+    wallet_file: &Path,
+    error: &AppError,
+) -> Result<(), AppError> {
+    match std::fs::remove_file(wallet_file) {
+        Ok(()) => log::info!(
+            "removed wallet from failed maker creation: {}",
+            wallet_file.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!(
+            "could not remove wallet from failed maker creation {}: {e}",
+            wallet_file.display()
+        ),
+    }
+    app.state::<AppState>().makers.lock()?.remove(maker_id);
+    crate::logging::unregister_maker(maker_id);
+    emit_phase(
+        app,
+        maker_id,
+        MakerPhase::Failed {
+            message: error.message.clone(),
+        },
+    );
+    Ok(())
+}
+
 pub(crate) fn read_tor_hostname(data_dir: &Path) -> Option<String> {
     let bytes = std::fs::read(data_dir.join("tor/hostname")).ok()?;
     if let Ok(hostname) = serde_cbor::from_slice::<String>(&bytes) {
@@ -197,6 +234,23 @@ fn ensure_unique_registration(
     Ok(())
 }
 
+fn ensure_unique_settings_update(settings: &MakerSettingsDto) -> Result<(), AppError> {
+    for saved in maker_settings::load_all()?.values() {
+        if saved.maker_id == settings.maker_id {
+            continue;
+        }
+        if [saved.network_port, saved.rpc_port].contains(&settings.network_port)
+            || [saved.network_port, saved.rpc_port].contains(&settings.rpc_port)
+        {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "maker network/RPC port is already registered",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Creates and registers a new maker wallet. This does not start its server.
 #[tauri::command]
 pub async fn init_maker(
@@ -209,10 +263,17 @@ pub async fn init_maker(
     let maker_id = config.maker_id.clone();
     let data_dir = resolve_maker_data_dir(&config)?;
     ensure_unique_registration(&maker_id, &data_dir, config.network_port, config.rpc_port)?;
-    if wallet_path(&data_dir, &config.wallet_name).exists() {
+    // `ensure_unique_registration` has already ruled out a registration for this ID or data
+    // directory, so a wallet sitting here has none — and nothing can register an existing one.
+    let wallet_file = wallet_path(&data_dir, &config.wallet_name);
+    if wallet_file.exists() {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "maker wallet already exists; register or start the existing maker instead",
+            format!(
+                "a wallet named '{}' already exists in this data directory — choose a different \
+                 wallet name or data directory",
+                config.wallet_name
+            ),
         ));
     }
 
@@ -254,29 +315,14 @@ pub async fn init_maker(
     let server = match construct_server(config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
-            app.state::<AppState>().makers.lock()?.remove(&maker_id);
-            crate::logging::unregister_maker(&maker_id);
-            emit_phase(
-                &app,
-                &maker_id,
-                MakerPhase::Failed {
-                    message: error.message.clone(),
-                },
-            );
+            abort_failed_creation(&app, &maker_id, &wallet_file, &error)?;
             return Err(error);
         }
     };
     if let Err(error) = maker_settings::save(&settings) {
         server.watch_service.shutdown();
-        app.state::<AppState>().makers.lock()?.remove(&maker_id);
-        crate::logging::unregister_maker(&maker_id);
-        emit_phase(
-            &app,
-            &maker_id,
-            MakerPhase::Failed {
-                message: error.message.clone(),
-            },
-        );
+        drop(server);
+        abort_failed_creation(&app, &maker_id, &wallet_file, &error)?;
         return Err(error);
     }
     // `MakerServer::init` is the crate's only wallet create/load API and starts
@@ -303,6 +349,68 @@ pub async fn init_maker(
         tor_address: None,
         network_port,
     })
+}
+
+/// Updates a stopped maker's persisted configuration. Wallet identity and
+/// storage location are immutable; changing them would silently point the
+/// registration at a different wallet. A fresh runtime reads these settings
+/// the next time the maker starts.
+#[tauri::command]
+pub fn update_maker_settings(
+    state: tauri::State<'_, AppState>,
+    maker_id: String,
+    mut settings: MakerSettingsDto,
+) -> Result<MakerSettingsDto, AppError> {
+    let existing =
+        maker_settings::load(&maker_id)?.ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+    if settings.maker_id != maker_id {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "maker ID cannot be changed",
+        ));
+    }
+    if settings.wallet_name != existing.wallet_name || settings.data_dir != existing.data_dir {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "maker wallet name and data directory cannot be changed",
+        ));
+    }
+
+    // Credentials are process-only and must never enter the settings file.
+    settings.tor_auth_password = None;
+    validate_maker_config(&settings.clone().into_init(None))?;
+    ensure_unique_settings_update(&settings)?;
+
+    let mut makers = try_lock_makers(&state.makers)?;
+    if let Some(entry) = makers.get(&maker_id) {
+        let runtime_thread_is_active = entry
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.thread.as_ref())
+            .is_some_and(|thread| !thread.is_finished());
+        if !matches!(entry.phase, MakerPhase::Stopped | MakerPhase::Failed { .. })
+            || runtime_thread_is_active
+        {
+            return Err(AppError::new(
+                ErrorCode::MakerBusy,
+                "stop the maker before changing its settings",
+            ));
+        }
+    }
+
+    maker_settings::save(&settings)?;
+    if let Some(entry) = makers.get_mut(&maker_id) {
+        let tor_auth_password = entry.settings.tor_auth_password.take();
+        entry.settings = settings.clone();
+        entry.settings.tor_auth_password = tor_auth_password;
+        entry.runtime = None;
+    }
+    drop(makers);
+
+    if let Some(data_dir) = settings.data_dir.as_deref() {
+        crate::logging::register_maker(maker_id, PathBuf::from(data_dir), settings.network_port);
+    }
+    Ok(settings)
 }
 
 fn insert_saved_registration(
@@ -375,6 +483,34 @@ pub async fn start_maker(
             .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
         (entry.settings.clone(), entry.wallet_password.clone())
     };
+
+    // Fail before wallet/runtime construction when another application or a
+    // leftover maker process owns either listener. Choosing another network
+    // port automatically is unsafe because an existing fidelity bond may
+    // commit to this maker address.
+    for (label, port) in [
+        ("network", settings.network_port),
+        ("RPC", settings.rpc_port),
+    ] {
+        if TcpListener::bind(("127.0.0.1", port)).is_err() {
+            let message = format!(
+                "Maker {label} port {port} is already in use. Stop the other maker process using this port before starting. Do not change the network port of a fidelity-bonded maker."
+            );
+            if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
+                entry.phase = MakerPhase::Failed {
+                    message: message.clone(),
+                };
+            }
+            emit_phase(
+                &app,
+                &maker_id,
+                MakerPhase::Failed {
+                    message: message.clone(),
+                },
+            );
+            return Err(AppError::new(ErrorCode::InvalidInput, message));
+        }
+    }
     let config = settings.clone().into_init(password);
     if let Err(error) = validate_maker_config(&config) {
         if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {

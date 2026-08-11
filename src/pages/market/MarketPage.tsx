@@ -14,6 +14,13 @@ type MakerStatus = "good" | "bad" | "unresponsive";
 type SortKey = "fee" | "baseFee" | "liquidityFee" | "timeRate" | "minSwap" | "maxSwap" | "bond";
 type SortDir = "asc" | "desc";
 
+// The crate re-syncs the offerbook on its own every 10 minutes, so without re-reading it the
+// page would show whatever was there at mount for as long as it stays open. Polled well under
+// that interval rather than matching it: the two timers are unaligned, so an equal period would
+// leave results sitting unseen for most of a cycle. get_offers is an in-memory snapshot with no
+// network I/O, which is what makes the tighter cadence free.
+const OFFERBOOK_REREAD_MS = 60 * 1000;
+
 // Muted (desaturated) variants of the success/warning/danger tokens, one per maker status.
 const STATUS_TAB_CLASS: Record<MakerStatus, { text: string; glow: string }> = {
   good: { text: "text-[#45bd62]", glow: "bg-[#45bd62]/15 shadow-[0_0_12px_rgba(69,189,98,0.35)]" },
@@ -363,6 +370,14 @@ export function MarketPage() {
       }
     })();
   }, [load, pushToast]);
+
+  // Separate from pollIntervalRef, which tracks a sync to completion and then stops. This one
+  // runs for as long as the page is open. Failures are swallowed: get_offers takes the taker
+  // lock without blocking, so it simply fails for the duration of a running swap.
+  useEffect(() => {
+    const id = setInterval(() => void load().catch(() => {}), OFFERBOOK_REREAD_MS);
+    return () => clearInterval(id);
+  }, [load]);
 
   const refresh = useCallback(async () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);

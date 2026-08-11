@@ -7,7 +7,9 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use coinswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
+use coinswap::wallet::{BackendConfig, Electrum};
 
+use crate::commands::taker_wallet::electrum_backend;
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{CoreStatus, PortStatus, RpcSettings, TorStatus, VersionInfo};
@@ -46,6 +48,44 @@ pub async fn check_port(
             Err(e) => PortStatus {
                 reachable: false,
                 error: Some(e.to_string()),
+            },
+        }
+    })
+    .await
+    .map_err(AppError::internal)
+}
+
+/// One bounded attempt is enough for a precheck. The backend's own defaults (a 120s proxied
+/// read timeout plus `max_retries` reconnects) would stall the UI for minutes before verdict.
+const ELECTRUM_PROBE_TIMEOUT_SECS: u8 = 15;
+
+/// Electrum precheck, routed through the same SOCKS proxy the wallet backend uses.
+///
+/// Deliberately not a `check_port` against the Electrum host: that opens a direct clearnet
+/// socket, which both leaks the user's IP to a server all other traffic reaches over Tor and
+/// wrongly reports "unreachable" on networks where only the proxied route works. Requires Tor
+/// to be up, so callers must run this *after* their Tor check.
+#[tauri::command]
+pub async fn check_electrum(socks_port: Option<u16>) -> Result<PortStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let BackendConfig::Electrum(mut config) = electrum_backend(socks_port) else {
+            return PortStatus {
+                reachable: false,
+                error: Some("electrum backend is not configured".to_string()),
+            };
+        };
+        config.max_retries = 0;
+        config.timeout = Some(ELECTRUM_PROBE_TIMEOUT_SECS);
+        // Completes the Electrum handshake and checks the server's genesis hash, so this
+        // rejects a reachable server on the wrong chain — a raw socket probe cannot.
+        match Electrum::new(&config) {
+            Ok(_) => PortStatus {
+                reachable: true,
+                error: None,
+            },
+            Err(e) => PortStatus {
+                reachable: false,
+                error: Some(format!("{e:?}")),
             },
         }
     })

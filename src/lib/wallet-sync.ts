@@ -1,6 +1,6 @@
-import { checkPort, getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../api/commands";
+import { checkElectrum, getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../api/commands";
 import { useWalletCacheStore } from "../store/wallet-cache";
-import { ELECTRUM_HOST, ELECTRUM_PORT } from "./connectivity";
+import { loadConnectivityDefaults } from "./connectivity";
 
 let hydrateInFlight: Promise<void> | null = null;
 let refreshInFlight: Promise<void> | null = null;
@@ -27,9 +27,10 @@ export function refreshWalletCache(): Promise<void> {
     cache.setSyncing();
     let slowTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Avoid entering coinswap's retry-forever sync while the endpoint is
-      // already known to be unreachable.
-      const reachability = await checkPort(ELECTRUM_HOST, ELECTRUM_PORT, 3000);
+      // Avoid entering coinswap's retry-forever sync while the endpoint is already known
+      // to be unreachable — that loop only exits on success or app shutdown. Probed over
+      // the Tor SOCKS proxy, the same route the sync itself takes.
+      const reachability = await checkElectrum(loadConnectivityDefaults().torSocksPort);
       if (!reachability.reachable) {
         throw new Error(reachability.error ?? "Electrum server is unreachable.");
       }
@@ -47,10 +48,15 @@ export function refreshWalletCache(): Promise<void> {
       cache.setSyncSuccess();
 
       await hydrateWalletCache();
-      const transactions = await getTransactions(50, 0).catch(() => useWalletCacheStore.getState().transactions);
-      const current = useWalletCacheStore.getState();
-      if (current.info && current.balances) {
-        current.setData({ info: current.info, balances: current.balances, utxos: current.utxos, transactions });
+      cache.setHistoryLoading();
+      try {
+        // Electrum reconstructs this from watched-script history and fetches
+        // transaction inputs, so keep the initial window intentionally small.
+        cache.setHistoryData(await getTransactions(10, 0));
+      } catch (error) {
+        cache.setHistoryError(
+          (error as { message?: string })?.message ?? "Transaction history could not be loaded.",
+        );
       }
     } catch (error) {
       if (slowTimer) clearTimeout(slowTimer);

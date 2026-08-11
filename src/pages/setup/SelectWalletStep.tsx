@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { dirname } from "@tauri-apps/api/path";
 import { FolderOpen, FolderPlus, Plus } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { checkPort, checkTor, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { checkElectrum, checkTor, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { InitResult } from "../../api/types";
 import { Modal, StatusRow, WalletCard, type CheckState } from "../../components/ui/display";
@@ -10,8 +10,6 @@ import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Headline } from "../../components/ui/layout";
 import { wait, withMinDelay } from "../../lib/timing";
 import {
-  ELECTRUM_HOST,
-  ELECTRUM_PORT,
   loadConnectivityDefaults,
   saveConnectivityDefaults,
   type ConnectivityConfig,
@@ -91,7 +89,12 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   async function refreshWallets(dir?: string) {
     setLoadingWallets(true);
     try {
-      setWallets(await listWallets(dir));
+      const found = await listWallets(dir);
+      setWallets(found);
+      // With nothing to unlock, creating is the only way forward — open the form directly
+      // rather than making the user dismiss an empty-state panel first. Back still reaches
+      // the grid, so Change location / Load wallet stay available.
+      if (found.length === 0) setViewMode("create");
     } finally {
       setLoadingWallets(false);
     }
@@ -140,25 +143,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setPendingWallet(wallet);
     setFailure(null);
     setViewMode("checking");
-    setSteps({ electrum: "running", tor: "idle", verify: "idle", init: "idle" });
+    setSteps({ tor: "running", electrum: "idle", verify: "idle", init: "idle" });
 
-    try {
-      await withMinDelay(
-        (async () => {
-          const status = await checkPort(ELECTRUM_HOST, ELECTRUM_PORT);
-          if (!status.reachable) {
-            throw new Error(status.error ?? "Could not reach the Electrum server.");
-          }
-        })(),
-        MIN_STEP_MS,
-      );
-    } catch (e) {
-      setSteps((s) => ({ ...s, electrum: "failed" }));
-      setFailure({ stage: "electrum", message: (e as { message?: string })?.message ?? "Could not reach the Electrum server." });
-      return;
-    }
-    setSteps((s) => ({ ...s, electrum: "passed", tor: "running" }));
-
+    // Tor first: the Electrum check runs through its SOCKS proxy, so a dead Tor would
+    // otherwise surface as a misleading "Electrum unreachable".
     try {
       await withMinDelay(
         (async () => {
@@ -174,7 +162,24 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       setFailure({ stage: "tor", message: (e as { message?: string })?.message ?? "Could not reach Tor." });
       return;
     }
-    setSteps((s) => ({ ...s, tor: "passed", verify: "running" }));
+    setSteps((s) => ({ ...s, tor: "passed", electrum: "running" }));
+
+    try {
+      await withMinDelay(
+        (async () => {
+          const status = await checkElectrum(connectivity.torSocksPort);
+          if (!status.reachable) {
+            throw new Error(status.error ?? "Could not reach the Electrum server.");
+          }
+        })(),
+        MIN_STEP_MS,
+      );
+    } catch (e) {
+      setSteps((s) => ({ ...s, electrum: "failed" }));
+      setFailure({ stage: "electrum", message: (e as { message?: string })?.message ?? "Could not reach the Electrum server." });
+      return;
+    }
+    setSteps((s) => ({ ...s, electrum: "passed", verify: "running" }));
     await wait(MIN_STEP_MS);
     setSteps((s) => ({ ...s, verify: "passed", init: "running" }));
 
@@ -230,13 +235,27 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setViewMode(pendingWallet?.mode === "create" ? "create" : "unlock");
   }
 
+  // Nothing on disk to unlock, so the page is really "create a wallet", not "select one".
+  const firstWallet = !loadingWallets && wallets.length === 0 && viewMode === "create";
+
   return (
     <div className="p-8 text-center">
       <div>
-        <Headline text="Select your" accent="wallet." />
-        <p className="mx-auto mt-2 max-w-lg text-[13.5px] text-muted">
-          Pick a wallet to unlock, or create a new one to get started.
-        </p>
+        {firstWallet ? (
+          <>
+            <Headline text="Create your" accent="wallet." />
+            <p className="mx-auto mt-2 max-w-lg text-[13.5px] text-muted">
+              This wallet holds the coins you swap. It is encrypted with the password you choose.
+            </p>
+          </>
+        ) : (
+          <>
+            <Headline text="Select your" accent="wallet." />
+            <p className="mx-auto mt-2 max-w-lg text-[13.5px] text-muted">
+              Pick a wallet to unlock, or create a new one to get started.
+            </p>
+          </>
+        )}
       </div>
 
       {viewMode === "grid" && (
@@ -329,8 +348,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
             />
           </div>
           <div className="mt-5 flex gap-3">
-            <Button variant="secondary" className="flex-1" onClick={() => setViewMode("grid")}>
-              Back
+            {/* Create is the default view with no wallets on disk, so this is the only route to
+                Change location / Load wallet — label it for what it reaches, not as "Back". */}
+            <Button variant="secondary" onClick={() => setViewMode("grid")}>
+              {wallets.length === 0 ? "Use existing" : "Back"}
             </Button>
             <Button className="flex-1" onClick={submitCreate}>Create &amp; continue</Button>
           </div>
@@ -339,8 +360,8 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
       {viewMode === "checking" && (
         <div className="mx-auto mt-8 flex max-w-sm flex-col gap-2.5">
-          <StatusRow label="Checking Electrum server" state={steps.electrum} />
           <StatusRow label="Checking Tor" state={steps.tor} />
+          <StatusRow label="Checking Electrum server" state={steps.electrum} />
           <StatusRow label="Verifying wallet password" state={steps.verify} />
           <StatusRow label="Initializing taker" state={steps.init} />
         </div>

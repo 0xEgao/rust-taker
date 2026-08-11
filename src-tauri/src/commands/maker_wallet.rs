@@ -177,9 +177,20 @@ pub async fn sync_maker_wallet(
     state: tauri::State<'_, AppState>,
     maker_id: String,
 ) -> Result<(), AppError> {
-    let wallet = get_maker_wallet_handle(&state, &maker_id)?;
+    // Holds the server (not just the wallet) so stopping the maker aborts an
+    // in-flight sync instead of leaving it to run out its backend retries.
+    let server = {
+        let makers = state.makers.lock()?;
+        makers
+            .get(&maker_id)
+            .ok_or_else(|| AppError::maker_not_found(&maker_id))?
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.server.clone())
+            .ok_or_else(AppError::maker_not_initialized)?
+    };
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        wallet.write()?.sync_and_save()?;
+        server.wallet.write()?.sync_and_save(&server.shutdown)?;
         Ok(())
     })
     .await

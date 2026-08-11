@@ -56,10 +56,10 @@ fn resolve_report_path(state: &AppState, maker_id: &str) -> Result<PathBuf, AppE
         .as_deref()
         .map(PathBuf::from)
         .ok_or_else(AppError::maker_not_initialized)?;
-    let wallet_name = settings.wallet_name;
-    Ok(data_dir
-        .join("wallets")
-        .join(format!("{wallet_name}_swap_report.json")))
+    Ok(super::taker_reports::report_path(
+        &data_dir,
+        &settings.wallet_name,
+    ))
 }
 
 fn load_report_file(path: &PathBuf) -> Result<SwapReportFile, AppError> {
