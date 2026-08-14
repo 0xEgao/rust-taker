@@ -5,7 +5,7 @@ import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions,
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
 import { Card, Modal, SatsAmount } from "../../components/ui/display";
-import { Button, SegmentedToggle, TextField } from "../../components/ui/inputs";
+import { Button, PresetTile, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import {
   classifySpendType,
   formatFeeRate,
@@ -218,34 +218,24 @@ function SendPanel() {
       )}
 
       <div className="flex flex-col gap-2">
-        <span className="font-mono text-[10px] font-extrabold uppercase tracking-widest text-subtle">Fee Rate</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Fee Rate</span>
         <div className="grid grid-cols-4 gap-2">
           {(["low", "mid", "high"] as const).map((key) => (
-            <button
+            <PresetTile
               key={key}
-              type="button"
               onClick={() => setFeeKey(key)}
-              className={`rounded-control border px-2 py-2 text-center transition-colors ${
-                feeKey === key ? "border-primary/55 bg-primary/10" : "border-line-strong bg-surface-raised hover:border-line-strong/80"
-              }`}
-            >
-              <div className="font-mono text-[10px] uppercase tracking-wide text-subtle">
-                {key === "mid" ? "Medium" : key}
-              </div>
-              <div className={`mt-0.5 font-mono text-[13px] font-semibold ${feeKey === key ? "text-primary" : "text-foreground"}`}>
-                {fees ? `${formatFeeRate(fees[key])} s/vB` : "…"}
-              </div>
-            </button>
+              selected={feeKey === key}
+              label={key === "mid" ? "Medium" : key}
+              value={fees ? `${formatFeeRate(fees[key])} s/vB` : "…"}
+              size="sm"
+            />
           ))}
-          <button
-            type="button"
+          <PresetTile
             onClick={() => setFeeKey("custom")}
-            className={`grid place-items-center rounded-control border px-2 py-2 text-[11px] text-subtle transition-colors ${
-              feeKey === "custom" ? "border-primary/55 bg-primary/10 text-primary" : "border-line-strong bg-surface-raised hover:border-line-strong/80"
-            }`}
-          >
-            Custom
-          </button>
+            selected={feeKey === "custom"}
+            label="Custom"
+            size="sm"
+          />
         </div>
         {feeKey === "custom" && (
           <TextField
@@ -259,7 +249,7 @@ function SendPanel() {
       </div>
 
       <details className="border-t border-dashed border-line pt-3">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-widest text-subtle marker:content-none hover:text-foreground">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle marker:content-none hover:text-foreground">
           <ChevronDown size={12} strokeWidth={2.5} />
           Manual UTXO Picker
         </summary>
@@ -439,7 +429,7 @@ function ReceivePanel() {
       />
 
       <div className="flex justify-center py-1">
-        <div className="grid h-[212px] w-[212px] place-items-center rounded-2xl bg-white p-3.5 shadow-[0_0_0_1px_rgba(255,255,255,0.16)]">
+        <div className="grid h-[212px] w-[212px] place-items-center rounded-card bg-white p-3.5 shadow-[0_0_0_1px_rgba(255,255,255,0.16)]">
           {qrDataUrl ? (
             <img src={qrDataUrl} alt="Receive address QR code" width={184} height={184} />
           ) : (
@@ -449,7 +439,7 @@ function ReceivePanel() {
       </div>
 
       <label className="flex flex-col gap-2">
-        <span className="font-mono text-[10px] font-extrabold uppercase tracking-widest text-subtle">Your Address</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Your Address</span>
         <div className="flex h-[46px] items-center justify-between gap-2 rounded-control border border-line-strong bg-surface-raised px-3.5">
           <span className="truncate font-mono text-[12.5px] text-muted" title={current?.address}>
             {current ? truncateMiddle(current.address, 14, 10) : generating ? "Generating…" : "—"}
@@ -470,7 +460,7 @@ function ReceivePanel() {
       </Button>
 
       <details className="border-t border-dashed border-line pt-3">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-widest text-subtle marker:content-none hover:text-foreground">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle marker:content-none hover:text-foreground">
           <ChevronDown size={12} strokeWidth={2.5} />
           Recent Addresses
         </summary>

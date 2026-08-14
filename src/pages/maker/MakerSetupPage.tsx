@@ -1,12 +1,12 @@
 import { ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getMakerBalances, getMakerLogs, getMakerStatus, startMaker } from "../../api/commands";
 import type { LogLine, MakerPhase } from "../../api/types";
 import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
-import { Button } from "../../components/ui/inputs";
+import { Button, LinkButton } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
 
 /**
@@ -164,8 +164,8 @@ export function MakerSetupPage() {
 
   return (
     <IntroStage lead="OpenSwap" accent="Maker" caption={caption} className="min-h-full">
-      <div className="mx-auto w-full max-w-2xl">
-        <Card className="border-line-strong">
+      <div className="mx-auto w-full max-w-lg">
+        <Card glow={stage === "funding"} className="border-line-strong">
           <div className="p-8 text-left">
             <Checklist steps={STEP_LABELS.map((label, i) => ({ label, state: stepStates(stage, failedAt.current)[i] }))} />
           </div>
@@ -173,7 +173,7 @@ export function MakerSetupPage() {
           {stage === "funding" && (
             <div className="border-t border-line px-8 py-6 text-left">
               <div className="flex items-baseline justify-between gap-4">
-                <span className="text-[11px] uppercase tracking-widest text-subtle">Deposit address</span>
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Deposit address</span>
                 {deposit && (
                   <span className="text-[12px] text-muted">
                     Send at least <SatsAmount sats={deposit.sats} className="font-numeric text-foreground" />
@@ -184,7 +184,7 @@ export function MakerSetupPage() {
                 <button
                   type="button"
                   onClick={copyAddress}
-                  className="mt-3 flex w-full items-start gap-3 rounded-control border border-primary/35 bg-primary/[0.07] px-4 py-3.5 text-left transition-colors hover:border-primary/60"
+                  className="lift mt-3 flex w-full items-start gap-3 rounded-control border border-primary/35 bg-primary/[0.07] px-4 py-3.5 text-left outline-none hover:border-primary/60 focus-visible:shadow-ring"
                 >
                   <span className="min-w-0 flex-1 break-all font-mono text-[12.5px] text-primary">
                     {deposit.address}
@@ -214,7 +214,7 @@ export function MakerSetupPage() {
 
           {stage === "live" && (
             <div className="flex items-center justify-between gap-4 border-t border-line px-8 py-5">
-              <p className="text-[12.5px] text-muted">Serving swaps on the coinswap network.</p>
+              <p className="text-[12.5px] text-muted">Serving swaps on the OpenSwap network.</p>
               <Button onClick={() => navigate(`/maker/${encodeURIComponent(id)}`)}>
                 Open maker
                 <ArrowRight size={15} strokeWidth={2} />
@@ -226,12 +226,7 @@ export function MakerSetupPage() {
             <div className="border-t border-line px-8 py-5 text-left">
               <p className="text-[12.5px] text-danger">{error}</p>
               <div className="mt-4 flex gap-3">
-                <Link
-                  to="/maker"
-                  className="inline-flex h-10 items-center rounded-control border border-line bg-surface-raised px-5 text-[13px] font-semibold text-foreground hover:border-line-strong"
-                >
-                  Back to makers
-                </Link>
+                <LinkButton to="/maker" variant="secondary">Back to makers</LinkButton>
                 <Button className="flex-1" onClick={() => navigate(`/maker/${encodeURIComponent(id)}`)}>
                   Open maker anyway
                 </Button>
@@ -241,7 +236,7 @@ export function MakerSetupPage() {
         </Card>
 
         <div className="mt-4 text-left">
-          <span className="text-[11px] uppercase tracking-widest text-subtle">Maker log</span>
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Maker log</span>
           <div className="mt-2 h-56 overflow-hidden rounded-card border border-line">
             <LogViewer lines={logs} emptyMessage="Waiting for the maker to start…" className="h-full" />
           </div>

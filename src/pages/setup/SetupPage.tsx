@@ -1,6 +1,5 @@
 import { useNavigate } from "react-router-dom";
 import type { InitResult } from "../../api/types";
-import { Background } from "../../components/ui/layout";
 import { startWalletSynchronization } from "../../lib/wallet-sync";
 import { useSessionStore } from "../../store/session";
 import { useWalletCacheStore } from "../../store/wallet-cache";
@@ -22,7 +21,6 @@ export function SetupPage() {
 
   return (
     <div className="relative min-h-screen">
-      <Background />
       {/* Framing and vertical placement are the step's own call: a first launch drops the card
           entirely and anchors to the top, so the intro can play against an empty screen. */}
       <div className="relative">

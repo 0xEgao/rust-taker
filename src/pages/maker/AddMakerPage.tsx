@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { checkBackend, checkMakerPorts, checkTor, getSuggestedMakerPorts, initMaker } from "../../api/commands";
 import type { MakerInitConfig, MakerPortCheck } from "../../api/types";
 import { Card, Disclosure } from "../../components/ui/display";
-import { Button, PasswordField, SummaryRow, TextField } from "../../components/ui/inputs";
+import { Button, LinkButton, PasswordField, SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
 import { loadConnectivityDefaults } from "../../lib/connectivity";
 import { useToastStore } from "../../store/toast";
 import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
@@ -34,14 +34,10 @@ type Values = typeof INITIAL_VALUES;
 function group(title: string, rows: React.ReactNode, warning?: string | null) {
   return (
     <div className="border-t border-line px-5 py-4">
-      <span className="font-mono text-[10px] uppercase tracking-widest text-subtle">{title}</span>
-      <div className="mt-1.5 flex flex-col">{rows}</div>
-      {warning && (
-        <p className="mt-2 flex items-start gap-1.5 text-[11.5px] leading-5 text-danger">
+      <SummaryGroup title={title} warning={warning ? <p className="flex items-start gap-1.5 text-[10.5px] text-danger">
           <AlertTriangle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
           {warning}
-        </p>
-      )}
+        </p> : undefined}>{rows}</SummaryGroup>
     </div>
   );
 }
@@ -175,13 +171,13 @@ export function AddMakerPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto w-full max-w-[640px] pb-8">
         <header className="mb-6">
-          <Link to="/maker" className="mb-4 inline-flex items-center gap-2 text-[11px] uppercase tracking-widest text-subtle hover:text-foreground">
+          <Link to="/maker" className="mb-4 inline-flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle hover:text-foreground">
             <ArrowLeft size={14} />
             Back to makers
           </Link>
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <span className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-on-primary">
+              <span className="grid h-11 w-11 place-items-center rounded-card bg-primary text-on-primary">
                 <Server size={22} />
               </span>
               <div>
@@ -214,11 +210,9 @@ export function AddMakerPage() {
                   <TextField label="Wallet name" placeholder={trimmedId || "Same as Maker ID"} value={walletName} onChange={(e) => setWalletName(e.target.value)} />
                   <TextField label="Data directory" placeholder="Default maker directory" value={dataDir} onChange={(e) => setDataDir(e.target.value)} />
                   <PasswordField label="Wallet password" autoComplete="new-password" value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
-                  <PasswordField label="Tor control password" value={torAuthPassword} onChange={(e) => setTorAuthPassword(e.target.value)} />
                   <p className="text-[11.5px] leading-5 text-subtle">
                     Wallet name and data directory are permanent, and the wallet password sets the
-                    wallet file's encryption — none of the three can be changed later. The Tor
-                    password is only used to reach Tor and is asked for again on each start.
+                    wallet file's encryption — none of the three can be changed later.
                   </p>
                 </div>
               </Disclosure>
@@ -230,6 +224,13 @@ export function AddMakerPage() {
             <>
               <SummaryRow label="SOCKS port" value={values.socksPort} onCommit={set("socksPort")} />
               <SummaryRow label="Control port" value={values.controlPort} onCommit={set("controlPort")} />
+              <PasswordField
+                label="Control port auth password"
+                placeholder="Optional"
+                autoComplete="current-password"
+                value={torAuthPassword}
+                onChange={(e) => setTorAuthPassword(e.target.value)}
+              />
             </>,
             torError,
           )}
@@ -270,9 +271,7 @@ export function AddMakerPage() {
         </Card>
 
         <div className="mt-4 flex items-center justify-end gap-2">
-          <Link to="/maker" className="inline-flex h-10 items-center rounded-control border border-line px-5 text-[13px] font-semibold text-foreground hover:border-line-strong">
-            Cancel
-          </Link>
+          <LinkButton to="/maker" variant="secondary">Cancel</LinkButton>
           <Button onClick={() => void createMaker()} loading={creating} disabled={!config || blocked}>
             Create maker
           </Button>

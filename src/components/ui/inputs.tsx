@@ -1,6 +1,13 @@
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
 import { motion } from "framer-motion";
-import { useId, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { Link, type LinkProps } from "react-router-dom";
+import {
+  useId,
+  useState,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+} from "react";
 
 type Variant = "primary" | "secondary" | "ghost";
 type Size = "md" | "sm";
@@ -13,17 +20,18 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const buttonBase =
-  "inline-flex items-center justify-center gap-2 rounded-control font-semibold transition-[box-shadow,background-color,border-color,transform,color] duration-200 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center justify-center gap-2 rounded-control font-semibold outline-none transition-[box-shadow,background-color,border-color,transform,color] duration-200 disabled:cursor-not-allowed disabled:opacity-50";
 
 const buttonVariants: Record<Variant, string> = {
   // Top-lit: a 1px inner highlight plus an accent-tinted drop shadow, so a filled control reads
   // as raised rather than as a coloured rectangle. Presses translate down and swap the outer
   // shadow for an inner one — the shadow is what sells the press, not the 1px move.
   primary:
-    "bg-primary text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.4),0_8px_20px_-8px_color-mix(in_oklab,var(--color-primary)_50%,transparent)] hover:bg-primary-hover hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_1px_2px_rgba(0,0,0,0.4),0_12px_28px_-8px_color-mix(in_oklab,var(--color-primary)_68%,transparent)] active:translate-y-px active:shadow-[inset_0_1px_3px_rgba(0,0,0,0.28)] disabled:shadow-none",
+    "bg-primary text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.4),0_8px_20px_-8px_color-mix(in_oklab,var(--color-primary)_50%,transparent)] hover:bg-primary-hover hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_1px_2px_rgba(0,0,0,0.4),0_12px_28px_-8px_color-mix(in_oklab,var(--color-primary)_68%,transparent)] focus-visible:shadow-[inset_0_1px_0_rgba(255,255,255,0.22),var(--shadow-ring)] active:translate-y-px active:shadow-[inset_0_1px_3px_rgba(0,0,0,0.28)] disabled:shadow-none",
   secondary:
-    "border border-line bg-surface-raised text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:border-line-strong hover:bg-secondary-hover active:translate-y-px",
-  ghost: "text-muted hover:text-foreground",
+    "border border-line bg-surface-raised text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:border-line-strong hover:bg-secondary-hover focus-visible:border-primary/60 focus-visible:shadow-ring active:translate-y-px",
+  ghost:
+    "text-muted hover:text-foreground focus-visible:shadow-ring active:translate-y-px",
 };
 
 const buttonSizes: Record<Size, string> = {
@@ -56,6 +64,23 @@ export function Button({
   );
 }
 
+export function LinkButton({
+  variant = "primary",
+  size = "md",
+  className = "",
+  children,
+  ...props
+}: LinkProps & { variant?: Variant; size?: Size; className?: string }) {
+  return (
+    <Link
+      className={`${buttonBase} ${buttonVariants[variant]} ${buttonSizes[size]} ${className}`}
+      {...props}
+    >
+      {children}
+    </Link>
+  );
+}
+
 /**
  * A settled value that can be edited in place. Deliberately not a `TextField`: a form of
  * bordered boxes reads as decisions demanded up front, which is the thing this avoids — at
@@ -66,6 +91,8 @@ export function SummaryRow({
   value,
   display,
   suffix,
+  hint,
+  readOnly = false,
   inputMode = "numeric",
   onCommit,
 }: {
@@ -76,8 +103,10 @@ export function SummaryRow({
   display?: string;
   /** Unit rendered after the value, e.g. "sats" — never part of the edited text. */
   suffix?: string;
+  hint?: string;
+  readOnly?: boolean;
   inputMode?: "numeric" | "decimal" | "text";
-  onCommit: (next: string) => void;
+  onCommit?: (next: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -90,13 +119,13 @@ export function SummaryRow({
   function commit() {
     setEditing(false);
     const next = draft.trim();
-    if (next && next !== value) onCommit(next);
+    if (next && next !== value) onCommit?.(next);
   }
 
   return (
     <div className="flex min-h-9 items-center justify-between gap-4 text-[12.5px]">
       <span className="text-muted">{label}</span>
-      {editing ? (
+      {editing && !readOnly ? (
         <input
           autoFocus
           inputMode={inputMode}
@@ -114,20 +143,135 @@ export function SummaryRow({
           // Sized to the value, not the column: a full-width box is the chrome being avoided.
           className="w-28 border-b border-primary bg-transparent pb-0.5 text-right font-mono text-[12.5px] text-foreground outline-none"
         />
+      ) : readOnly ? (
+        <span className="text-right">
+          <span className="font-numeric text-foreground">
+            {display ?? value}
+            {suffix && <span className="ml-1 text-subtle">{suffix}</span>}
+          </span>
+          {hint && (
+            <span className="mt-0.5 block text-[10px] text-subtle">{hint}</span>
+          )}
+        </span>
       ) : (
         <button
           type="button"
           onClick={open}
-          className="group flex items-center gap-2 text-right transition-colors hover:text-primary"
+          className="group flex items-center gap-2 rounded-sm text-right outline-none transition-colors hover:text-primary focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
         >
           <span className="font-mono text-foreground group-hover:text-primary">
             {display ?? value}
-            {suffix && <span className="ml-1 text-subtle group-hover:text-primary">{suffix}</span>}
+            {suffix && (
+              <span className="ml-1 text-subtle group-hover:text-primary">
+                {suffix}
+              </span>
+            )}
           </span>
-          <span className="text-[10px] uppercase tracking-widest text-subtle group-hover:text-primary">Edit</span>
+          <span className="text-[10px] uppercase tracking-widest text-subtle group-hover:text-primary">
+            Edit
+          </span>
         </button>
       )}
     </div>
+  );
+}
+
+export function SummaryGroup({
+  title,
+  warning,
+  children,
+}: {
+  title: string;
+  warning?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+          {title}
+        </h3>
+        {warning}
+      </div>
+      <div className="divide-y divide-line rounded-card border border-line bg-surface/45 px-4 [&>*]:py-2">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+export function PresetTile({
+  selected,
+  onClick,
+  label,
+  value,
+  size = "md",
+}: {
+  selected: boolean;
+  onClick: () => void;
+  label: string;
+  value?: ReactNode;
+  size?: "sm" | "md";
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      className={`lift relative flex flex-col items-start rounded-card border text-left outline-none focus-visible:shadow-ring ${size === "sm" ? "px-3 py-2" : "px-4 py-3"} ${selected ? "border-primary/60 bg-primary/10" : "border-line-strong bg-surface-raised hover:border-primary/35"}`}
+    >
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+        {label}
+      </span>
+      {value && (
+        <strong className="mt-1 font-numeric text-[13px] text-foreground">
+          {value}
+        </strong>
+      )}
+    </button>
+  );
+}
+
+export function CheckRow({
+  checked,
+  onToggle,
+  primary,
+  secondary,
+  badge,
+}: {
+  checked: boolean;
+  onToggle: (checked: boolean) => void;
+  primary: ReactNode;
+  secondary?: ReactNode;
+  badge?: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <label
+      htmlFor={id}
+      className={`flex cursor-pointer items-center justify-between gap-3 rounded-control border px-3 py-2 outline-none transition-colors focus-within:shadow-ring ${checked ? "border-primary/45 bg-primary/[0.06]" : "border-line bg-surface-raised hover:bg-[var(--color-hover)]"}`}
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <input
+          id={id}
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="h-4 w-4 accent-primary"
+        />
+        <span className="min-w-0">
+          <strong className="block truncate text-[12px] text-foreground">
+            {primary}
+          </strong>
+          {secondary && (
+            <span className="mt-0.5 block truncate text-[10.5px] text-subtle">
+              {secondary}
+            </span>
+          )}
+        </span>
+      </span>
+      {badge}
+    </label>
   );
 }
 
@@ -137,7 +281,14 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   hint?: string;
 }
 
-export function TextField({ label, error, hint, id, className = "", ...props }: TextFieldProps) {
+export function TextField({
+  label,
+  error,
+  hint,
+  id,
+  className = "",
+  ...props
+}: TextFieldProps) {
   const inputId = id ?? useId();
   return (
     <div className="flex flex-col gap-1.5">
@@ -147,7 +298,9 @@ export function TextField({ label, error, hint, id, className = "", ...props }: 
       <input
         id={inputId}
         className={`h-10 rounded-control border bg-surface-raised px-3 text-[13px] text-foreground outline-none transition-colors duration-200 placeholder:text-subtle ${
-          error ? "border-danger bg-danger/5" : "border-line focus:border-primary focus:shadow-ring"
+          error
+            ? "border-danger bg-danger/5"
+            : "border-line focus:border-primary focus:shadow-ring"
         } ${className}`}
         {...props}
       />
@@ -187,7 +340,9 @@ export function PasswordField({
           id={inputId}
           type={visible ? "text" : "password"}
           className={`h-10 w-full rounded-control border bg-surface-raised px-3 pr-10 text-[13px] text-foreground outline-none transition-colors duration-200 placeholder:text-subtle ${
-            error ? "border-danger bg-danger/5" : "border-line focus:border-primary focus:shadow-ring"
+            error
+              ? "border-danger bg-danger/5"
+              : "border-line focus:border-primary focus:shadow-ring"
           } ${className}`}
           {...props}
         />
@@ -195,9 +350,13 @@ export function PasswordField({
           type="button"
           onClick={() => setVisible((v) => !v)}
           aria-label={visible ? "Hide password" : "Show password"}
-          className="absolute right-0 top-0 flex h-10 w-10 items-center justify-center text-subtle hover:text-muted"
+          className="absolute right-0 top-0 flex h-10 w-10 items-center justify-center rounded-control text-subtle outline-none hover:text-muted focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)] active:translate-y-px"
         >
-          {visible ? <EyeOff size={16} strokeWidth={1.6} /> : <Eye size={16} strokeWidth={1.6} />}
+          {visible ? (
+            <EyeOff size={16} strokeWidth={1.6} />
+          ) : (
+            <Eye size={16} strokeWidth={1.6} />
+          )}
         </button>
       </div>
       {error ? (
@@ -209,14 +368,17 @@ export function PasswordField({
   );
 }
 
-interface FieldChipProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
+interface FieldChipProps extends Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  "size"
+> {
   label: string;
 }
 
 /** Compact "LABEL: value" input for tight spaces; use TextField when a hint/error row is needed. */
 export function FieldChip({ label, className = "", ...props }: FieldChipProps) {
   return (
-    <div className="flex items-center gap-1.5 rounded-control border border-line bg-surface-raised px-3 py-2 transition-colors duration-200 focus-within:border-primary">
+    <div className="flex items-center gap-1.5 rounded-control border border-line bg-surface-raised px-3 py-2 transition-colors duration-200 focus-within:border-primary focus-within:shadow-ring">
       <span className="whitespace-nowrap text-[11px] uppercase tracking-wide text-subtle">
         {label}:
       </span>
@@ -228,7 +390,12 @@ export function FieldChip({ label, className = "", ...props }: FieldChipProps) {
   );
 }
 
-const SEGMENTED_GLOW_TRANSITION = { type: "spring" as const, stiffness: 420, damping: 34, mass: 0.6 };
+const SEGMENTED_GLOW_TRANSITION = {
+  type: "spring" as const,
+  stiffness: 420,
+  damping: 34,
+  mass: 0.6,
+};
 
 /** Pill toggle with an animated glow that slides between options; used for unit/mode/protocol switches. */
 export function SegmentedToggle<T extends string>({
@@ -236,11 +403,19 @@ export function SegmentedToggle<T extends string>({
   value,
   onChange,
   options,
+  subdued = false,
 }: {
   groupId: string;
   value: T;
   onChange: (v: T) => void;
-  options: { value: T; label: string; disabled?: boolean; title?: string; suffix?: ReactNode }[];
+  options: {
+    value: T;
+    label: string;
+    disabled?: boolean;
+    title?: string;
+    suffix?: ReactNode;
+  }[];
+  subdued?: boolean;
 }) {
   // No track fill: the page shows straight through, and only the active option is painted.
   return (
@@ -252,15 +427,17 @@ export function SegmentedToggle<T extends string>({
           disabled={opt.disabled}
           onClick={() => onChange(opt.value)}
           title={opt.title}
-          className={`relative flex min-h-[30px] items-center gap-1 whitespace-nowrap rounded-full px-3.5 text-[11.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-            value === opt.value ? "text-primary" : "text-muted hover:text-foreground"
+          className={`relative flex min-h-[30px] items-center gap-1 whitespace-nowrap rounded-full px-3.5 text-[11.5px] font-medium outline-none transition-colors focus-visible:shadow-ring active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 ${
+            value === opt.value
+              ? "text-primary"
+              : "text-muted hover:text-foreground"
           }`}
         >
           {value === opt.value && (
             <motion.span
               layoutId={`toggle-glow-${groupId}`}
               transition={SEGMENTED_GLOW_TRANSITION}
-              className="absolute inset-0 -z-10 rounded-full bg-primary/15 shadow-glow"
+              className={`absolute inset-0 -z-10 rounded-full bg-primary/15 ${subdued ? "" : "shadow-glow"}`}
             />
           )}
           {opt.label}

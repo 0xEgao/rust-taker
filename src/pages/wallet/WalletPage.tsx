@@ -1,9 +1,8 @@
 import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight } from "lucide-react";
-import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Card, ExternalLinkButton, SatsAmount } from "../../components/ui/display";
+import { Card, ExternalLinkButton, SatsAmount, StatStrip } from "../../components/ui/display";
+import { LinkButton, SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { useWalletCacheStore } from "../../store/wallet-cache";
@@ -21,79 +20,8 @@ type TxFilter = "all" | "received" | "sent" | "swap";
 type TxSortKey = "newest" | "amount";
 type SortDir = "asc" | "desc";
 
-function BalanceCard({
-  label,
-  sats,
-  caption,
-  hero = false,
-}: {
-  label: string;
-  sats: number;
-  caption: string;
-  hero?: boolean;
-}) {
-  return (
-    <Card
-      className={`flex min-h-[150px] flex-col justify-between p-5 ${hero ? "min-h-[170px] border-primary/25" : "border-line-strong"}`}
-    >
-      <span className="font-mono text-[10.5px] uppercase tracking-widest text-subtle">{label}</span>
-      <div>
-        <SatsAmount
-          sats={sats}
-          className={hero ? "font-numeric text-[46px] font-bold tracking-tight text-primary" : "font-numeric text-[28px] font-bold text-foreground"}
-        />
-        {hero && <p className="mt-1 text-[13px] text-subtle">≈ {(sats / 1e8).toFixed(8)} BTC</p>}
-      </div>
-      <p className="text-[13px] text-muted">{caption}</p>
-    </Card>
-  );
-}
-
-const TAB_GLOW_TRANSITION = { type: "spring" as const, stiffness: 420, damping: 34, mass: 0.6 };
-
-function TabGroup<T extends string>({
-  options,
-  value,
-  onChange,
-  groupId,
-}: {
-  options: { value: T; label: string; count?: number }[];
-  value: T;
-  onChange: (v: T) => void;
-  groupId: string;
-}) {
-  return (
-    <div className="inline-flex items-center gap-1 rounded-full p-1">
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          onClick={() => onChange(opt.value)}
-          className={`relative min-h-[30px] whitespace-nowrap rounded-full px-3.5 text-[11.5px] font-medium transition-colors ${
-            value === opt.value ? "text-primary" : "text-muted hover:text-foreground"
-          }`}
-        >
-          {value === opt.value && (
-            <motion.span
-              layoutId={`tabglow-${groupId}`}
-              transition={TAB_GLOW_TRANSITION}
-              className="absolute inset-0 -z-10 rounded-full bg-primary/15 shadow-[0_0_12px_rgba(90,140,255,0.35)]"
-            />
-          )}
-          {opt.label}
-          {opt.count !== undefined && (
-            <span className={`ml-1 font-mono text-[10px] ${value === opt.value ? "text-primary/80" : "text-subtle"}`}>
-              {opt.count}
-            </span>
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 const SCRIPT_PILL_CLASS: Record<string, string> = {
-  Taproot: "text-[#b990ff] border-[#b990ff]/35 bg-[#b990ff]/10",
+  Taproot: "text-maker border-maker/35 bg-maker/10",
   SegWit: "text-primary border-primary/35 bg-primary/[0.12]",
 };
 
@@ -225,7 +153,7 @@ export function WalletPage() {
         <span className="font-header text-[13px] uppercase tracking-widest text-muted">Loading wallet…</span>
         <span className="relative h-[2px] w-48 overflow-hidden rounded-pill bg-line">
           {/* transform-origin belongs to the keyframes, which flip it mid-cycle. */}
-          <span className="absolute inset-y-0 left-0 w-full animate-[status-fill_1.9s_ease-in-out_infinite] bg-success shadow-[0_0_8px_rgba(49,209,88,0.7)]" />
+          <span className="absolute inset-y-0 left-0 w-full animate-[status-fill_1.9s_ease-in-out_infinite] bg-success shadow-[0_0_8px_color-mix(in_oklab,var(--color-success)_70%,transparent)]" />
         </span>
       </div>
     );
@@ -238,7 +166,7 @@ export function WalletPage() {
         <p className="max-w-md text-[13px] text-muted">{initialError ?? "Could not read the saved wallet snapshot."}</p>
         <button
           type="button"
-          className="rounded-control border border-line-strong px-4 py-2 text-[12px] text-foreground hover:bg-white/[0.04]"
+          className="rounded-control border border-line-strong px-4 py-2 text-[12px] text-foreground hover:bg-[var(--color-hover)]"
           onClick={() => {
             setInitialError(null);
             setInitialLoading(true);
@@ -261,15 +189,15 @@ export function WalletPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden px-8 pb-8 pt-2">
+    <div className="h-full overflow-y-auto px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center gap-2 text-[13px] text-subtle">
         <span
           className={`h-[7px] w-[7px] rounded-full ${
             refreshing
-              ? "animate-pulse bg-warning shadow-[0_0_8px_rgba(245,196,81,0.7)]"
+              ? "animate-pulse bg-warning shadow-[0_0_8px_color-mix(in_oklab,var(--color-warning)_70%,transparent)]"
               : syncStatus === "error"
-                ? "bg-danger shadow-[0_0_8px_rgba(255,69,90,0.7)]"
-                : "bg-success shadow-[0_0_8px_rgba(49,209,88,0.7)]"
+                ? "bg-danger shadow-[0_0_8px_color-mix(in_oklab,var(--color-danger)_70%,transparent)]"
+                : "bg-success shadow-[0_0_8px_color-mix(in_oklab,var(--color-success)_70%,transparent)]"
           }`}
         />
         <span title={syncError ?? undefined}>
@@ -300,43 +228,48 @@ export function WalletPage() {
               bitcoin into it before starting a swap.
             </span>
           </span>
-          <Link
-            to="/send"
-            className="inline-flex h-8 items-center gap-1.5 rounded-control bg-primary px-3.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover"
-          >
+          <LinkButton to="/send" size="sm">
             Receive bitcoin
-          </Link>
+          </LinkButton>
         </div>
       )}
 
-      <section className="mt-5 grid shrink-0 grid-cols-[minmax(320px,1.45fr)_repeat(3,minmax(210px,1fr))] gap-3">
-        <BalanceCard label="Total Balance" sats={totalBalance} caption="Swap + Regular Coins" hero />
-        <BalanceCard label="Swaps" sats={balances?.swap ?? 0} caption="Coins Received by swap txs" />
-        <BalanceCard label="Regular" sats={balances?.regular ?? 0} caption="Coins Received by regular txs" />
-        <BalanceCard label="Contracts" sats={balances?.contract ?? 0} caption="Coins stuck in HTLC" />
-      </section>
+      <StatStrip
+        className="mt-5 shrink-0"
+        items={[
+          {
+            label: "Total balance",
+            value: <SatsAmount sats={totalBalance} />,
+            detail: `≈ ${(totalBalance / 1e8).toFixed(8)} BTC`,
+            tone: "primary",
+          },
+          { label: "Swaps", value: <SatsAmount sats={balances?.swap ?? 0} />, detail: "received by swap txs" },
+          { label: "Regular", value: <SatsAmount sats={balances?.regular ?? 0} />, detail: "received by regular txs" },
+          { label: "Contracts", value: <SatsAmount sats={balances?.contract ?? 0} />, detail: "stuck in HTLC" },
+        ]}
+      />
 
-      <section className="mt-3 grid min-h-0 flex-1 grid-cols-[minmax(0,1.46fr)_minmax(410px,1fr)] gap-3">
-        <Card className="flex min-h-0 flex-col border-line-strong">
+      <section className="mt-3 grid grid-cols-[minmax(0,1.46fr)_minmax(410px,1fr)] gap-3">
+        <Card className="flex min-h-[min(52vh,470px)] max-h-[min(68vh,680px)] flex-col border-line-strong">
           <header className="flex items-baseline gap-3 border-b border-line px-4.5 py-4">
             <h3 className="font-header text-[15px] font-bold text-foreground">UTXOs</h3>
-            <span className="font-mono text-[10.5px] uppercase tracking-widest text-subtle">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
               {utxoCounts.all} unspent
             </span>
           </header>
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3.5">
-            <TabGroup
+            <SegmentedToggle
               groupId="utxo-filter"
               value={utxoFilter}
               onChange={setUtxoFilter}
               options={[
-                { value: "all", label: "All", count: utxoCounts.all },
-                { value: "regular", label: "Regular", count: utxoCounts.regular },
-                { value: "contract", label: "Contract", count: utxoCounts.contract },
-                { value: "swap", label: "Swap", count: utxoCounts.swap },
+                { value: "all", label: "All", suffix: <span>{utxoCounts.all}</span> },
+                { value: "regular", label: "Regular", suffix: <span>{utxoCounts.regular}</span> },
+                { value: "contract", label: "Contract", suffix: <span>{utxoCounts.contract}</span> },
+                { value: "swap", label: "Swap", suffix: <span>{utxoCounts.swap}</span> },
               ]}
             />
-            <div className="grid grid-cols-[1.35fr_0.58fr_0.58fr_1.1fr_52px] gap-3 px-3 font-mono text-[10px] uppercase tracking-widest text-subtle">
+            <div className="grid grid-cols-[1.35fr_0.58fr_0.58fr_1.1fr_52px] gap-3 px-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
               <span>Txid . Amount</span>
               <span>Script</span>
               <span>Type</span>
@@ -353,7 +286,7 @@ export function WalletPage() {
                 return (
                   <div
                     key={`${u.txid}:${u.vout}`}
-                    className="grid min-h-[58px] grid-cols-[1.35fr_0.58fr_0.58fr_1.1fr_52px] items-center gap-3 px-3 py-2.5 transition-colors duration-200 hover:bg-white/[0.04]"
+                    className="grid min-h-[58px] grid-cols-[1.35fr_0.58fr_0.58fr_1.1fr_52px] items-center gap-3 px-3 py-2.5 transition-colors duration-200 hover:bg-[var(--color-hover)]"
                   >
                     <span className="flex min-w-0 flex-col gap-1">
                       <span className="truncate font-mono text-[12px] text-muted">
@@ -372,16 +305,16 @@ export function WalletPage() {
           </div>
         </Card>
 
-        <Card className="flex min-h-0 flex-col border-line-strong">
+        <Card className="flex min-h-[min(52vh,470px)] max-h-[min(68vh,680px)] flex-col border-line-strong">
           <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-4.5 py-4">
             <div className="flex items-baseline gap-3">
               <h3 className="font-header text-[15px] font-bold text-foreground">Recent transactions</h3>
-              <span className="font-mono text-[10.5px] uppercase tracking-widest text-subtle">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
                 {transactions.length} total
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <TabGroup
+              <SegmentedToggle
                 groupId="tx-filter"
                 value={txFilter}
                 onChange={setTxFilter}
@@ -392,28 +325,7 @@ export function WalletPage() {
                   { value: "swap", label: "Swaps" },
                 ]}
               />
-              <div className="inline-flex items-center gap-1 rounded-full p-1">
-                {(["newest", "amount"] as TxSortKey[]).map((key) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => toggleSort(key)}
-                    className={`relative flex min-h-[30px] items-center gap-1 whitespace-nowrap rounded-full px-3.5 text-[11.5px] font-medium transition-colors ${
-                      txSort === key ? "text-primary" : "text-muted hover:text-foreground"
-                    }`}
-                  >
-                    {txSort === key && (
-                      <motion.span
-                        layoutId="tabglow-tx-sort"
-                        transition={TAB_GLOW_TRANSITION}
-                        className="absolute inset-0 -z-10 rounded-full bg-primary/15 shadow-[0_0_12px_rgba(90,140,255,0.35)]"
-                      />
-                    )}
-                    {key === "newest" ? "Newest" : "Amount"}
-                    <span>{sortDir[key] === "desc" ? "↓" : "↑"}</span>
-                  </button>
-                ))}
-              </div>
+              <SortToggle groupId="tx-sort" sortKey={txSort} sortDir={sortDir} onChange={toggleSort} options={[{ key: "newest", label: "Newest" }, { key: "amount", label: "Amount" }]} />
             </div>
           </header>
           <div className="flex min-h-0 flex-1 flex-col divide-y divide-line overflow-y-auto px-3.5">
@@ -438,8 +350,8 @@ export function WalletPage() {
                   role="button"
                   tabIndex={0}
                   onClick={() => void openUrl(explorerTxUrl(tx.txid))}
-                  onKeyDown={(e) => e.key === "Enter" && openUrl(explorerTxUrl(tx.txid))}
-                  className="grid min-h-[58px] cursor-pointer grid-cols-[38px_minmax(0,1fr)_auto_52px] items-center gap-3 px-0 py-2.5 text-left transition-colors duration-200 hover:bg-white/[0.04]"
+                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && openUrl(explorerTxUrl(tx.txid))}
+                  className="grid min-h-[58px] cursor-pointer grid-cols-[38px_minmax(0,1fr)_auto_52px] items-center gap-3 px-0 py-2.5 text-left outline-none transition-colors duration-200 hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
                 >
                   <span
                     className={`flex h-[34px] w-[34px] items-center justify-center rounded-control border ${

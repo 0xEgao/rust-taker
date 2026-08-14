@@ -1,11 +1,11 @@
-import { AlertTriangle, ArrowLeft, CheckCircle2, RefreshCw, Timer, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, RefreshCw, Timer, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
 import type { MakerFeeInfo, Offer, SwapReportDetail, SwapStatus } from "../../api/types";
 import { isAppError } from "../../api/types";
-import { Card, CopyButton, Disclosure, ExternalLinkButton, Modal, SatsAmount, SatsGlyph } from "../../components/ui/display";
+import { BackButton, Card, CopyButton, Disclosure, ExternalLinkButton, IndeterminateBar, Modal, SatsAmount } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { formatDuration, SATS_PER_BTC, SWAP_STATUS_ICON, SWAP_STATUS_TEXT_TONE, truncateMiddle } from "../../lib/wallet-format";
 
@@ -18,8 +18,8 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
 
 // One accent per hop so a funding tx is visually tied to the maker it funded, matching the
 // per-maker colours the old app used in this same list.
-const HOP_ACCENTS = ["#518def", "#3b82f6", "#a855f7", "#06b6d4", "#10b981"];
-const OUTGOING_ACCENT = "#f5c451";
+const HOP_ACCENTS = ["var(--color-primary)", "var(--color-info)", "var(--color-maker)", "var(--color-success)"];
+const OUTGOING_ACCENT = "var(--color-warning)";
 
 function satsToBtc(sats: number): string {
   return (sats / SATS_PER_BTC).toFixed(8);
@@ -71,7 +71,7 @@ function TxidRow({ label, txid }: { label: string; txid: string }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2">
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-[10.5px] uppercase tracking-wide text-subtle">{label}</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{label}</span>
         <span className="truncate font-mono text-[11.5px] text-muted">{truncateMiddle(txid, 12, 8)}</span>
       </span>
       <ExternalLinkButton txid={txid} />
@@ -109,7 +109,7 @@ function JsonEntries({ value, depth = 0 }: { value: unknown; depth?: number }) {
     <div className="flex flex-col gap-1.5" style={{ marginLeft: depth > 0 ? 12 : 0 }}>
       {entries.map(([key, val]) => (
         <div key={key} className="flex flex-col gap-0.5">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-subtle">{key}</span>
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{key}</span>
           <JsonEntries value={val} depth={depth + 1} />
         </div>
       ))}
@@ -198,14 +198,7 @@ export function SwapReportPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center gap-3 pb-4">
-        <button
-          type="button"
-          onClick={() => navigate("/swap/reports")}
-          title="Back to Swap Reports"
-          className="flex h-9 w-9 flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-line-strong hover:text-foreground"
-        >
-          <ArrowLeft size={16} strokeWidth={1.8} />
-        </button>
+        <BackButton to="/swap/reports" label="Back to Swap Reports" />
         <div className="flex items-center gap-2.5">
           <Icon size={22} strokeWidth={2} className={SWAP_STATUS_TEXT_TONE[report.status]} />
           <div>
@@ -228,16 +221,10 @@ export function SwapReportPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.3fr)_1fr]">
         <div className="flex flex-col gap-4">
           <Card className="grid justify-items-center border-line-strong px-5 py-14 text-center">
-            <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-subtle">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
               {isFailure ? "Attempted Amount" : "Amount Swapped"}
             </span>
-            {/* Not SatsAmount: its glyph is 0.72em, which at hero size dwarfs the digits. */}
-            <div className="my-4 flex items-baseline justify-center gap-3 font-mono text-[clamp(38px,6vw,58px)] leading-none text-foreground">
-              <span>{Math.round(report.outgoingAmountSats).toLocaleString()}</span>
-              <span className="text-[0.5em]">
-                <SatsGlyph className="text-subtle" />
-              </span>
-            </div>
+            <SatsAmount sats={report.outgoingAmountSats} glyphScale={0.5} className="my-4 text-[clamp(38px,6vw,58px)] leading-none text-foreground" />
             <p className="mb-6 font-mono text-[14px] text-muted">≈ {satsToBtc(report.outgoingAmountSats)} BTC</p>
             <div className="flex flex-wrap items-center justify-center gap-2.5">
               <span className="inline-flex items-center gap-2 rounded-full border border-primary/45 bg-primary/[0.12] px-4.5 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-primary-hover">
@@ -290,14 +277,14 @@ export function SwapReportPage() {
               <SatsAmount sats={report.miningFeeSats} />
             </Row>
             <div className="mt-1 border-t border-dashed border-line pt-3.5">
-              <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-subtle">Total fee</span>
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total fee</span>
               <div className="mt-2">
                 <SatsAmount sats={report.feePaidSats} className="font-mono text-[26px] leading-none text-foreground" />
               </div>
               <p className="mt-2 font-mono text-[12px] text-muted">{satsToBtc(report.feePaidSats)} BTC</p>
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-dashed border-line pt-3.5">
-              <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-subtle">Of swap amount</span>
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Of swap amount</span>
               <strong className="font-mono text-[15px] font-bold text-foreground">{report.feePercentage.toFixed(3)}%</strong>
             </div>
           </SectionCard>
@@ -311,7 +298,7 @@ export function SwapReportPage() {
                   key={address}
                   type="button"
                   onClick={() => openMakerModal({ index: i, address, fee })}
-                  className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3.5 py-3 text-left transition-colors hover:border-line-strong hover:bg-white/[0.04]"
+                  className="lift flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3.5 py-3 text-left outline-none hover:border-line-strong hover:bg-[var(--color-hover)] focus-visible:shadow-ring"
                 >
                   <span className="flex min-w-0 flex-col gap-0.5">
                     <span className="font-mono text-[11px] text-foreground">Maker {i + 1}</span>
@@ -329,7 +316,7 @@ export function SwapReportPage() {
                 {provenOutpoint && (
                   <div className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3.5 py-2">
                     <span className="flex min-w-0 flex-col gap-0.5">
-                      <span className="text-[10px] uppercase tracking-wide text-subtle">Proven outpoint</span>
+                      <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Proven outpoint</span>
                       <span className="truncate font-mono text-[11px] text-muted">
                         {truncateMiddle(provenOutpoint.txid, 10, 6)}:{provenOutpoint.vout}
                       </span>
@@ -344,9 +331,7 @@ export function SwapReportPage() {
                 </div>
                 {verifying && (
                   <div className="flex flex-col gap-2">
-                    <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]">
-                      <span className="block h-full w-full origin-left animate-[market-progress_1.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-primary via-primary-hover to-primary" />
-                    </div>
+                    <IndeterminateBar />
                     <span className="text-[11.5px] text-subtle">Fetching the contract transaction from the chain…</span>
                   </div>
                 )}
@@ -406,7 +391,7 @@ export function SwapReportPage() {
           )}
 
           <div className="mt-1 border-t border-dashed border-line pt-3">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-subtle">Fidelity Bond</span>
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Fidelity Bond</span>
             {(() => {
               const bond = offerByAddress[selectedMaker.address];
               return bond ? (
@@ -414,7 +399,7 @@ export function SwapReportPage() {
                   <Row label="Bond amount">
                     <SatsAmount sats={bond.bondAmountSats} />
                   </Row>
-                  <Row label="Locktime height">{bond.bondLocktimeHeight}</Row>
+                  <Row label="Locktime height">Block {bond.bondLocktimeHeight.toLocaleString()}</Row>
                   <Row label="Status">{bond.bondIsSpent ? "Spent" : "Unspent"}</Row>
                   <TxidRow label="Bond Transaction" txid={bond.bondTxid} />
                 </div>
@@ -427,7 +412,7 @@ export function SwapReportPage() {
           </div>
 
           <div className="mt-1 border-t border-dashed border-line pt-3">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-subtle">Transactions</span>
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Transactions</span>
             <div className="mt-2 flex flex-col gap-1.5">
               {(report.fundingTxids[selectedMaker.index] ?? []).map((txid, i) => (
                 <TxidRow key={i} label={`Funding ${i + 1}`} txid={txid} />

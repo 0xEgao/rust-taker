@@ -1,5 +1,5 @@
-import { Check, CheckCircle2, RefreshCw, Settings, X, XCircle } from "lucide-react";
-import { motion } from "framer-motion";
+import { ArrowLeft, Check, CheckCircle2, RefreshCw, Server, Settings, X, XCircle } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Background } from "../ui/layout";
@@ -7,30 +7,40 @@ import { useHeaderActionsStore } from "../../store/header-actions";
 import { useToastStore } from "../../store/toast";
 import { REFRESH_INTERVAL_MS } from "../../store/wallet-cache";
 import { refreshWalletCache } from "../../lib/wallet-sync";
+import { IconButton } from "../ui/display";
 
-const NAV_ITEMS: { path: string; label: string; d: string }[] = [
+const TAKER_NAV_ITEMS: { path: string; label: string; d: string }[] = [
   { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
   { path: "/market", label: "Market", d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
-  { path: "/maker", label: "Maker", d: '<circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/>' },
   { path: "/send", label: "Send", d: '<path d="M7 17L17 7M9 7h8v8"/>' },
   { path: "/swap", label: "Swap", d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
 ];
 
-function Logo() {
+function Logo({ makerMode }: { makerMode: boolean }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-on-primary">
-        C
-      </div>
-      <div className="min-w-0 leading-tight">
-        <div className="font-header text-[15px] font-bold text-foreground">Coinswap</div>
-        <div className="text-[11px] text-subtle">Taker &amp; Maker</div>
-      </div>
-    </div>
+    <NavLink
+      to="/"
+      title={makerMode ? "Return to Taker wallet" : "Open wallet"}
+      className="group flex items-center gap-3 rounded-control outline-none focus-visible:shadow-ring"
+    >
+      {makerMode ? (
+        <span className="flex items-center gap-2 font-header text-[15px] font-bold text-foreground transition-colors group-hover:text-primary">
+          <ArrowLeft size={16} strokeWidth={2} className="text-primary" /> OpenSwap
+        </span>
+      ) : (
+        <>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.24),0_6px_16px_-8px_color-mix(in_oklab,var(--color-primary)_60%,transparent)]">C</div>
+          <div className="min-w-0 leading-tight">
+            <div className="font-header text-[15px] font-bold text-foreground">OpenSwap</div>
+            <div className="text-[11px] text-subtle">Taker Wallet</div>
+          </div>
+        </>
+      )}
+    </NavLink>
   );
 }
 
-function TopNav() {
+function TopNav({ makerMode }: { makerMode: boolean }) {
   const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
   const refreshing = useHeaderActionsStore((s) => s.refreshing);
   const [justRefreshed, setJustRefreshed] = useState(false);
@@ -48,23 +58,27 @@ function TopNav() {
 
   return (
     <header
-      className="sticky top-0 z-30 flex flex-none items-center justify-between gap-6 px-8 py-5"
+      className="sticky top-0 z-30 grid flex-none grid-cols-[1fr_auto_1fr] items-center gap-6 px-8 py-5"
       style={{
         background:
-          "linear-gradient(to bottom, rgba(11,14,19,0.92) 0%, rgba(11,14,19,0.92) 65%, rgba(11,14,19,0) 100%)",
+          "linear-gradient(to bottom, color-mix(in oklab, var(--color-bg) 92%, transparent) 0%, color-mix(in oklab, var(--color-bg) 92%, transparent) 65%, transparent 100%)",
         backdropFilter: "blur(6px)",
       }}
     >
-      <Logo />
+      <Logo makerMode={makerMode} />
 
       <nav className="flex items-center gap-1" aria-label="Main navigation">
-        {NAV_ITEMS.map((item) => (
+        {makerMode ? (
+          <div className="flex items-center gap-2 rounded-pill border border-primary/25 bg-primary/[0.07] px-3.5 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-primary">
+            <Server size={13} strokeWidth={1.9} /> Maker Dashboard
+          </div>
+        ) : TAKER_NAV_ITEMS.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}
             end={item.path === "/"}
             className={({ isActive }) =>
-              `relative flex items-center gap-2 rounded-control px-3.5 py-2 text-[13.5px] transition-colors duration-200 ${
+              `relative flex items-center gap-2 rounded-control px-3.5 py-2 text-[13.5px] outline-none transition-colors duration-200 focus-visible:shadow-ring active:translate-y-px ${
                 isActive ? "font-semibold text-primary" : "font-medium text-muted hover:text-foreground"
               }`
             }
@@ -107,36 +121,45 @@ function TopNav() {
             )}
           </NavLink>
         ))}
+        {!makerMode && (
+          <>
+            <span className="mx-2 h-5 w-px bg-line-strong" aria-hidden="true" />
+            <NavLink
+              to="/maker"
+              className="lift flex items-center gap-2 rounded-control border border-maker/25 bg-maker/[0.07] px-3.5 py-2 text-[12.5px] font-semibold text-maker outline-none hover:border-maker/45 hover:bg-maker/[0.12] focus-visible:shadow-ring"
+            >
+              <Server size={14} strokeWidth={1.9} />
+              Maker Console
+              <span aria-hidden="true">→</span>
+            </NavLink>
+          </>
+        )}
       </nav>
 
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
+      {!makerMode ? <div className="flex items-center justify-self-end gap-2">
+        <IconButton
           onClick={() => onRefresh?.()}
           disabled={!onRefresh}
-          title="Refresh"
-          className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-40 ${
-            justRefreshed ? "text-success" : "text-muted hover:text-foreground"
-          }`}
-        >
-          {justRefreshed ? (
+          label="Refresh"
+          className={justRefreshed ? "text-success" : ""}
+          icon={justRefreshed ? (
             <Check size={16} strokeWidth={2} />
           ) : (
             <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
           )}
-        </button>
+        />
         <NavLink
           to="/settings"
           title="Settings"
           className={({ isActive }) =>
-            `flex h-9 w-9 items-center justify-center rounded-full transition-colors duration-200 ${
+            `flex h-9 w-9 items-center justify-center rounded-control border border-line bg-surface-raised shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] outline-none transition-colors duration-200 focus-visible:shadow-ring active:translate-y-px ${
               isActive ? "text-primary" : "text-muted hover:text-foreground"
             }`
           }
         >
           <Settings size={16} strokeWidth={1.8} />
         </NavLink>
-      </div>
+      </div> : <div aria-hidden="true" />}
     </header>
   );
 }
@@ -148,11 +171,16 @@ function ToastStack() {
 
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-50">
+      <AnimatePresence>
       {toasts.map((t, i) => (
-        <div
+        <motion.div
           key={t.id}
-          style={{ transform: `translateY(${i * 56}px)` }}
-          className={`pointer-events-auto absolute right-0 top-0 flex w-[420px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-card border px-4 py-3.5 transition-transform ${
+          initial={{ opacity: 0, x: 18, scale: 0.98 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, x: 12, scale: 0.98 }}
+          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          style={{ top: i * 64 }}
+          className={`raised pointer-events-auto absolute right-0 flex w-[420px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-card border px-4 py-3.5 ${
             t.kind === "error"
               ? "border-danger/32 bg-danger/[0.18] text-foreground"
               : "border-success/32 bg-success/[0.14] text-foreground"
@@ -167,17 +195,20 @@ function ToastStack() {
             <strong className="block">{t.kind === "error" ? "Error" : "Success"}</strong>
             <span className="mt-0.5 block break-words text-[13px] text-muted">{t.message}</span>
           </div>
-          <button type="button" onClick={() => dismiss(t.id)} className="ml-2 flex-none text-subtle hover:text-foreground">
+          <button type="button" aria-label="Dismiss notification" onClick={() => dismiss(t.id)} className="ml-2 flex-none rounded-sm text-subtle outline-none hover:text-foreground focus-visible:shadow-ring active:translate-y-px">
             <X size={14} strokeWidth={2} />
           </button>
-        </div>
+        </motion.div>
       ))}
+      </AnimatePresence>
     </div>
   );
 }
 
 export function AppShell() {
   const { pathname } = useLocation();
+  const reduceMotion = useReducedMotion();
+  const makerMode = pathname.startsWith("/maker");
 
   // Refresh regardless of the active route so Send/Swap never depend on the
   // Wallet page having been mounted recently.
@@ -186,23 +217,46 @@ export function AppShell() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    const onScroll = () => {
+      document.documentElement.classList.add("is-scrolling");
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => document.documentElement.classList.remove("is-scrolling"), 120);
+    };
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      if (settleTimer) clearTimeout(settleTimer);
+      document.documentElement.classList.remove("is-scrolling");
+    };
+  }, []);
+
   return (
     // Scopes the accent to the whole maker side, nav item included, so crossing between
     // maker screens never crosses a colour boundary.
-    <div className="relative h-screen" data-accent={pathname.startsWith("/maker") ? "maker" : undefined}>
+    <div className="relative h-screen" data-accent={makerMode ? "maker" : undefined}>
       <Background />
       <div className="relative flex h-screen flex-col">
-        <TopNav />
-        <main className="min-h-0 min-w-0 flex-1">
-          {/* Keyed on the path so every route change replays the entrance. No AnimatePresence:
-              waiting for an exit would delay the new page, and the point is only to mark the
-              switch. Pages own their scroll, so this stays a full-height passthrough. */}
+        <TopNav makerMode={makerMode} />
+        <main className="flex min-h-0 min-w-0 flex-1">
+          {/* Keyed on the path so every route change gets a deliberate upward reveal. The new
+              route enters immediately; avoiding a blocking exit keeps navigation responsive. */}
           <motion.div
             key={pathname}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
-            className="h-full"
+            initial={
+              reduceMotion
+                ? { opacity: 1 }
+                : { opacity: 0, y: 30, scale: 0.992, filter: "blur(5px)" }
+            }
+            animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+            transition={
+              reduceMotion
+                ? { duration: 0 }
+                : { duration: 0.62, ease: [0.16, 1, 0.3, 1] }
+            }
+            style={{ transformOrigin: "50% 0%", willChange: "transform, opacity, filter" }}
+            className="h-full min-w-0 flex-1"
           >
             <Outlet />
           </motion.div>

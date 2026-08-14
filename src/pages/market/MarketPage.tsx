@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOffers, pollMaker, removeMaker, syncOfferbook } from "../../api/commands";
 import type { Maker } from "../../api/types";
-import { Card, Modal, SatsAmount } from "../../components/ui/display";
+import { Card, IndeterminateBar, Modal, SatsAmount, StatStrip, Tooltip } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { estimateMakerFee, formatTorEndpoint } from "../../lib/market-format";
 import { explorerTxUrl } from "../../lib/wallet-format";
@@ -23,9 +23,9 @@ const OFFERBOOK_REREAD_MS = 60 * 1000;
 
 // Muted (desaturated) variants of the success/warning/danger tokens, one per maker status.
 const STATUS_TAB_CLASS: Record<MakerStatus, { text: string; glow: string }> = {
-  good: { text: "text-[#45bd62]", glow: "bg-[#45bd62]/15 shadow-[0_0_12px_rgba(69,189,98,0.35)]" },
-  bad: { text: "text-[#e67376]", glow: "bg-[#e67376]/15 shadow-[0_0_12px_rgba(230,115,118,0.35)]" },
-  unresponsive: { text: "text-[#dcba69]", glow: "bg-[#dcba69]/15 shadow-[0_0_12px_rgba(220,186,105,0.35)]" },
+  good: { text: "text-success", glow: "bg-success/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-success)_35%,transparent)]" },
+  bad: { text: "text-danger", glow: "bg-danger/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-danger)_35%,transparent)]" },
+  unresponsive: { text: "text-warning", glow: "bg-warning/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-warning)_35%,transparent)]" },
 };
 
 // Address/Fee/Swap range/Fidelity Bond/Actions gate whether a maker is usable at all, so they stay
@@ -57,16 +57,6 @@ const FEE_REFERENCE_TOOLTIP =
   `Estimated total fee for a ${FEE_REFERENCE_SCENARIO.amountSats.toLocaleString()} sat swap as the ` +
   `first hop of a ${FEE_REFERENCE_SCENARIO.totalMakers}-maker route (base + liquidity + time fee). ` +
   "A fixed baseline for comparing makers, not your actual quote — use Calculate for that.";
-
-function StatCard({ label, value, caption }: { label: string; value: React.ReactNode; caption: string }) {
-  return (
-    <Card className="flex min-h-[128px] flex-col justify-center gap-1.5 border-line-strong p-5">
-      <span className="font-mono text-[10.5px] uppercase tracking-widest text-subtle">{label}</span>
-      <div className="text-[26px] font-bold text-foreground">{value}</div>
-      <p className="text-[13px] text-muted">{caption}</p>
-    </Card>
-  );
-}
 
 function SortHeader({
   label,
@@ -114,7 +104,7 @@ function TooltipButton({
   children: React.ReactNode;
 }) {
   return (
-    <div className="group relative">
+    <Tooltip content={tooltip}>
       <button
         type="button"
         onClick={onClick}
@@ -122,15 +112,12 @@ function TooltipButton({
         className={`min-h-7 whitespace-nowrap rounded-full border px-2.5 text-[11.5px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
           danger
             ? "border-line text-muted hover:border-danger/52 hover:bg-danger/10 hover:text-danger"
-            : "border-line text-muted hover:border-line-strong hover:bg-white/5 hover:text-foreground"
+            : "border-line text-muted hover:border-line-strong hover:bg-[var(--color-hover)] hover:text-foreground"
         }`}
       >
         {children}
       </button>
-      <div className="pointer-events-none absolute left-1/2 top-[calc(100%+9px)] z-20 w-max max-w-[260px] -translate-x-1/2 translate-y-1.5 rounded-lg border border-line-strong bg-bg px-2.5 py-2 text-left text-[11.5px] font-medium leading-snug text-foreground opacity-0 shadow-lg transition-all group-hover:translate-y-0 group-hover:opacity-100">
-        {tooltip}
-      </div>
-    </div>
+    </Tooltip>
   );
 }
 
@@ -204,40 +191,40 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
       </p>
 
       <label className="flex flex-col gap-2">
-        <span className="font-mono text-[10px] font-extrabold uppercase tracking-widest text-subtle">Swap Amount</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Swap Amount</span>
         <input
           type="number"
           min={0}
           value={amount}
           onChange={(e) => setAmount(Math.max(0, Math.round(Number(e.target.value))))}
-          className="h-[46px] rounded-lg border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65"
+          className="h-[46px] rounded-card border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65 focus:shadow-ring"
         />
       </label>
       <div className="mt-1.5 flex items-center justify-between font-mono text-[11px] text-subtle">
         <span>Maker range</span>
         <strong className="font-extrabold text-muted">
-          {offer.minSize.toLocaleString()} - {offer.maxSize.toLocaleString()} sats
+          <SatsAmount sats={offer.minSize} /> – <SatsAmount sats={offer.maxSize} />
         </strong>
       </div>
 
       <label className="mt-4 flex flex-col gap-2">
-        <span className="font-mono text-[10px] font-extrabold uppercase tracking-widest text-subtle">Maker Position in Circuit (n)</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Maker Position in Circuit (n)</span>
         <input
           type="number"
           min={1}
           value={position}
           onChange={(e) => setPosition(Number(e.target.value))}
-          className="h-[46px] rounded-lg border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65"
+          className="h-[46px] rounded-card border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65 focus:shadow-ring"
         />
       </label>
       <label className="mt-4 flex flex-col gap-2">
-        <span className="font-mono text-[10px] font-extrabold uppercase tracking-widest text-subtle">Total Makers in Swap (m)</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total Makers in Swap (m)</span>
         <input
           type="number"
           min={1}
           value={totalMakers}
           onChange={(e) => setTotalMakers(Number(e.target.value))}
-          className="h-[46px] rounded-lg border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65"
+          className="h-[46px] rounded-card border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65 focus:shadow-ring"
         />
       </label>
       <div className="mt-1.5 flex items-center justify-between font-mono text-[11px] text-subtle">
@@ -248,7 +235,7 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
         <p className="mt-1.5 text-[11px] text-danger">Enter positive maker counts where n is not greater than m.</p>
       )}
 
-      <div className="mt-4 rounded-lg border border-primary/28 bg-primary/[0.08] p-3.5 font-mono text-[12px] font-bold leading-relaxed text-foreground">
+      <div className="mt-4 rounded-card border border-primary/28 bg-primary/[0.08] p-3.5 font-mono text-[12px] font-bold leading-relaxed text-foreground">
         <span className="mb-1 block text-primary">Formula</span>
         <strong>Total Fee</strong> = Base Fee + (Swap Amount x Liquidity Fee) + (Refund Locktime x Swap Amount x Time Rate)
       </div>
@@ -257,25 +244,25 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 border-b border-dashed border-white/10 py-2">
           <span className="font-mono text-[10px] text-subtle">Base Fee</span>
           <strong className="font-mono text-[14px] font-extrabold text-foreground">
-            {(estimate?.baseFee ?? 0).toLocaleString()} sats
+            <SatsAmount sats={estimate?.baseFee ?? 0} />
           </strong>
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 border-b border-dashed border-white/10 py-2">
           <span className="font-mono text-[10px] text-subtle">Liquidity Fee</span>
           <strong className="font-mono text-[14px] font-extrabold text-foreground">
-            {Math.round(estimate?.liquidityFee ?? 0).toLocaleString()} sats
+            <SatsAmount sats={estimate?.liquidityFee ?? 0} />
           </strong>
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 border-b border-dashed border-white/10 py-2">
           <span className="font-mono text-[10px] text-subtle">Time Fee</span>
           <strong className="font-mono text-[14px] font-extrabold text-foreground">
-            {Math.round(estimate?.timeFee ?? 0).toLocaleString()} sats
+            <SatsAmount sats={estimate?.timeFee ?? 0} />
           </strong>
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 pt-3">
           <span className="font-mono text-[10px] text-subtle">Total Fee</span>
           <strong className="font-mono text-[19px] font-extrabold text-primary">
-            {Math.round(estimate?.totalFee ?? 0).toLocaleString()} sats
+            <SatsAmount sats={estimate?.totalFee ?? 0} />
           </strong>
           <small className="col-span-2 font-mono text-[10px] text-subtle">
             {estimate ? `${totalPercent.toFixed(4)}% of swap amount` : "Enter position to calculate total fee"}
@@ -283,7 +270,7 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
         </div>
       </div>
 
-      <p className="mt-3.5 font-mono text-[10px] uppercase tracking-widest text-subtle">
+      <p className="mt-3.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
         Estimates exclude on-chain miner fees.
       </p>
     </Modal>
@@ -501,31 +488,29 @@ export function MarketPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden p-8">
+    <div className="h-full overflow-y-auto p-8">
       <header className="flex shrink-0 items-start justify-between gap-4">
         <div>
-          <h1 className="text-[34px] font-bold leading-none tracking-tight text-foreground">Market</h1>
+          <h1 className="font-header text-[26px] font-bold leading-none text-foreground">Market</h1>
           <p className="mt-1.5 max-w-lg text-[13px] text-muted">
-            Live view of coinswap makers routing through your Tor circuit.
+            Live view of OpenSwap makers routing through your Tor circuit.
           </p>
-          <div className="mt-3 flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-widest text-subtle">
-            <span className="h-[7px] w-[7px] rounded-full bg-success shadow-[0_0_12px_rgba(47,212,131,0.72)]" />
+          <div className="mt-3 flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+            <span className="h-[7px] w-[7px] rounded-full bg-success shadow-[0_0_12px_color-mix(in_oklab,var(--color-success)_72%,transparent)]" />
             <span>{good.length + bad.length + unresponsive.length} makers available</span>
           </div>
         </div>
-        <button
-          type="button"
+        <Button
           onClick={() => void refresh()}
           disabled={refreshing}
-          className="inline-flex h-10 items-center gap-2 rounded-full bg-primary px-5 text-[13px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-60"
         >
           <RefreshCw size={15} strokeWidth={2} className={refreshing ? "animate-spin" : ""} />
           {refreshing ? "Refreshing..." : "Refresh"}
-        </button>
+        </Button>
       </header>
 
       {(loading || refreshing) && (
-        <div className="mt-5 shrink-0 rounded-2xl border border-primary/35 bg-primary/10 px-4.5 py-3.5">
+        <div className="mt-5 shrink-0 rounded-card border border-primary/35 bg-primary/10 px-4.5 py-3.5">
           <div className="mb-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-widest text-primary-hover">
             <span className="flex items-center gap-2">
               <RefreshCw size={16} strokeWidth={2} className="animate-spin" />
@@ -533,9 +518,7 @@ export function MarketPage() {
             </span>
             <span className="text-subtle">Please wait</span>
           </div>
-          <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/[0.08]">
-            <span className="block h-full w-full origin-left animate-[market-progress_1.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-primary via-primary-hover to-primary" />
-          </div>
+          <div className="mb-3"><IndeterminateBar /></div>
           <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-primary-hover">
             <Search size={14} strokeWidth={2} />
             Discovering makers over Tor network...
@@ -543,22 +526,30 @@ export function MarketPage() {
         </div>
       )}
 
-      <section className="mt-5 grid shrink-0 grid-cols-3 gap-3">
-        <StatCard label="Fidelity Locked" value={<SatsAmount sats={stats.totalFidelity} />} caption={`Across ${good.length} active makers.`} />
-        <StatCard label="Total Liquidity" value={<SatsAmount sats={stats.totalLiquidity} />} caption="Spendable maker depth." />
-        <StatCard
-          label="Active Makers"
-          value={
-            <span className="inline-flex items-baseline gap-2">
-              {good.length}
-              <small className="text-[12px] font-medium text-subtle">responding</small>
-            </span>
-          }
-          caption={`${good.length} good · ${bad.length} bad · ${unresponsive.length} unresponsive in this window.`}
-        />
-      </section>
+      <StatStrip
+        className="mt-5 shrink-0"
+        items={[
+          {
+            label: "Fidelity locked",
+            value: <SatsAmount sats={stats.totalFidelity} />,
+            detail: `across ${good.length} active makers`,
+          },
+          {
+            label: "Total liquidity",
+            value: <SatsAmount sats={stats.totalLiquidity} />,
+            detail: "spendable maker depth",
+            tone: "primary",
+          },
+          {
+            label: "Active makers",
+            value: String(good.length),
+            detail: `${bad.length} bad · ${unresponsive.length} unresponsive`,
+            tone: good.length > 0 ? "success" : "foreground",
+          },
+        ]}
+      />
 
-      <Card className="mt-3 flex min-h-0 flex-1 flex-col border-line-strong">
+      <Card className="mt-3 flex min-h-[min(52vh,470px)] max-h-[min(68vh,680px)] flex-col border-line-strong">
         <div className="flex shrink-0 items-center justify-between gap-3.5 border-b border-line px-4.5 py-4">
           <div className="inline-flex items-center gap-1 rounded-full p-1">
             {(
@@ -591,11 +582,11 @@ export function MarketPage() {
             ))}
           </div>
           <div className="flex items-center gap-3">
-            <span className="font-mono text-[10.5px] uppercase tracking-widest text-subtle">{displayed.length} {tab} offers</span>
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{displayed.length} {tab} offers</span>
             <button
               type="button"
               onClick={() => setShowAllColumns((v) => !v)}
-              className="flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-widest text-subtle transition-colors hover:text-foreground"
+              className="flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle transition-colors hover:text-foreground"
             >
               <ChevronDown size={12} strokeWidth={2.5} className={`transition-transform ${showAllColumns ? "rotate-180" : ""}`} />
               {showAllColumns ? "Show less" : "Show all columns"}
@@ -622,7 +613,7 @@ export function MarketPage() {
               <SortHeader label="Time Rate" sortKey="timeRate" active={sortKey} dir={sortDir} onSort={toggleSort} />
             )}
             {!showAllColumns && (
-              <div className="group relative flex items-center justify-end gap-1">
+              <Tooltip content={FEE_REFERENCE_TOOLTIP} align="right">
                 <SortHeader
                   label={
                     <span className="inline-flex items-center gap-1">
@@ -635,10 +626,7 @@ export function MarketPage() {
                   dir={sortDir}
                   onSort={toggleSort}
                 />
-                <div className="pointer-events-none absolute right-0 top-[calc(100%+9px)] z-20 w-max max-w-65 rounded-lg border border-line-strong bg-bg px-2.5 py-2 text-left text-[11px] font-medium normal-case tracking-normal leading-snug text-foreground opacity-0 shadow-lg transition-all group-hover:translate-y-0 group-hover:opacity-100">
-                  {FEE_REFERENCE_TOOLTIP}
-                </div>
-              </div>
+              </Tooltip>
             )}
             <SortHeader label="Min Swap" sortKey="minSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
             <SortHeader label="Max Swap" sortKey="maxSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
@@ -646,7 +634,7 @@ export function MarketPage() {
             <div className="text-right">Actions</div>
           </div>
 
-          <div className="flex flex-col gap-1.5 px-4.5 pb-3">
+          <div className="flex flex-col divide-y divide-line px-4.5 pb-3 font-numeric tabular-nums">
             {loading ? (
               <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
                 <RefreshCw size={42} strokeWidth={1.6} className="animate-spin text-primary" />
@@ -674,9 +662,9 @@ export function MarketPage() {
                     key={maker.address}
                     className={`grid ${MAKER_ROW_HEIGHT} ${
                       showAllColumns ? MAKER_TABLE_GRID.expanded : MAKER_TABLE_GRID.collapsed
-                    } items-center gap-3 rounded-lg border border-line bg-surface-raised px-3 py-2.5 font-mono ${
+                    } items-center gap-3 px-3 py-2.5 font-mono ${
                       showAllColumns ? MAKER_ROW_TEXT.expanded : MAKER_ROW_TEXT.collapsed
-                    } transition-colors hover:border-line-strong`}
+                    } transition-colors hover:bg-[var(--color-hover)]`}
                   >
                     <div className="truncate text-muted" title={maker.address}>
                       {formatTorEndpoint(maker.address, 8, 6, true)}
@@ -752,7 +740,7 @@ export function MarketPage() {
           </div>
         </div>
 
-        <div className="flex min-h-[54px] shrink-0 items-center justify-end border-t border-line px-4.5 py-3 font-mono text-[10.5px] uppercase tracking-widest text-subtle">
+        <div className="flex min-h-[54px] shrink-0 items-center justify-end border-t border-line px-4.5 py-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
           Showing {displayed.length} {tab} offers · {new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
           <span className="hidden">{footerTick}</span>
         </div>

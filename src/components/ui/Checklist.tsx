@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { AlertCircle } from "lucide-react";
 
 export type CheckState = "idle" | "running" | "passed" | "failed";
@@ -24,6 +24,7 @@ function DrawnCheck() {
 }
 
 function Marker({ state }: { state: CheckState }) {
+  const reduceMotion = useReducedMotion();
   return (
     <span
       className={`relative flex h-6 w-6 flex-none items-center justify-center rounded-full border transition-colors duration-500 ${
@@ -42,15 +43,15 @@ function Marker({ state }: { state: CheckState }) {
         <>
           <motion.span
             className="h-1.5 w-1.5 rounded-full bg-primary"
-            animate={{ opacity: [1, 0.35, 1] }}
-            transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+            animate={{ opacity: reduceMotion ? 1 : [1, 0.35, 1] }}
+            transition={{ duration: 1.5, repeat: reduceMotion ? 0 : Infinity, ease: "easeInOut" }}
           />
           {/* Radar ring rather than a bar sliding on a loop: it reads as waiting instead of
               as progress it cannot actually measure. */}
           <motion.span
             className="absolute inset-0 rounded-full border border-primary"
-            animate={{ scale: [1, 1.75], opacity: [0.55, 0] }}
-            transition={{ duration: 1.7, repeat: Infinity, ease: "easeOut" }}
+            animate={{ scale: reduceMotion ? 1 : [1, 1.75], opacity: reduceMotion ? 0.35 : [0.55, 0] }}
+            transition={{ duration: 1.7, repeat: reduceMotion ? 0 : Infinity, ease: "easeOut" }}
           />
         </>
       )}
@@ -64,12 +65,13 @@ function Marker({ state }: { state: CheckState }) {
  * so each row only has to say what it is rather than carry its own progress bar.
  */
 export function Checklist({ steps }: { steps: { label: string; state: CheckState }[] }) {
+  const reduceMotion = useReducedMotion();
   return (
     <div className="flex flex-col">
       {steps.map(({ label, state }, i) => (
         <motion.div
           key={label}
-          initial={{ opacity: 0, y: 8 }}
+          initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? 0 : 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: i * 0.07, ease: EASE }}
           className="relative flex gap-4"

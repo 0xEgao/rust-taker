@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { useEffect, useState, type ReactNode } from "react";
 
 // Absolute beats rather than chained animation callbacks, so the whole sequence reads in one
@@ -31,10 +31,10 @@ const GRAIN =
  * fixed so it stays inside the stage when this runs as a page rather than a whole screen, and
  * fades in with the wordmark so the first beat still opens on an empty ground.
  */
-function IntroBackdrop() {
+function IntroBackdrop({ reduceMotion }: { reduceMotion: boolean }) {
   return (
     <motion.div
-      initial={{ opacity: 0 }}
+      initial={{ opacity: reduceMotion ? 1 : 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 1.8, delay: 0.35, ease: "easeOut" }}
       className="pointer-events-none absolute inset-0 overflow-hidden"
@@ -73,8 +73,13 @@ export function IntroStage({
   children: ReactNode;
 }) {
   const [stage, setStage] = useState(0);
+  const reduceMotion = useReducedMotion() ?? false;
 
   useEffect(() => {
+    if (reduceMotion) {
+      setStage(4);
+      return;
+    }
     const timers = [
       setTimeout(() => setStage(1), WORDMARK_UP_MS),
       setTimeout(() => setStage(2), CAPTION_IN_MS),
@@ -82,23 +87,23 @@ export function IntroStage({
       setTimeout(() => setStage(4), BODY_MS),
     ];
     return () => timers.forEach(clearTimeout);
-  }, []);
+  }, [reduceMotion]);
 
   return (
     <div className={`relative flex flex-col items-center overflow-hidden px-4 pb-16 pt-[14vh] text-center ${className}`}>
-      <IntroBackdrop />
+      <IntroBackdrop reduceMotion={reduceMotion} />
 
       {/* Arrival and travel sit on separate nodes: scale and y both write `transform`, so one
           element cannot animate them independently. */}
       <motion.h1
-        initial={{ y: WORDMARK_FROM }}
-        animate={{ y: stage >= 1 ? "0vh" : WORDMARK_FROM }}
+        initial={{ y: reduceMotion ? "0vh" : WORDMARK_FROM }}
+        animate={{ y: reduceMotion || stage >= 1 ? "0vh" : WORDMARK_FROM }}
         transition={{ duration: 0.7, ease: RISE }}
         className="relative font-header text-[48px] font-bold leading-[1.15] text-foreground"
       >
         <motion.span
           className="inline-block"
-          initial={{ opacity: 0, scale: 0.55, filter: "blur(18px)" }}
+          initial={{ opacity: reduceMotion ? 1 : 0, scale: reduceMotion ? 1 : 0.55, filter: reduceMotion ? "blur(0px)" : "blur(18px)" }}
           animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
           transition={{ duration: 0.85, delay: 0.35, ease: RISE }}
         >
@@ -108,11 +113,11 @@ export function IntroStage({
 
       {stage >= 2 && (
         <motion.p
-          initial={{ opacity: 0, y: CAPTION_FROM, fontSize: CAPTION_LEAD_PX }}
+          initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? "0vh" : CAPTION_FROM, fontSize: reduceMotion ? CAPTION_PX : CAPTION_LEAD_PX }}
           animate={{
             opacity: 1,
-            y: stage >= 3 ? "0vh" : CAPTION_FROM,
-            fontSize: stage >= 3 ? CAPTION_PX : CAPTION_LEAD_PX,
+            y: reduceMotion || stage >= 3 ? "0vh" : CAPTION_FROM,
+            fontSize: reduceMotion || stage >= 3 ? CAPTION_PX : CAPTION_LEAD_PX,
           }}
           transition={{ duration: 0.65, ease: RISE, opacity: { duration: 0.45 } }}
           className="relative mt-5 leading-[1.15] text-muted"
@@ -123,7 +128,7 @@ export function IntroStage({
 
       {stage >= 4 && (
         <motion.div
-          initial={{ opacity: 0, y: 14 }}
+          initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? 0 : 14 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: "easeOut" }}
           className="relative mt-9 w-full"

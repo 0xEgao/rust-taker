@@ -321,7 +321,9 @@ pub async fn init_maker(
             return Err(error);
         }
     };
-    if let Err(error) = maker_settings::save(&settings) {
+    if let Err(error) = maker_settings::write_runtime_config(&settings)
+        .and_then(|_| maker_settings::save(&settings))
+    {
         server.watch_service.shutdown();
         drop(server);
         abort_failed_creation(&app, &maker_id, &wallet_file, &error)?;
@@ -400,6 +402,7 @@ pub fn update_maker_settings(
         }
     }
 
+    maker_settings::write_runtime_config(&settings)?;
     maker_settings::save(&settings)?;
     if let Some(entry) = makers.get_mut(&maker_id) {
         let tor_auth_password = entry.settings.tor_auth_password.take();
@@ -442,10 +445,16 @@ pub async fn start_maker(
     tor_auth_password: Option<String>,
 ) -> Result<(), AppError> {
     let state = app.state::<AppState>();
+    // Reload before every start so config.toml remains the source of truth even
+    // when it was edited outside this process between maker runs.
+    let persisted_settings =
+        maker_settings::load(&maker_id)?.ok_or_else(|| AppError::maker_not_found(&maker_id))?;
     if !state.makers.lock()?.contains_key(&maker_id) {
-        let settings =
-            maker_settings::load(&maker_id)?.ok_or_else(|| AppError::maker_not_found(&maker_id))?;
-        insert_saved_registration(&state, settings, wallet_password.clone())?;
+        insert_saved_registration(
+            &state,
+            persisted_settings.clone(),
+            wallet_password.clone(),
+        )?;
     }
 
     {
@@ -465,6 +474,9 @@ pub async fn start_maker(
             }
             _ => {}
         }
+        let stored_tor_auth_password = entry.settings.tor_auth_password.take();
+        entry.settings = persisted_settings;
+        entry.settings.tor_auth_password = stored_tor_auth_password;
         if wallet_password.is_some() {
             entry.wallet_password = wallet_password;
         }

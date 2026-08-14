@@ -398,7 +398,13 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           {/* Panelled so the contents read as one object against the empty screen. Actions sit
               in a footer inside it rather than loose underneath, which would leave the box
               looking unfinished at the bottom. */}
-          <Card className="border-line-strong">
+          {/* Lit on the two views that are a single focal object: the unlock prompt, and the
+              checklist the user sits and watches. The grid and create form are lists of choices,
+              where a glow behind the panel competes with the choices themselves. */}
+          <Card
+            glow={viewMode === "unlock" || viewMode === "checking"}
+            className={`border-line-strong ${viewMode === "unlock" || viewMode === "checking" ? "hairline" : ""}`}
+          >
             {viewMode === "grid" && (
               <>
                 <div className="p-8">

@@ -1,9 +1,7 @@
-import { ArrowLeft } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { getLogs } from "../../api/commands";
 import type { LogLine } from "../../api/types";
-import { Card, LogViewer } from "../../components/ui/display";
+import { BackButton, Card, LogViewer, SkeletonLines } from "../../components/ui/display";
 import { SegmentedToggle } from "../../components/ui/inputs";
 import { logLevel, type LogLevel } from "../../lib/wallet-format";
 
@@ -13,8 +11,7 @@ const MAX_LINES = 100;
 type LevelFilter = "all" | LogLevel;
 
 export function LogsPage() {
-  const navigate = useNavigate();
-  const [lines, setLines] = useState<LogLine[]>([]);
+  const [lines, setLines] = useState<LogLine[] | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
 
@@ -28,7 +25,7 @@ export function LogsPage() {
   }, [autoRefresh]);
 
   const filtered = useMemo(
-    () => (levelFilter === "all" ? lines : lines.filter((l) => logLevel(l.line) === levelFilter)),
+    () => lines === null ? null : (levelFilter === "all" ? lines : lines.filter((l) => logLevel(l.line) === levelFilter)),
     [lines, levelFilter],
   );
 
@@ -36,14 +33,7 @@ export function LogsPage() {
     <div className="flex h-full flex-col overflow-hidden px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center justify-between gap-3 pb-4">
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => navigate("/settings")}
-            title="Back to Settings"
-            className="flex h-9 w-9 flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-line-strong hover:text-foreground"
-          >
-            <ArrowLeft size={16} strokeWidth={1.8} />
-          </button>
+          <BackButton to="/settings" label="Back to Settings" />
           <div>
             <h1 className="font-header text-[26px] font-bold text-foreground">Logs</h1>
             <p className="mt-1 text-[13.5px] text-muted">
@@ -54,6 +44,7 @@ export function LogsPage() {
         <Card className="flex items-center gap-2.5 border-line-strong px-3 py-2">
           <SegmentedToggle
             groupId="logs-level-filter"
+            subdued
             value={levelFilter}
             onChange={setLevelFilter}
             options={[
@@ -66,6 +57,7 @@ export function LogsPage() {
           />
           <SegmentedToggle
             groupId="logs-autorefresh"
+            subdued
             value={autoRefresh ? "on" : "off"}
             onChange={(v) => setAutoRefresh(v === "on")}
             options={[
@@ -77,7 +69,7 @@ export function LogsPage() {
       </div>
 
       <Card className="flex min-h-0 flex-1 flex-col border-line-strong">
-        <LogViewer lines={filtered} emptyMessage={lines.length === 0 ? "No log lines yet." : "No log lines match this filter."} />
+        {filtered === null ? <SkeletonLines count={10} /> : <LogViewer lines={filtered} emptyMessage={(lines?.length ?? 0) === 0 ? "No log lines yet." : "No log lines match this filter."} />}
       </Card>
     </div>
   );

@@ -8,6 +8,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use coinswap::maker::MakerServerConfig;
 use coinswap::utill::get_maker_dir;
 
 use crate::error::{AppError, ErrorCode};
@@ -109,6 +110,61 @@ fn settings_path() -> Result<PathBuf, AppError> {
     Ok(get_maker_dir()?.join("makers.json"))
 }
 
+fn maker_data_dir(settings: &MakerSettingsDto) -> Result<PathBuf, AppError> {
+    if let Some(data_dir) = settings.data_dir.as_deref() {
+        return Ok(PathBuf::from(data_dir));
+    }
+    let legacy = get_maker_dir()?;
+    Ok(legacy
+        .parent()
+        .map(|base| base.join(&settings.maker_id))
+        .unwrap_or_else(|| legacy.join(&settings.maker_id)))
+}
+
+fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError> {
+    let config_path = maker_data_dir(settings)?.join("config.toml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let config = MakerServerConfig::new(Some(&config_path)).map_err(AppError::from)?;
+    settings.network_port = config.network_port;
+    settings.rpc_port = config.rpc_port;
+    settings.socks_port = config.socks_port;
+    settings.control_port = config.control_port;
+    settings.min_swap_amount = config.min_swap_amount;
+    settings.fidelity_amount = config.fidelity_amount;
+    settings.fidelity_timelock = config.fidelity_timelock;
+    settings.required_confirms = config.required_confirms;
+    settings.base_fee = config.base_fee;
+    settings.amount_relative_fee_pct = config.amount_relative_fee_pct;
+    settings.time_relative_fee_pct = config.time_relative_fee_pct;
+    Ok(())
+}
+
+/// Write the editable runtime settings to the file the standalone maker daemon also uses.
+/// `makers.json` remains the multi-maker registry for identity and wallet location only.
+pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), AppError> {
+    let config_path = maker_data_dir(settings)?.join("config.toml");
+    let mut config = if config_path.exists() {
+        MakerServerConfig::new(Some(&config_path)).map_err(AppError::from)?
+    } else {
+        MakerServerConfig::default()
+    };
+    config.network_port = settings.network_port;
+    config.rpc_port = settings.rpc_port;
+    config.socks_port = settings.socks_port;
+    config.control_port = settings.control_port;
+    config.min_swap_amount = settings.min_swap_amount;
+    config.fidelity_amount = settings.fidelity_amount;
+    config.fidelity_timelock = settings.fidelity_timelock;
+    config.required_confirms = settings.required_confirms;
+    config.base_fee = settings.base_fee;
+    config.amount_relative_fee_pct = settings.amount_relative_fee_pct;
+    config.time_relative_fee_pct = settings.time_relative_fee_pct;
+    config.write_to_file(&config_path)?;
+    Ok(())
+}
+
 fn dashboard_settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("maker-dashboard").join("makers.json"))
 }
@@ -205,6 +261,9 @@ pub(crate) fn load_all() -> Result<HashMap<String, MakerSettingsDto>, AppError> 
                 save_file(&path, &stored)?;
             }
         }
+    }
+    for settings in stored.makers.values_mut() {
+        apply_runtime_config(settings)?;
     }
     Ok(stored.makers)
 }
@@ -370,6 +429,37 @@ mod tests {
             time_relative_fee_pct: 0.0001,
             data_dir: Some("/tmp/maker-one".to_string()),
         }
+    }
+
+    #[test]
+    fn runtime_config_round_trip_is_the_editable_source_of_truth() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let data_dir = std::env::temp_dir().join(format!(
+            "rust-taker-maker-config-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let mut saved = settings();
+        saved.data_dir = Some(data_dir.to_string_lossy().into_owned());
+        saved.network_port = 6202;
+        saved.rpc_port = 6203;
+        saved.min_swap_amount = 42_000;
+        saved.base_fee = 777;
+        write_runtime_config(&saved).unwrap();
+
+        let mut registry_copy = settings();
+        registry_copy.data_dir = saved.data_dir.clone();
+        apply_runtime_config(&mut registry_copy).unwrap();
+        assert_eq!(registry_copy.network_port, 6202);
+        assert_eq!(registry_copy.rpc_port, 6203);
+        assert_eq!(registry_copy.min_swap_amount, 42_000);
+        assert_eq!(registry_copy.base_fee, 777);
+
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
