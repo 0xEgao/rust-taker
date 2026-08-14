@@ -90,10 +90,28 @@
 
   --color-primary: #5a8cff;
   --color-primary-hover: #6b98ff;
+  /* Readable ink for a filled accent surface — a token because the maker accent is light
+     enough that white on it fails contrast. */
+  --color-on-primary: #ffffff;
+  /* Maker-side accent. Distinct from primary so operating a service never looks like spending
+     your own coins, and clear of success/warning/danger. Same purple as the Taproot pill. */
+  --color-maker: #b990ff;
+  --color-maker-hover: #c5a4ff;
   --color-success: #31d158;
   --color-warning: #f5c451;
   --color-danger: #ff5a5f;
   --color-info: #5a8cff;
+
+  /* Accent-derived so a scoped `--color-primary` re-tints focus rings and active glows too —
+     as raw rgba they were the blue that survived every override.
+     The ring is layered rather than one flat band: a solid 1px edge carries the contrast a focus
+     indicator needs against any surface, the wide translucent step reads as the ring, and the
+     outer bleed is the glow. `outline` would be simpler but only follows border-radius from
+     Safari 16.4. */
+  --shadow-ring: 0 0 0 1px color-mix(in oklab, var(--color-primary) 60%, transparent),
+    0 0 0 4px color-mix(in oklab, var(--color-primary) 14%, transparent),
+    0 0 20px -2px color-mix(in oklab, var(--color-primary) 34%, transparent);
+  --shadow-glow: 0 0 12px color-mix(in oklab, var(--color-primary) 35%, transparent);
 
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -114,6 +132,15 @@ body {
   @apply bg-bg text-foreground font-mono antialiased;
 }
 
+/* Re-points the accent for a whole subtree. Every shared atom already paints with the primary
+   tokens through `var()`, so a section turns violet here rather than by teaching each atom a
+   second variant — and anything added later is tinted correctly for free. */
+[data-accent="maker"] {
+  --color-primary: var(--color-maker);
+  --color-primary-hover: var(--color-maker-hover);
+  --color-on-primary: var(--color-bg);
+}
+
 /* Tailwind's preflight sets -webkit-appearance: button (not none), so WebKit still
    paints its native button chrome under our own styles — invisible in Chromium, but
    in Safari/WKWebView (what Tauri actually renders with) it shows as a dark box
@@ -132,11 +159,50 @@ button {
   }
 }
 
+/* Fills from the left, then empties to the right. Both ends are scaleX(0), so the loop closes
+   on itself instead of snapping full-to-empty — that jump read as a stray fast pulse. */
 @keyframes status-fill {
   0% {
     transform: scaleX(0);
+    transform-origin: left;
+  }
+  46% {
+    transform: scaleX(1);
+    transform-origin: left;
+  }
+  54% {
+    transform: scaleX(1);
+    transform-origin: right;
   }
   100% {
-    transform: scaleX(1);
+    transform: scaleX(0);
+    transform-origin: right;
+  }
+}
+
+/* A 1px border that is a gradient rather than a flat colour: light at the top-left, accent at
+   both ends, so an edge reads as lit from one direction instead of uniformly stroked. Painted as
+   a masked pseudo-element because `border-image` does not follow `border-radius`.
+   Two WebKit ordering traps: the `mask` shorthand resets `mask-composite`, so it must come
+   first, and WebKit's legacy keyword for `exclude` is `xor`. */
+@utility hairline {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    pointer-events: none;
+    background: linear-gradient(
+      160deg,
+      color-mix(in oklab, var(--color-primary) 55%, transparent) 0%,
+      rgba(255, 255, 255, 0.1) 26%,
+      rgba(255, 255, 255, 0.02) 58%,
+      color-mix(in oklab, var(--color-primary) 20%, transparent) 100%
+    );
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
   }
 }

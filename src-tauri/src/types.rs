@@ -9,28 +9,66 @@ pub struct PortStatus {
     pub error: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+/// Which chain data source the wallet is built against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RpcSettings {
+pub enum ChainBackendKind {
+    Electrum,
+    CoreRpc,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectrumBackendDto {
+    /// Full endpoint including scheme, e.g. `tcp://host:50001` or `ssl://host:50002`.
+    pub url: String,
+    /// Route through Tor's SOCKS proxy. An `.onion` URL forces this on regardless —
+    /// the crate rejects one with no proxy configured.
+    #[serde(default)]
+    pub use_tor: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeBackendDto {
     pub host: String,
     pub port: u16,
     pub username: String,
     pub password: String,
+    pub zmq_port: u16,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainBackendConfig {
+    pub kind: ChainBackendKind,
+    pub electrum: ElectrumBackendDto,
+    /// `None` until the user adds their own node; adding one also flips `kind`.
+    #[serde(default)]
+    pub node: Option<NodeBackendDto>,
+}
+
+/// Result of probing a chain backend. Electrum answers the height/chain questions
+/// from its tip subscription, so both backends fill the same shape; `subversion`
+/// is the one field only Core can report.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CoreStatus {
-    pub chain: String,
-    pub blocks: u64,
-    pub headers: u64,
-    pub initial_block_download: bool,
+pub struct BackendStatus {
+    pub reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<u64>,
     /// true when headers == blocks and IBD is over
     pub synced: bool,
     /// Core's version string, e.g. "/Satoshi:27.0.0/".
-    pub subversion: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subversion: Option<String>,
     /// [0..1] estimate of chain verification progress.
-    pub verification_progress: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_progress: Option<f64>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -575,6 +613,17 @@ pub struct MakerStatusDto {
 pub struct SuggestedMakerPortsDto {
     pub network_port: u16,
     pub rpc_port: u16,
+}
+
+/// Per-port verdict for a maker's listeners. `conflict` is `None` when the port is
+/// usable; otherwise it names what is holding it, ready to show verbatim.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MakerPortCheckDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_port: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_port: Option<String>,
 }
 
 /// The maker's own perspective on one swap — one leg, not the whole

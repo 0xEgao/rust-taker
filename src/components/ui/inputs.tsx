@@ -13,11 +13,16 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const buttonBase =
-  "inline-flex items-center justify-center gap-2 rounded-control font-semibold transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center justify-center gap-2 rounded-control font-semibold transition-[box-shadow,background-color,border-color,transform,color] duration-200 disabled:cursor-not-allowed disabled:opacity-50";
 
 const buttonVariants: Record<Variant, string> = {
-  primary: "bg-primary text-white hover:bg-primary-hover",
-  secondary: "border border-line bg-surface-raised text-foreground hover:border-line-strong",
+  // Top-lit: a 1px inner highlight plus an accent-tinted drop shadow, so a filled control reads
+  // as raised rather than as a coloured rectangle. Presses translate down and swap the outer
+  // shadow for an inner one — the shadow is what sells the press, not the 1px move.
+  primary:
+    "bg-primary text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.4),0_8px_20px_-8px_color-mix(in_oklab,var(--color-primary)_50%,transparent)] hover:bg-primary-hover hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_1px_2px_rgba(0,0,0,0.4),0_12px_28px_-8px_color-mix(in_oklab,var(--color-primary)_68%,transparent)] active:translate-y-px active:shadow-[inset_0_1px_3px_rgba(0,0,0,0.28)] disabled:shadow-none",
+  secondary:
+    "border border-line bg-surface-raised text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:border-line-strong hover:bg-secondary-hover active:translate-y-px",
   ghost: "text-muted hover:text-foreground",
 };
 
@@ -43,11 +48,86 @@ export function Button({
       {...props}
     >
       {loading && (
-        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent opacity-70" />
       )}
       {children}
       {arrow && !loading && <ArrowRight size={15} strokeWidth={2} />}
     </button>
+  );
+}
+
+/**
+ * A settled value that can be edited in place. Deliberately not a `TextField`: a form of
+ * bordered boxes reads as decisions demanded up front, which is the thing this avoids — at
+ * rest the row is information, and the input only appears once asked for.
+ */
+export function SummaryRow({
+  label,
+  value,
+  display,
+  suffix,
+  inputMode = "numeric",
+  onCommit,
+}: {
+  label: string;
+  /** The raw text, and what an edit starts from. */
+  value: string;
+  /** Prettified form shown at rest, e.g. thousands separators. Editing still uses `value`. */
+  display?: string;
+  /** Unit rendered after the value, e.g. "sats" — never part of the edited text. */
+  suffix?: string;
+  inputMode?: "numeric" | "decimal" | "text";
+  onCommit: (next: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  function open() {
+    setDraft(value);
+    setEditing(true);
+  }
+
+  function commit() {
+    setEditing(false);
+    const next = draft.trim();
+    if (next && next !== value) onCommit(next);
+  }
+
+  return (
+    <div className="flex min-h-9 items-center justify-between gap-4 text-[12.5px]">
+      <span className="text-muted">{label}</span>
+      {editing ? (
+        <input
+          autoFocus
+          inputMode={inputMode}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            // Blur would otherwise fire after this and commit the abandoned draft.
+            if (e.key === "Escape") {
+              setDraft(value);
+              setEditing(false);
+            }
+          }}
+          // Sized to the value, not the column: a full-width box is the chrome being avoided.
+          className="w-28 border-b border-primary bg-transparent pb-0.5 text-right font-mono text-[12.5px] text-foreground outline-none"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={open}
+          className="group flex items-center gap-2 text-right transition-colors hover:text-primary"
+        >
+          <span className="font-mono text-foreground group-hover:text-primary">
+            {display ?? value}
+            {suffix && <span className="ml-1 text-subtle group-hover:text-primary">{suffix}</span>}
+          </span>
+          <span className="text-[10px] uppercase tracking-widest text-subtle group-hover:text-primary">Edit</span>
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -67,7 +147,7 @@ export function TextField({ label, error, hint, id, className = "", ...props }: 
       <input
         id={inputId}
         className={`h-10 rounded-control border bg-surface-raised px-3 text-[13px] text-foreground outline-none transition-colors duration-200 placeholder:text-subtle ${
-          error ? "border-danger bg-danger/5" : "border-line focus:border-primary focus:shadow-[0_0_0_3px_rgba(90,140,255,0.15)]"
+          error ? "border-danger bg-danger/5" : "border-line focus:border-primary focus:shadow-ring"
         } ${className}`}
         {...props}
       />
@@ -107,7 +187,7 @@ export function PasswordField({
           id={inputId}
           type={visible ? "text" : "password"}
           className={`h-10 w-full rounded-control border bg-surface-raised px-3 pr-10 text-[13px] text-foreground outline-none transition-colors duration-200 placeholder:text-subtle ${
-            error ? "border-danger bg-danger/5" : "border-line focus:border-primary focus:shadow-[0_0_0_3px_rgba(90,140,255,0.15)]"
+            error ? "border-danger bg-danger/5" : "border-line focus:border-primary focus:shadow-ring"
           } ${className}`}
           {...props}
         />
@@ -162,8 +242,9 @@ export function SegmentedToggle<T extends string>({
   onChange: (v: T) => void;
   options: { value: T; label: string; disabled?: boolean; title?: string; suffix?: ReactNode }[];
 }) {
+  // No track fill: the page shows straight through, and only the active option is painted.
   return (
-    <div className="inline-flex items-center gap-1 rounded-full bg-white/[0.02] p-1">
+    <div className="inline-flex items-center gap-1 rounded-full p-1">
       {options.map((opt) => (
         <button
           key={opt.value}
@@ -179,7 +260,7 @@ export function SegmentedToggle<T extends string>({
             <motion.span
               layoutId={`toggle-glow-${groupId}`}
               transition={SEGMENTED_GLOW_TRANSITION}
-              className="absolute inset-0 -z-10 rounded-full bg-primary/15 shadow-[0_0_12px_rgba(90,140,255,0.35)]"
+              className="absolute inset-0 -z-10 rounded-full bg-primary/15 shadow-glow"
             />
           )}
           {opt.label}

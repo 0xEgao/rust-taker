@@ -560,7 +560,7 @@ export function MarketPage() {
 
       <Card className="mt-3 flex min-h-0 flex-1 flex-col border-line-strong">
         <div className="flex shrink-0 items-center justify-between gap-3.5 border-b border-line px-4.5 py-4">
-          <div className="inline-flex items-center gap-1 rounded-full bg-white/[0.02] p-1">
+          <div className="inline-flex items-center gap-1 rounded-full p-1">
             {(
               [
                 ["good", "Good Makers", good.length],

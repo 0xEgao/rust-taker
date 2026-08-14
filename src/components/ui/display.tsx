@@ -1,9 +1,10 @@
-import { AlertCircle, Check, ChevronDown, Copy, ExternalLink, Wallet } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import type { HTMLAttributes, ReactNode } from "react";
 import type { LogLine } from "../../api/types";
 import { explorerTxUrl, LOG_LEVEL_TONE, logLevel } from "../../lib/wallet-format";
+import { walletIdentity } from "../../lib/wallet-identity";
 
 // Blur lives on its own layer, not this rounded/overflow-hidden div, to dodge a WebKit corner-seam
 // bug; `isolate` keeps descendants' negative z-index glows contained instead of escaping the card.
@@ -64,48 +65,8 @@ export function IconBadge({
     );
   }
   return (
-    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary font-bold text-white">
+    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary font-bold text-on-primary">
       {children}
-    </div>
-  );
-}
-
-export type CheckState = "idle" | "running" | "passed" | "failed";
-
-const statusDotClass: Record<CheckState, string> = {
-  idle: "bg-subtle/40",
-  running: "bg-success",
-  passed: "bg-success",
-  failed: "bg-danger",
-};
-
-export function StatusRow({
-  label,
-  state,
-  detail,
-}: {
-  label: string;
-  state: CheckState;
-  detail?: string;
-}) {
-  return (
-    <div className="relative flex items-center justify-between gap-3 overflow-hidden rounded-control border border-line bg-surface-raised px-3.5 py-2.5">
-      <div className="flex items-center gap-2.5">
-        <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass[state]}`} />
-        <span className="text-[13px] font-medium text-foreground">{label}</span>
-      </div>
-      <div className="flex items-center gap-1.5 text-[11.5px]">
-        {state === "passed" && <Check size={14} strokeWidth={2.5} className="text-success" />}
-        {state === "failed" && <AlertCircle size={14} strokeWidth={2} className="text-danger" />}
-        {detail && (
-          <span className={state === "failed" ? "text-danger" : "text-subtle"}>{detail}</span>
-        )}
-      </div>
-      {state === "running" && (
-        <span className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
-          <span className="absolute inset-y-0 left-0 w-full origin-left animate-[status-fill_1.4s_ease-in-out_infinite] bg-success shadow-[0_0_8px_rgba(49,209,88,0.7)]" />
-        </span>
-      )}
     </div>
   );
 }
@@ -292,18 +253,31 @@ export function CopyButton({ text, title = "Copy" }: { text: string; title?: str
   );
 }
 
+/**
+ * Tinted by `walletIdentity`, so a folder of wallets is scannable by colour and monogram before
+ * the name is even read. The lift uses `translate3d` deliberately: a plain `translateY` makes
+ * WebKit re-rasterize the label and it visibly blurs mid-transition.
+ */
 export function WalletCard({ name, onClick }: { name: string; onClick: () => void }) {
+  const id = walletIdentity(name);
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`${cardButtonBase} w-64 py-10 border-primary/25 hover:border-primary/55 hover:bg-primary/[0.04]`}
+      style={{ ["--wallet-glow" as string]: id.glow }}
+      className="group relative flex w-60 flex-col items-center gap-3 rounded-card border border-line bg-surface-raised/50 px-6 py-8 text-center outline-none transition-[transform,border-color,background-color] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:transform-[translate3d(0,-3px,0)] hover:border-line-strong hover:bg-surface-raised/75 focus-visible:border-primary/60 focus-visible:shadow-ring active:transform-[translate3d(0,-1px,0)] active:duration-75
+        after:pointer-events-none after:absolute after:inset-0 after:rounded-card after:opacity-0 after:shadow-[0_18px_34px_-14px_rgba(0,0,0,0.85),0_0_22px_-6px_var(--wallet-glow)] after:transition-opacity after:duration-200 hover:after:opacity-100"
     >
-      <IconBadge variant="outline">
-        <Wallet size={24} strokeWidth={1.8} />
-      </IconBadge>
-      <span className="max-w-full truncate font-header text-[15px] font-bold text-foreground">{name}</span>
-      <span className="text-[12px] text-subtle">Click to unlock</span>
+      <span
+        className="grid h-12 w-12 place-items-center rounded-lg border font-header text-[15px] font-bold"
+        style={{ color: id.ink, background: id.fill, borderColor: id.edge }}
+      >
+        {id.monogram}
+      </span>
+      <span className="max-w-full truncate font-header text-[14px] font-bold text-foreground">{name}</span>
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle transition-colors group-hover:text-muted">
+        Unlock
+      </span>
     </button>
   );
 }

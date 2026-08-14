@@ -1,87 +1,160 @@
-import { ArrowLeft, CheckCircle2, Circle, LoaderCircle, Server, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ArrowLeft, Server } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { checkTor, getSuggestedMakerPorts, initMaker } from "../../api/commands";
-import type { MakerInitConfig } from "../../api/types";
-import { Card } from "../../components/ui/display";
-import { Button, PasswordField, TextField } from "../../components/ui/inputs";
+import { checkBackend, checkMakerPorts, checkTor, getSuggestedMakerPorts, initMaker } from "../../api/commands";
+import type { MakerInitConfig, MakerPortCheck } from "../../api/types";
+import { Card, Disclosure } from "../../components/ui/display";
+import { Button, PasswordField, SummaryRow, TextField } from "../../components/ui/inputs";
+import { loadConnectivityDefaults } from "../../lib/connectivity";
 import { useToastStore } from "../../store/toast";
+import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
 
-type CheckState = "idle" | "running" | "passed" | "failed";
+// Long enough that editing a port digit-by-digit doesn't fire a check per keystroke.
+const CHECK_DEBOUNCE_MS = 400;
 
-const DEFAULTS = {
-  socksPort: "9050",
-  controlPort: "9051",
-  networkPort: "6102",
-  rpcPort: "6103",
-  minSwapAmount: "100000",
-  fidelityAmount: "100000",
-  fidelityTimelock: "15000",
-  requiredConfirms: "1",
-  baseFee: "1000",
-  amountRelativeFeePct: "0.025",
-  timeRelativeFeePct: "0.001",
+const tor = loadConnectivityDefaults();
+
+/** Every value shown as a summary row. Strings so an in-progress edit is representable. */
+const INITIAL_VALUES = {
+  socksPort: String(tor.torSocksPort),
+  controlPort: String(tor.torControlPort),
+  networkPort: "",
+  rpcPort: "",
+  minSwapAmount: String(MAKER_DEFAULTS.minSwapAmount),
+  baseFee: String(MAKER_DEFAULTS.baseFee),
+  amountRelativeFeePct: String(MAKER_DEFAULTS.amountRelativeFeePct),
+  timeRelativeFeePct: String(MAKER_DEFAULTS.timeRelativeFeePct),
+  requiredConfirms: String(MAKER_DEFAULTS.requiredConfirms),
+  fidelityAmount: String(MAKER_DEFAULTS.fidelityAmount),
+  fidelityTimelock: String(MAKER_DEFAULTS.fidelityTimelock),
 };
 
-function Section({ title, subtitle, children, className = "" }: { title: string; subtitle: string; children: React.ReactNode; className?: string }) {
+type Values = typeof INITIAL_VALUES;
+
+function group(title: string, rows: React.ReactNode, warning?: string | null) {
   return (
-    <Card className={`border-line-strong ${className}`}>
-      <div className="border-b border-line px-5 py-4"><h2 className="font-header text-[15px] font-bold text-foreground">{title}</h2><p className="mt-1 text-[12px] text-muted">{subtitle}</p></div>
-      <div className="grid grid-cols-2 gap-4 p-5 max-[700px]:grid-cols-1">{children}</div>
-    </Card>
+    <div className="border-t border-line px-5 py-4">
+      <span className="font-mono text-[10px] uppercase tracking-widest text-subtle">{title}</span>
+      <div className="mt-1.5 flex flex-col">{rows}</div>
+      {warning && (
+        <p className="mt-2 flex items-start gap-1.5 text-[11.5px] leading-5 text-danger">
+          <AlertTriangle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
+          {warning}
+        </p>
+      )}
+    </div>
   );
 }
 
-function CheckRow({ label, detail, state }: { label: string; detail: string; state: CheckState }) {
-  const icon = state === "running" ? <LoaderCircle size={17} className="animate-spin text-warning" /> : state === "passed" ? <CheckCircle2 size={17} className="text-success" /> : <Circle size={17} className={state === "failed" ? "text-danger" : "text-subtle"} />;
-  return <div className="flex items-center gap-3 border-t border-line px-5 py-4 first:border-0">{icon}<div><strong className="block text-[12.5px] text-foreground">{label}</strong><span className={`mt-0.5 block text-[11px] ${state === "failed" ? "text-danger" : "text-subtle"}`}>{detail}</span></div></div>;
+function sats(value: string) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toLocaleString() : value;
 }
 
 export function AddMakerPage() {
   const navigate = useNavigate();
   const pushToast = useToastStore((state) => state.push);
-  const [form, setForm] = useState({ makerId: "", walletName: "", dataDir: "", walletPassword: "", torAuthPassword: "", ...DEFAULTS });
-  const [torCheck, setTorCheck] = useState<CheckState>("idle");
-  const [portCheck, setPortCheck] = useState<CheckState>("idle");
-  const [torDetail, setTorDetail] = useState("Not checked yet");
-  const [portDetail, setPortDetail] = useState("Suggested unique ports will be verified");
+
+  const [makerId, setMakerId] = useState("");
+  const [walletName, setWalletName] = useState("");
+  const [dataDir, setDataDir] = useState("");
+  const [walletPassword, setWalletPassword] = useState("");
+  const [torAuthPassword, setTorAuthPassword] = useState(tor.torAuthPassword);
+  const [values, setValues] = useState<Values>(INITIAL_VALUES);
+
+  const [torError, setTorError] = useState<string | null>(null);
+  const [portErrors, setPortErrors] = useState<MakerPortCheck>({});
+  const [chain, setChain] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
-  const socksPort = Number(form.socksPort);
-  const controlPort = Number(form.controlPort);
+  // Bumped on every edit so a slow in-flight check can't paint a verdict for a value the
+  // user has already changed.
+  const torRun = useRef(0);
+  const portRun = useRef(0);
+
+  const numbers = useMemo(
+    () => Object.fromEntries(Object.entries(values).map(([k, v]) => [k, Number(v)])) as Record<keyof Values, number>,
+    [values],
+  );
+
+  const trimmedId = makerId.trim();
+  const malformedId = trimmedId.length > 0 && !MAKER_ID_PATTERN.test(trimmedId);
 
   useEffect(() => {
-    if (!Number.isInteger(socksPort) || !Number.isInteger(controlPort)) return;
-    setPortCheck("running");
-    void getSuggestedMakerPorts(socksPort, controlPort).then((ports) => {
-      setForm((current) => ({ ...current, networkPort: String(ports.networkPort), rpcPort: String(ports.rpcPort) }));
-      setPortCheck("passed");
-      setPortDetail(`Reserved suggestion: ${ports.networkPort} / ${ports.rpcPort}`);
-    }).catch((error) => {
-      setPortCheck("failed");
-      setPortDetail((error as { message?: string })?.message ?? "Could not find unique maker ports");
-    });
-  }, [socksPort, controlPort]);
+    void getSuggestedMakerPorts(tor.torSocksPort, tor.torControlPort)
+      .then((ports) => setValues((v) => ({ ...v, networkPort: String(ports.networkPort), rpcPort: String(ports.rpcPort) })))
+      .catch((e) => setPortErrors({ networkPort: (e as { message?: string })?.message ?? "Could not find free ports." }));
+    void checkBackend()
+      .then((s) => setChain(s.chain ?? null))
+      .catch(() => setChain(null));
+  }, []);
+
+  // Tor was already proven working to unlock the taker, so a failure here almost always means
+  // a port on this page was just edited to something wrong — hence the wording below.
+  useEffect(() => {
+    const { socksPort, controlPort } = numbers;
+    if (!Number.isInteger(socksPort) || !Number.isInteger(controlPort) || socksPort <= 0 || controlPort <= 0) return;
+    const run = ++torRun.current;
+    const timer = setTimeout(() => {
+      void checkTor(socksPort, controlPort, torAuthPassword)
+        .then((status) => {
+          if (run !== torRun.current) return;
+          setTorError(
+            status.reachable && status.authenticated
+              ? null
+              : (status.error ?? `Tor control port ${controlPort} is not reachable. Check the port or fix it in Settings.`),
+          );
+        })
+        .catch((e) => {
+          if (run === torRun.current) setTorError((e as { message?: string })?.message ?? "Tor is unreachable.");
+        });
+    }, CHECK_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [numbers.socksPort, numbers.controlPort, torAuthPassword]);
+
+  useEffect(() => {
+    const { networkPort, rpcPort, socksPort, controlPort } = numbers;
+    if (![networkPort, rpcPort].every((p) => Number.isInteger(p) && p > 0)) return;
+    const run = ++portRun.current;
+    const timer = setTimeout(() => {
+      void checkMakerPorts(networkPort, rpcPort, socksPort, controlPort)
+        .then((result) => {
+          if (run === portRun.current) setPortErrors(result);
+        })
+        .catch(() => {});
+    }, CHECK_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [numbers.networkPort, numbers.rpcPort, numbers.socksPort, numbers.controlPort]);
 
   const config = useMemo<MakerInitConfig | null>(() => {
-    const numeric = {
-      networkPort: Number(form.networkPort), rpcPort: Number(form.rpcPort), socksPort: Number(form.socksPort), controlPort: Number(form.controlPort),
-      minSwapAmount: Number(form.minSwapAmount), fidelityAmount: Number(form.fidelityAmount), fidelityTimelock: Number(form.fidelityTimelock),
-      requiredConfirms: Number(form.requiredConfirms), baseFee: Number(form.baseFee), amountRelativeFeePct: Number(form.amountRelativeFeePct), timeRelativeFeePct: Number(form.timeRelativeFeePct),
+    if (!trimmedId || malformedId) return null;
+    if (Object.values(numbers).some((n) => !Number.isFinite(n) || n < 0)) return null;
+    if (numbers.requiredConfirms < 1) return null;
+    return {
+      makerId: trimmedId,
+      // A maker's wallet is its own, so the id doubles as the wallet name unless overridden.
+      walletName: walletName.trim() || trimmedId,
+      dataDir: dataDir.trim() || undefined,
+      walletPassword: walletPassword || undefined,
+      torAuthPassword: torAuthPassword || undefined,
+      networkPort: numbers.networkPort,
+      rpcPort: numbers.rpcPort,
+      socksPort: numbers.socksPort,
+      controlPort: numbers.controlPort,
+      minSwapAmount: numbers.minSwapAmount,
+      baseFee: numbers.baseFee,
+      amountRelativeFeePct: numbers.amountRelativeFeePct,
+      timeRelativeFeePct: numbers.timeRelativeFeePct,
+      requiredConfirms: numbers.requiredConfirms,
+      fidelityAmount: numbers.fidelityAmount,
+      fidelityTimelock: numbers.fidelityTimelock,
     };
-    if (!form.makerId.trim() || !form.walletName.trim() || Object.values(numeric).some((value) => !Number.isFinite(value) || value < 0)) return null;
-    return { makerId: form.makerId.trim(), walletName: form.walletName.trim(), walletPassword: form.walletPassword || undefined, torAuthPassword: form.torAuthPassword || undefined, dataDir: form.dataDir.trim() || undefined, ...numeric };
-  }, [form]);
+  }, [trimmedId, malformedId, walletName, dataDir, walletPassword, torAuthPassword, numbers]);
 
-  function field(name: keyof typeof form) { return { value: form[name], onChange: (event: React.ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, [name]: event.target.value })) }; }
+  const blocked = torError !== null || portErrors.networkPort !== undefined || portErrors.rpcPort !== undefined;
 
-  async function testTor() {
-    setTorCheck("running"); setTorDetail("Connecting and checking bootstrap status…");
-    try {
-      const status = await checkTor(socksPort, controlPort, form.torAuthPassword);
-      if (!status.reachable || !status.authenticated) throw new Error(status.error ?? "Tor control authentication failed");
-      setTorCheck("passed"); setTorDetail(`Ready via ${status.source ?? "Tor"}${status.bootstrapProgress === undefined ? "" : ` · ${status.bootstrapProgress}% bootstrapped`}`);
-    } catch (error) { setTorCheck("failed"); setTorDetail((error as { message?: string })?.message ?? "Tor is unavailable"); }
+  function set(key: keyof Values) {
+    return (next: string) => setValues((v) => ({ ...v, [key]: next }));
   }
 
   async function createMaker() {
@@ -90,58 +163,120 @@ export function AddMakerPage() {
     try {
       await initMaker(config);
       pushToast("success", `${config.makerId} was created and registered.`);
-      navigate(`/maker/${encodeURIComponent(config.makerId)}`);
-    } catch (error) { pushToast("error", (error as { message?: string })?.message ?? "Could not create maker."); }
-    finally { setCreating(false); }
+      navigate(`/maker/${encodeURIComponent(config.makerId)}/setup`);
+    } catch (error) {
+      pushToast("error", (error as { message?: string })?.message ?? "Could not create maker.");
+    } finally {
+      setCreating(false);
+    }
   }
 
   return (
     <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto w-full max-w-[1180px] pb-8">
-        <header className="mb-6 flex items-start justify-between gap-4">
-          <div><Link to="/maker" className="mb-4 inline-flex items-center gap-2 text-[11px] uppercase tracking-widest text-subtle hover:text-foreground"><ArrowLeft size={14} />Back to makers</Link><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-white"><Server size={22} /></span><div><h1 className="font-header text-[29px] font-bold text-foreground">Add Maker</h1><p className="mt-1 text-[12.5px] text-muted">Create a stopped maker wallet, then start it when you are ready.</p></div></div></div>
-          <span className="rounded-pill border border-primary/35 bg-primary/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-primary">Signet</span>
+      <div className="mx-auto w-full max-w-[640px] pb-8">
+        <header className="mb-6">
+          <Link to="/maker" className="mb-4 inline-flex items-center gap-2 text-[11px] uppercase tracking-widest text-subtle hover:text-foreground">
+            <ArrowLeft size={14} />
+            Back to makers
+          </Link>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <span className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-on-primary">
+                <Server size={22} />
+              </span>
+              <div>
+                <h1 className="font-header text-[29px] font-bold text-foreground">Add Maker</h1>
+                <p className="mt-1 text-[12.5px] text-muted">Created stopped — start it once the fidelity bond is funded.</p>
+              </div>
+            </div>
+            {chain && (
+              <span className="rounded-pill border border-primary/35 bg-primary/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-primary">
+                {chain}
+              </span>
+            )}
+          </div>
         </header>
 
-        <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
-          <Section title="Basic information" subtitle="Stable identity and local wallet storage" className="col-span-2 max-[900px]:col-span-1">
-            <TextField label="Maker ID" placeholder="maker-01" hint="Letters, numbers, underscores and hyphens." {...field("makerId")} />
-            <TextField label="Wallet name" placeholder="maker-wallet" {...field("walletName")} />
-            <TextField label="Data directory (optional)" placeholder="Default maker directory" {...field("dataDir")} />
-            <PasswordField label="Wallet password (optional)" autoComplete="new-password" {...field("walletPassword")} />
-          </Section>
+        <Card className="border-line-strong">
+          <div className="p-5">
+            <TextField
+              label="Maker ID"
+              placeholder="maker-02"
+              autoFocus
+              value={makerId}
+              onChange={(e) => setMakerId(e.target.value)}
+              error={malformedId ? "Letters, numbers, hyphens and underscores only." : undefined}
+              hint={malformedId ? undefined : "Also names its wallet. Everything below is already set."}
+            />
+            <div className="mt-3">
+              <Disclosure label="Wallet name, data directory, password">
+                <div className="flex flex-col gap-3 pt-1">
+                  <TextField label="Wallet name" placeholder={trimmedId || "Same as Maker ID"} value={walletName} onChange={(e) => setWalletName(e.target.value)} />
+                  <TextField label="Data directory" placeholder="Default maker directory" value={dataDir} onChange={(e) => setDataDir(e.target.value)} />
+                  <PasswordField label="Wallet password" autoComplete="new-password" value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
+                  <PasswordField label="Tor control password" value={torAuthPassword} onChange={(e) => setTorAuthPassword(e.target.value)} />
+                  <p className="text-[11.5px] leading-5 text-subtle">
+                    Wallet name and data directory are permanent, and the wallet password sets the
+                    wallet file's encryption — none of the three can be changed later. The Tor
+                    password is only used to reach Tor and is asked for again on each start.
+                  </p>
+                </div>
+              </Disclosure>
+            </div>
+          </div>
 
-          <Section title="Tor configuration" subtitle="Shared Tor SOCKS and control service">
-            <TextField label="SOCKS port" inputMode="numeric" {...field("socksPort")} />
-            <TextField label="Control port" inputMode="numeric" {...field("controlPort")} />
-            <div className="col-span-2 max-[700px]:col-span-1"><PasswordField label="Tor control password (optional)" {...field("torAuthPassword")} /></div>
-          </Section>
-          <Section title="Maker ports" subtitle="Unique listeners for this maker instance">
-            <TextField label="Network port" inputMode="numeric" {...field("networkPort")} />
-            <TextField label="Maker RPC port" inputMode="numeric" {...field("rpcPort")} />
-            <div className="col-span-2 max-[700px]:col-span-1"><TextField label="Required confirmations" inputMode="numeric" {...field("requiredConfirms")} /></div>
-          </Section>
+          {group(
+            "Tor",
+            <>
+              <SummaryRow label="SOCKS port" value={values.socksPort} onCommit={set("socksPort")} />
+              <SummaryRow label="Control port" value={values.controlPort} onCommit={set("controlPort")} />
+            </>,
+            torError,
+          )}
 
-          <Section title="Swap policy" subtitle="Minimum size and fees advertised to takers">
-            <TextField label="Minimum swap amount (sats)" inputMode="numeric" {...field("minSwapAmount")} />
-            <TextField label="Base fee (sats)" inputMode="numeric" {...field("baseFee")} />
-            <TextField label="Amount-relative fee (%)" inputMode="decimal" {...field("amountRelativeFeePct")} />
-            <TextField label="Time-relative fee (%)" inputMode="decimal" {...field("timeRelativeFeePct")} />
-          </Section>
-          <Section title="Fidelity bond" subtitle="Reputation collateral and lock duration">
-            <TextField label="Target amount (sats)" inputMode="numeric" {...field("fidelityAmount")} />
-            <TextField label="Timelock (blocks)" inputMode="numeric" {...field("fidelityTimelock")} />
-            <div className="col-span-2 max-[700px]:col-span-1 rounded-control border border-line bg-surface/60 p-3 text-[11.5px] leading-5 text-muted"><ShieldCheck size={16} className="mb-2 text-warning" />Fidelity funds are time-locked. Review these values carefully before funding the maker wallet.</div>
-          </Section>
+          {group(
+            "Maker ports",
+            <>
+              <SummaryRow label="Network port" value={values.networkPort || "…"} onCommit={set("networkPort")} />
+              <SummaryRow label="RPC port" value={values.rpcPort || "…"} onCommit={set("rpcPort")} />
+            </>,
+            portErrors.networkPort ?? portErrors.rpcPort,
+          )}
 
-          <Card className="col-span-2 border-line-strong max-[900px]:col-span-1">
-            <div className="flex items-center justify-between border-b border-line px-5 py-4"><div><h2 className="font-header text-[15px] font-bold">Preflight</h2><p className="mt-1 text-[12px] text-muted">Check shared services before creating the wallet.</p></div><Button variant="secondary" size="sm" onClick={() => void testTor()} loading={torCheck === "running"}>Test Tor</Button></div>
-            <CheckRow label="Unique maker ports" detail={portDetail} state={portCheck} />
-            <CheckRow label="Tor SOCKS and control" detail={torDetail} state={torCheck} />
-          </Card>
+          {group(
+            "Swap policy",
+            <>
+              <SummaryRow label="Minimum swap amount" value={values.minSwapAmount} display={sats(values.minSwapAmount)} suffix="sats" onCommit={set("minSwapAmount")} />
+              <SummaryRow label="Base fee" value={values.baseFee} display={sats(values.baseFee)} suffix="sats" onCommit={set("baseFee")} />
+              <SummaryRow label="Amount-relative fee" value={values.amountRelativeFeePct} suffix="%" inputMode="decimal" onCommit={set("amountRelativeFeePct")} />
+              <SummaryRow label="Time-relative fee" value={values.timeRelativeFeePct} suffix="%" inputMode="decimal" onCommit={set("timeRelativeFeePct")} />
+              <SummaryRow label="Required confirmations" value={values.requiredConfirms} onCommit={set("requiredConfirms")} />
+            </>,
+          )}
+
+          {group(
+            "Fidelity bond",
+            <>
+              <SummaryRow label="Target amount" value={values.fidelityAmount} display={sats(values.fidelityAmount)} suffix="sats" onCommit={set("fidelityAmount")} />
+              <SummaryRow label="Timelock" value={values.fidelityTimelock} display={sats(values.fidelityTimelock)} suffix="blocks" onCommit={set("fidelityTimelock")} />
+            </>,
+          )}
+
+          <div className="border-t border-line px-5 py-4">
+            <p className="text-[11.5px] leading-5 text-subtle">
+              These are defaults. All of them can be changed later from the maker's Settings tab.
+            </p>
+          </div>
+        </Card>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <Link to="/maker" className="inline-flex h-10 items-center rounded-control border border-line px-5 text-[13px] font-semibold text-foreground hover:border-line-strong">
+            Cancel
+          </Link>
+          <Button onClick={() => void createMaker()} loading={creating} disabled={!config || blocked}>
+            Create maker
+          </Button>
         </div>
-
-        <div className="mt-5 flex items-center justify-between gap-4 rounded-card border border-line-strong bg-surface-raised/70 p-4"><p className="text-[11.5px] text-muted">Creation writes the wallet and registration, but leaves the maker stopped.</p><div className="flex gap-2"><Link to="/maker" className="inline-flex h-10 items-center rounded-control border border-line px-5 text-[13px] font-semibold text-foreground">Cancel</Link><Button onClick={() => void createMaker()} loading={creating} disabled={!config || portCheck !== "passed" || torCheck !== "passed"}>Create maker</Button></div></div>
       </div>
     </div>
   );

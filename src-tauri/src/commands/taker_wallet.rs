@@ -15,23 +15,9 @@ use coinswap::nostr_coinswap::NOSTR_RELAYS;
 use coinswap::taker::api::ConnectionType;
 use coinswap::taker::{Taker, TakerInitConfig};
 use coinswap::utill::get_taker_dir;
-use coinswap::wallet::{AddressType, BackendConfig, ElectrumConfig, Wallet};
+use coinswap::wallet::{AddressType, Wallet};
 
-/// Our signet Electrum node. Reached over Tor same as taker/maker traffic; not yet
-/// user-configurable.
-const ELECTRUM_URL: &str = "tcp://170.75.166.88:50001";
-
-/// `pub(crate)` so `commands::maker` can build the same backend for the maker's own wallet.
-pub(crate) fn electrum_backend(socks_port: Option<u16>) -> BackendConfig {
-    BackendConfig::Electrum(ElectrumConfig {
-        url: ELECTRUM_URL.to_string(),
-        socks5: Some(format!("127.0.0.1:{}", socks_port.unwrap_or(9050))),
-        timeout: None,
-        poll_interval_secs: None,
-        max_retries: 3,
-    })
-}
-
+use crate::commands::chain_backend;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{
@@ -131,7 +117,7 @@ pub async fn init_taker(
     let init_cfg = TakerInitConfig {
         data_dir: Some(data_dir.clone()),
         wallet_name: config.wallet_name.clone(),
-        backend: electrum_backend(config.socks_port),
+        backend: chain_backend::resolve(&config.wallet_name, config.socks_port)?,
         control_port: config.control_port,
         tor_auth_password: config.tor_auth_password,
         socks_port: config.socks_port.unwrap_or(9050),
@@ -218,7 +204,7 @@ pub async fn restore_wallet(
 ) -> Result<(), AppError> {
     let dir = resolve_data_dir(&data_dir)?;
     let restored_path = wallet_path(&dir, &wallet_name);
-    let backend = electrum_backend(socks_port);
+    let backend = chain_backend::resolve(&wallet_name, socks_port)?;
     let backup_path = PathBuf::from(backup_file_path);
 
     // `Wallet::restore` refuses to overwrite an existing file and only logs the

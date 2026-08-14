@@ -522,7 +522,7 @@ export function SwapPage() {
     if (walletSyncStatus !== "synced") {
       list.push(
         walletSyncStatus === "error"
-          ? `Wallet sync failed: ${walletSyncError ?? "Electrum is unavailable."}`
+          ? `Wallet sync failed: ${walletSyncError ?? "The chain backend is unavailable."}`
           : "Wait for the initial wallet sync before starting a swap.",
       );
     }

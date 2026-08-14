@@ -3,7 +3,8 @@ import type {
   AddressType,
   AddressValidation,
   Balances,
-  CoreStatus,
+  BackendStatus,
+  ChainBackendConfig,
   FeeEstimate,
   FidelityBond,
   InitConfig,
@@ -13,6 +14,7 @@ import type {
   MakerInitConfig,
   MakerSwapReportDetail,
   MakerSwapReportSummary,
+  MakerPortCheck,
   MakerSettings,
   MakerStatus,
   NewAddress,
@@ -21,7 +23,6 @@ import type {
   PortStatus,
   PriceEstimate,
   RecoveryStatus,
-  RpcSettings,
   SendResult,
   SwapLiquidity,
   SwapFundingEstimate,
@@ -47,13 +48,26 @@ export function checkPort(
   return invoke("check_port", { host, port, timeoutMs });
 }
 
-/** Probes Electrum through the Tor SOCKS proxy, so run it after Tor is confirmed up. */
-export function checkElectrum(socksPort?: number): Promise<PortStatus> {
-  return invoke("check_electrum", { socksPort });
+export function getChainBackend(): Promise<ChainBackendConfig> {
+  return invoke("get_chain_backend");
 }
 
-export function checkBitcoinCore(rpc: RpcSettings): Promise<CoreStatus> {
-  return invoke("check_bitcoin_core", { rpc });
+export function setChainBackend(config: ChainBackendConfig): Promise<void> {
+  return invoke("set_chain_backend", { config });
+}
+
+/** Clears the saved selection and returns the defaults it fell back to. */
+export function resetChainBackend(): Promise<ChainBackendConfig> {
+  return invoke("reset_chain_backend");
+}
+
+/**
+ * Probes a chain backend. Pass `config` to test unsaved edits; omit it to probe
+ * whichever backend is currently saved. `socksPort` only matters for a Tor-routed
+ * Electrum server.
+ */
+export function checkBackend(config?: ChainBackendConfig, socksPort?: number): Promise<BackendStatus> {
+  return invoke("check_backend", { config: config ?? null, socksPort });
 }
 
 export function checkTor(
@@ -236,6 +250,16 @@ export function clearMakerSettings(makerId: string): Promise<void> {
 
 export function getSuggestedMakerPorts(socksPort: number, controlPort: number): Promise<SuggestedMakerPorts> {
   return invoke("get_suggested_maker_ports", { socksPort, controlPort });
+}
+
+/** Verifies a maker's listener ports are bindable and unclaimed. Empty result means both are fine. */
+export function checkMakerPorts(
+  networkPort: number,
+  rpcPort: number,
+  socksPort: number,
+  controlPort: number,
+): Promise<MakerPortCheck> {
+  return invoke("check_maker_ports", { networkPort, rpcPort, socksPort, controlPort });
 }
 
 export function getMakerBalances(makerId: string): Promise<Balances> {

@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, Sparkles } from "lucide-react";
+import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -63,7 +63,7 @@ function TabGroup<T extends string>({
   groupId: string;
 }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded-full bg-white/[0.02] p-1">
+    <div className="inline-flex items-center gap-1 rounded-full p-1">
       {options.map((opt) => (
         <button
           key={opt.value}
@@ -224,7 +224,8 @@ export function WalletPage() {
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <span className="font-header text-[13px] uppercase tracking-widest text-muted">Loading wallet…</span>
         <span className="relative h-[2px] w-48 overflow-hidden rounded-pill bg-line">
-          <span className="absolute inset-y-0 left-0 w-full origin-left animate-[status-fill_1.4s_ease-in-out_infinite] bg-success shadow-[0_0_8px_rgba(49,209,88,0.7)]" />
+          {/* transform-origin belongs to the keyframes, which flip it mid-cycle. */}
+          <span className="absolute inset-y-0 left-0 w-full animate-[status-fill_1.9s_ease-in-out_infinite] bg-success shadow-[0_0_8px_rgba(49,209,88,0.7)]" />
         </span>
       </div>
     );
@@ -293,7 +294,7 @@ export function WalletPage() {
       {totalBalance === 0 && transactions.length === 0 && syncStatus !== "error" && (
         <div className="mt-3 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-control border border-primary/35 bg-primary/[0.06] px-4 py-3">
           <span className="flex items-center gap-2.5">
-            <Sparkles size={16} strokeWidth={1.9} className="flex-none text-primary" />
+            <ArrowDownToLine size={16} strokeWidth={1.9} className="flex-none text-primary" />
             <span className="text-[12.5px] text-muted">
               <strong className="font-semibold text-foreground">This wallet is empty.</strong> Receive
               bitcoin into it before starting a swap.
@@ -391,7 +392,7 @@ export function WalletPage() {
                   { value: "swap", label: "Swaps" },
                 ]}
               />
-              <div className="inline-flex items-center gap-1 rounded-full bg-white/[0.02] p-1">
+              <div className="inline-flex items-center gap-1 rounded-full p-1">
                 {(["newest", "amount"] as TxSortKey[]).map((key) => (
                   <button
                     key={key}

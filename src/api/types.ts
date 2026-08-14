@@ -5,21 +5,38 @@ export interface PortStatus {
   error?: string;
 }
 
-export interface RpcSettings {
+export type ChainBackendKind = "electrum" | "coreRpc";
+
+export interface ElectrumBackend {
+  url: string;
+  /** An `.onion` URL is proxied regardless of this flag — the crate rejects one without a proxy. */
+  useTor: boolean;
+}
+
+export interface NodeBackend {
   host: string;
   port: number;
   username: string;
   password: string;
+  zmqPort: number;
 }
 
-export interface CoreStatus {
-  chain: string;
-  blocks: number;
-  headers: number;
-  initialBlockDownload: boolean;
+export interface ChainBackendConfig {
+  kind: ChainBackendKind;
+  electrum: ElectrumBackend;
+  /** Null until the user adds their own node. */
+  node: NodeBackend | null;
+}
+
+export interface BackendStatus {
+  reachable: boolean;
+  error?: string;
+  chain?: string;
+  blocks?: number;
   synced: boolean;
-  subversion: string;
-  verificationProgress: number;
+  /** Bitcoin Core only; Electrum has no version string to report. */
+  subversion?: string;
+  verificationProgress?: number;
 }
 
 export interface VersionInfo {
@@ -231,6 +248,12 @@ export interface MakerInitConfig extends MakerSettings {
 export interface SuggestedMakerPorts {
   networkPort: number;
   rpcPort: number;
+}
+
+/** Per-port conflict message, absent when the port is usable. */
+export interface MakerPortCheck {
+  networkPort?: string;
+  rpcPort?: string;
 }
 
 export type MakerPhase =

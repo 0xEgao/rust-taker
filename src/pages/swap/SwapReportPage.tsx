@@ -347,7 +347,7 @@ export function SwapReportPage() {
                     <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]">
                       <span className="block h-full w-full origin-left animate-[market-progress_1.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-primary via-primary-hover to-primary" />
                     </div>
-                    <span className="text-[11.5px] text-subtle">Fetching the contract transaction from Electrum over Tor…</span>
+                    <span className="text-[11.5px] text-subtle">Fetching the contract transaction from the chain…</span>
                   </div>
                 )}
                 {verifyResult && !verifying && (

@@ -6,8 +6,8 @@ mod tor;
 mod types;
 
 use commands::{
-    logs, maker, maker_reports, maker_settings, maker_wallet, market, setup, taker_reports,
-    taker_swap, taker_wallet,
+    chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet, market, setup,
+    taker_reports, taker_swap, taker_wallet,
 };
 use tauri::Manager;
 
@@ -20,10 +20,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // setup / connectivity
             setup::check_port,
-            setup::check_electrum,
-            setup::check_bitcoin_core,
             setup::check_tor,
             setup::get_version_info,
+            // chain backend selection
+            chain_backend::get_chain_backend,
+            chain_backend::set_chain_backend,
+            chain_backend::reset_chain_backend,
+            chain_backend::check_backend,
             // taker wallet lifecycle
             taker_wallet::is_wallet_encrypted,
             taker_wallet::list_wallets,
@@ -86,6 +89,7 @@ pub fn run() {
             maker_settings::get_saved_maker_settings,
             maker_settings::clear_maker_settings,
             maker_settings::get_suggested_maker_ports,
+            maker_settings::check_maker_ports,
             // maker logs
             logs::get_maker_logs,
         ])

@@ -2,7 +2,7 @@
 //! makers are reconstructed from these settings and their wallet files only
 //! when `start_maker` is explicitly called.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use coinswap::utill::get_maker_dir;
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
-use crate::types::{MakerSettingsDto, SuggestedMakerPortsDto};
+use crate::types::{MakerPortCheckDto, MakerSettingsDto, SuggestedMakerPortsDto};
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +25,11 @@ struct StoredMakers {
     /// import and resurrects every registration the user just deleted.
     #[serde(default)]
     dashboard_migrated: bool,
+    /// Ids removed through the UI. Removing a maker there is the permanent gesture — its
+    /// wallet and data dir are left alone — so these must never be listed or re-imported
+    /// again, however the registry got emptied in the meantime.
+    #[serde(default)]
+    deleted: HashSet<String>,
 }
 
 /// Compatibility shape for Maker Dashboard's registration store. Credentials
@@ -190,7 +195,8 @@ pub(crate) fn load_all() -> Result<HashMap<String, MakerSettingsDto>, AppError> 
     // it to false, so a populated one must still suppress the import.
     if stored.makers.is_empty() && !stored.dashboard_migrated {
         if let Some(dashboard_path) = dashboard_settings_path() {
-            let discovered = load_dashboard_registrations(&dashboard_path)?;
+            let mut discovered = load_dashboard_registrations(&dashboard_path)?;
+            discovered.retain(|maker_id, _| !stored.deleted.contains(maker_id));
             // Leave the flag clear when nothing was found, so a dashboard
             // installed or decrypted later still migrates.
             if !discovered.is_empty() {
@@ -211,6 +217,8 @@ pub(crate) fn save(settings: &MakerSettingsDto) -> Result<(), AppError> {
     let _guard = SETTINGS_IO.lock()?;
     let path = settings_path()?;
     let mut stored = load_file(&path)?;
+    // Re-adding an id under the same name is a deliberate revival, so it stops being deleted.
+    stored.deleted.remove(&settings.maker_id);
     stored
         .makers
         .insert(settings.maker_id.clone(), settings.clone());
@@ -246,6 +254,7 @@ pub fn clear_maker_settings(
     let path = settings_path()?;
     let mut stored = load_file(&path)?;
     stored.makers.remove(&maker_id);
+    stored.deleted.insert(maker_id.clone());
     // An explicit delete settles the migration even for a registry that was
     // populated natively, so emptying it can never re-run the dashboard import.
     stored.dashboard_migrated = true;
@@ -291,6 +300,54 @@ pub fn get_suggested_maker_ports(
     })
 }
 
+/// Why `port` cannot be a maker listener, or `None` if it can.
+///
+/// Deliberately not `setup::check_port`: that connects and reports success when something
+/// is *already listening*, the inverse of what a port we intend to bind needs — wiring it
+/// in here would approve exactly the ports that are taken.
+fn port_conflict(port: u16, socks_port: u16, control_port: u16, taken: &HashMap<u16, String>) -> Option<String> {
+    if port == 0 {
+        return Some("Not a valid port.".to_string());
+    }
+    if port == socks_port || port == control_port {
+        return Some(format!("Port {port} is already used by Tor."));
+    }
+    if let Some(owner) = taken.get(&port) {
+        return Some(format!("Port {port} is already used by maker '{owner}'."));
+    }
+    if !is_port_free(port) {
+        return Some(format!("Port {port} is already in use. Pick another."));
+    }
+    None
+}
+
+/// Validates a maker's two listener ports so the UI can warn before `init_maker` writes a
+/// wallet — a failure there has to be unwound (`maker::abort_failed_creation`).
+#[tauri::command]
+pub fn check_maker_ports(
+    network_port: u16,
+    rpc_port: u16,
+    socks_port: u16,
+    control_port: u16,
+) -> Result<MakerPortCheckDto, AppError> {
+    let mut taken = HashMap::new();
+    for (id, settings) in load_all()? {
+        taken.insert(settings.network_port, id.clone());
+        taken.insert(settings.rpc_port, id);
+    }
+
+    let mut result = MakerPortCheckDto {
+        network_port: port_conflict(network_port, socks_port, control_port, &taken),
+        rpc_port: port_conflict(rpc_port, socks_port, control_port, &taken),
+    };
+    // Both bind the same host, so an identical pair fails at start even though each port is
+    // free on its own.
+    if result.rpc_port.is_none() && network_port == rpc_port {
+        result.rpc_port = Some("Network and RPC ports must differ.".to_string());
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,12 +389,38 @@ mod tests {
         let mut emptied = StoredMakers {
             makers: HashMap::from([("maker-one".to_string(), settings())]),
             dashboard_migrated: true,
+            deleted: HashSet::new(),
         };
         emptied.makers.remove("maker-one");
         let round_tripped: StoredMakers =
             serde_json::from_slice(&serde_json::to_vec(&emptied).unwrap()).unwrap();
         assert!(round_tripped.makers.is_empty());
         assert!(round_tripped.dashboard_migrated);
+    }
+
+    /// Removing a maker in the UI is the permanent gesture. Its tombstone has to survive the
+    /// round trip through `makers.json` and keep the dashboard import from bringing the id
+    /// back, which is how three deleted makers previously reappeared.
+    #[test]
+    fn removal_tombstone_persists_and_blocks_reimport() {
+        let mut stored = StoredMakers {
+            makers: HashMap::from([("Zoro".to_string(), settings())]),
+            dashboard_migrated: true,
+            deleted: HashSet::new(),
+        };
+        stored.makers.remove("Zoro");
+        stored.deleted.insert("Zoro".to_string());
+
+        let reloaded: StoredMakers =
+            serde_json::from_slice(&serde_json::to_vec(&stored).unwrap()).unwrap();
+        assert!(reloaded.deleted.contains("Zoro"));
+
+        let mut discovered = HashMap::from([
+            ("Zoro".to_string(), settings()),
+            ("Luffy".to_string(), settings()),
+        ]);
+        discovered.retain(|maker_id, _| !reloaded.deleted.contains(maker_id));
+        assert_eq!(discovered.into_keys().collect::<Vec<_>>(), vec!["Luffy"]);
     }
 
     #[test]
@@ -347,11 +430,49 @@ mod tests {
         let value = serde_json::to_value(StoredMakers {
             makers,
             dashboard_migrated: true,
+            deleted: HashSet::new(),
         })
         .unwrap();
         assert!(value["makers"]["maker-one"]
             .get("torAuthPassword")
             .is_none());
+    }
+
+    #[test]
+    fn port_conflict_names_tor_and_other_makers() {
+        let mut taken = HashMap::new();
+        taken.insert(6102, "maker-one".to_string());
+
+        assert!(port_conflict(9050, 9050, 9051, &taken)
+            .expect("socks port must conflict")
+            .contains("Tor"));
+        assert!(port_conflict(9051, 9050, 9051, &taken)
+            .expect("control port must conflict")
+            .contains("Tor"));
+        assert!(port_conflict(6102, 9050, 9051, &taken)
+            .expect("registered maker port must conflict")
+            .contains("maker-one"));
+        assert!(port_conflict(0, 9050, 9051, &taken).is_some());
+    }
+
+    #[test]
+    fn port_conflict_reports_an_occupied_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Held open for the duration of the check, so the bind probe must fail.
+        assert!(port_conflict(port, 9050, 9051, &HashMap::new()).is_some());
+        drop(listener);
+        assert!(port_conflict(port, 9050, 9051, &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn identical_network_and_rpc_ports_are_rejected() {
+        let free = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let result = check_maker_ports(port, port, 9050, 9051).unwrap();
+        assert!(result.network_port.is_none());
+        assert!(result.rpc_port.expect("duplicate must be caught").contains("differ"));
     }
 
     #[test]

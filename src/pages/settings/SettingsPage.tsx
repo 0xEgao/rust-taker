@@ -1,12 +1,38 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Check, CheckCircle2, Copy, ExternalLink, Eye, EyeOff, ScrollText, Save, XCircle } from "lucide-react";
+import {
+  Check,
+  CheckCircle2,
+  Copy,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Lock,
+  ScrollText,
+  Save,
+  XCircle,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { backupWallet, checkBitcoinCore, checkPort, checkTor } from "../../api/commands";
-import type { CoreStatus } from "../../api/types";
+import {
+  backupWallet,
+  checkBackend,
+  checkPort,
+  checkTor,
+  getChainBackend,
+  resetChainBackend,
+  setChainBackend,
+  shutdownTaker,
+} from "../../api/commands";
+import type {
+  BackendStatus,
+  ChainBackendConfig,
+  ChainBackendKind,
+  ElectrumBackend,
+  NodeBackend,
+} from "../../api/types";
 import { Modal } from "../../components/ui/display";
-import { Button, PasswordField, TextField } from "../../components/ui/inputs";
+import { Button, PasswordField, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import {
   HARDCODED_DEFAULTS,
   RPC_HOST,
@@ -14,9 +40,26 @@ import {
   saveConnectivityDefaults,
   type ConnectivityConfig,
 } from "../../lib/connectivity";
+import { useSessionStore } from "../../store/session";
 import { useToastStore } from "../../store/toast";
 
 const BITCOIN_GUIDE_URL = "https://github.com/citadel-tech/coinswap/blob/master/docs/bitcoind.md";
+
+const DEFAULT_NODE: NodeBackend = {
+  host: RPC_HOST,
+  port: 38332,
+  username: "user",
+  password: "password",
+  zmqPort: 28332,
+};
+
+// Only the *active* backend's settings force a wallet reload — editing the idle
+// section changes nothing about the connection the running taker already holds.
+function activeFingerprint(kind: ChainBackendKind, electrum: ElectrumBackend, node: NodeBackend) {
+  return kind === "electrum"
+    ? `electrum|${electrum.url}|${electrum.useTor}`
+    : `node|${node.host}|${node.port}|${node.username}|${node.password}|${node.zmqPort}`;
+}
 
 interface TestRow {
   label: string;
@@ -44,15 +87,36 @@ function SectionDot({ color = "bg-primary" }: { color?: string }) {
   return <span className={`h-1.5 w-1.5 rounded-full ${color}`} />;
 }
 
+function ActiveBadge({ active }: { active: boolean }) {
+  if (!active) return null;
+  return (
+    <span className="rounded-full bg-primary/15 px-2 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-widest text-primary">
+      In use
+    </span>
+  );
+}
+
 export function SettingsPage() {
   const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
-  const [config, setConfig] = useState<ConnectivityConfig>(loadConnectivityDefaults);
+  const resetSession = useSessionStore((s) => s.reset);
+
+  const [tor, setTor] = useState<ConnectivityConfig>(loadConnectivityDefaults);
   const [torPasswordVisible, setTorPasswordVisible] = useState(false);
 
-  const [coreStatus, setCoreStatus] = useState<CoreStatus | null>(null);
-  const [testingRpc, setTestingRpc] = useState(false);
-  const [rpcRows, setRpcRows] = useState<TestRow[] | null>(null);
+  const [kind, setKind] = useState<ChainBackendKind>("electrum");
+  const [electrum, setElectrum] = useState<ElectrumBackend>({ url: "", useTor: false });
+  const [node, setNode] = useState<NodeBackend>(DEFAULT_NODE);
+  const [nodeAdded, setNodeAdded] = useState(false);
+  // Captured once, from the config the running taker was built against.
+  const [bootFingerprint, setBootFingerprint] = useState<string | null>(null);
+  const [savedFingerprint, setSavedFingerprint] = useState<string | null>(null);
+
+  const [status, setStatus] = useState<BackendStatus | null>(null);
+  const [testingElectrum, setTestingElectrum] = useState(false);
+  const [electrumRows, setElectrumRows] = useState<TestRow[] | null>(null);
+  const [testingNode, setTestingNode] = useState(false);
+  const [nodeRows, setNodeRows] = useState<TestRow[] | null>(null);
   const [testingTor, setTestingTor] = useState(false);
   const [torRows, setTorRows] = useState<TestRow[] | null>(null);
 
@@ -65,50 +129,107 @@ export function SettingsPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // An onion server has no route without a proxy, so the toggle is not the user's to make there.
+  const onionUrl = electrum.url.includes(".onion");
+  const electrumRoute = electrum.useTor || onionUrl ? "tor" : "direct";
+  const needsReload = savedFingerprint !== null && savedFingerprint !== bootFingerprint;
+
   useEffect(() => {
-    void checkBitcoinCore({ host: RPC_HOST, port: config.rpcPort, username: config.rpcUsername, password: config.rpcPassword })
-      .then(setCoreStatus)
-      .catch(() => setCoreStatus(null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void getChainBackend()
+      .then((c) => {
+        applyConfig(c);
+        const fp = activeFingerprint(c.kind, c.electrum, c.node ?? DEFAULT_NODE);
+        setBootFingerprint(fp);
+        setSavedFingerprint(fp);
+        return checkBackend(undefined, loadConnectivityDefaults().torSocksPort);
+      })
+      .then(setStatus)
+      .catch(() => setStatus(null));
   }, []);
 
-  async function testBitcoind() {
-    setTestingRpc(true);
-    const rpc = { host: RPC_HOST, port: config.rpcPort, username: config.rpcUsername, password: config.rpcPassword };
-    const [coreResult, zmqResult] = await Promise.allSettled([checkBitcoinCore(rpc), checkPort(RPC_HOST, config.zmqPort)]);
+  function applyConfig(c: ChainBackendConfig) {
+    setKind(c.kind);
+    setElectrum(c.electrum);
+    setNodeAdded(c.node !== null);
+    if (c.node) setNode(c.node);
+  }
 
-    const rpcOk = coreResult.status === "fulfilled";
-    if (rpcOk) setCoreStatus(coreResult.value);
-    else setCoreStatus(null);
+  async function persistBackend(nextKind: ChainBackendKind, addNode: boolean) {
+    const config: ChainBackendConfig = {
+      kind: nextKind,
+      electrum: { ...electrum, useTor: electrum.useTor || onionUrl },
+      node: addNode || nodeAdded ? node : null,
+    };
+    try {
+      await setChainBackend(config);
+    } catch (e) {
+      pushToast("error", (e as { message?: string })?.message ?? "Could not save the connection.");
+      return;
+    }
+    applyConfig(config);
+    setSavedFingerprint(activeFingerprint(config.kind, config.electrum, config.node ?? DEFAULT_NODE));
+    saveConnectivityDefaults(tor);
+    pushToast("success", "Settings saved.");
+    setStatus(await checkBackend(config, tor.torSocksPort).catch(() => null));
+  }
 
-    setRpcRows([
-      {
-        label: "RPC",
-        ok: rpcOk,
-        message: rpcOk
-          ? `${coreResult.value.subversion || "Unknown"} · ${coreResult.value.chain} · ${coreResult.value.blocks.toLocaleString()} blocks`
-          : ((coreResult as PromiseRejectedResult).reason as { message?: string })?.message ?? "Unreachable",
-      },
+  function describe(result: PromiseSettledResult<BackendStatus>): TestRow {
+    if (result.status === "rejected") {
+      return { label: "Connection", ok: false, message: (result.reason as { message?: string })?.message ?? "Unreachable" };
+    }
+    const s = result.value;
+    return {
+      label: "Connection",
+      ok: s.reachable,
+      message: s.reachable
+        ? [s.subversion, s.chain, s.blocks !== undefined ? `${s.blocks.toLocaleString()} blocks` : null]
+            .filter(Boolean)
+            .join(" · ")
+        : (s.error ?? "Unreachable"),
+    };
+  }
+
+  async function testElectrum() {
+    setTestingElectrum(true);
+    const config: ChainBackendConfig = {
+      kind: "electrum",
+      electrum: { ...electrum, useTor: electrum.useTor || onionUrl },
+      node: nodeAdded ? node : null,
+    };
+    const [result] = await Promise.allSettled([checkBackend(config, tor.torSocksPort)]);
+    setElectrumRows([describe(result)]);
+    setTestingElectrum(false);
+  }
+
+  async function testNode() {
+    setTestingNode(true);
+    const config: ChainBackendConfig = { kind: "coreRpc", electrum, node };
+    const [rpcResult, zmqResult] = await Promise.allSettled([
+      checkBackend(config, tor.torSocksPort),
+      checkPort(node.host, node.zmqPort),
+    ]);
+    setNodeRows([
+      { ...describe(rpcResult), label: "RPC" },
       {
         label: "ZMQ",
         ok: zmqResult.status === "fulfilled" && zmqResult.value.reachable,
         message:
           zmqResult.status === "fulfilled"
             ? zmqResult.value.reachable
-              ? `Port ${config.zmqPort} reachable`
+              ? `Port ${node.zmqPort} reachable`
               : (zmqResult.value.error ?? "Unreachable")
             : "Unreachable",
       },
     ]);
-    setTestingRpc(false);
+    setTestingNode(false);
   }
 
   async function testTor() {
     setTestingTor(true);
-    // checkTor now ensures Tor is actually running (system/host-binary/embedded fallback) before
+    // checkTor ensures Tor is actually running (system/host-binary/embedded fallback) before
     // its handshake — run it first so the SOCKS-port check below reflects that, not a race.
-    const [torResult] = await Promise.allSettled([checkTor(config.torSocksPort, config.torControlPort, config.torAuthPassword)]);
-    const [socksResult] = await Promise.allSettled([checkPort(RPC_HOST, config.torSocksPort)]);
+    const [torResult] = await Promise.allSettled([checkTor(tor.torSocksPort, tor.torControlPort, tor.torAuthPassword)]);
+    const [socksResult] = await Promise.allSettled([checkPort(RPC_HOST, tor.torSocksPort)]);
     setTorRows([
       {
         label: "SOCKS Port",
@@ -116,7 +237,7 @@ export function SettingsPage() {
         message:
           socksResult.status === "fulfilled"
             ? socksResult.value.reachable
-              ? `Port ${config.torSocksPort} reachable`
+              ? `Port ${tor.torSocksPort} reachable`
               : (socksResult.value.error ?? "Unreachable")
             : "Unreachable",
       },
@@ -132,24 +253,35 @@ export function SettingsPage() {
     setTestingTor(false);
   }
 
-  async function handleSave() {
-    saveConnectivityDefaults(config);
-    pushToast("success", "Settings saved.");
-    await testBitcoind();
-    await testTor();
+  async function handleResetConfirmed() {
+    setTor(HARDCODED_DEFAULTS);
+    saveConnectivityDefaults(HARDCODED_DEFAULTS);
+    setConfirmReset(false);
+    setElectrumRows(null);
+    setNodeRows(null);
+    setTorRows(null);
+    try {
+      const defaults = await resetChainBackend();
+      applyConfig(defaults);
+      setNode(DEFAULT_NODE);
+      setSavedFingerprint(activeFingerprint(defaults.kind, defaults.electrum, DEFAULT_NODE));
+      pushToast("success", "Settings reset to defaults.");
+    } catch (e) {
+      pushToast("error", (e as { message?: string })?.message ?? "Could not reset the connection.");
+    }
   }
 
-  function handleResetConfirmed() {
-    setConfig(HARDCODED_DEFAULTS);
-    setRpcRows(null);
-    setTorRows(null);
-    setCoreStatus(null);
-    setConfirmReset(false);
-    pushToast("success", "Settings reset to defaults.");
+  async function lockAndReload() {
+    try {
+      await shutdownTaker();
+    } catch {
+      // Already gone, or a swap holds the lock — either way the session must reset.
+    }
+    resetSession();
   }
 
   async function copyZmqConfig() {
-    const text = `zmqpubrawblock=tcp://127.0.0.1:${config.zmqPort}\nzmqpubrawtx=tcp://127.0.0.1:${config.zmqPort}`;
+    const text = `zmqpubrawblock=tcp://127.0.0.1:${node.zmqPort}\nzmqpubrawtx=tcp://127.0.0.1:${node.zmqPort}`;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -199,11 +331,22 @@ export function SettingsPage() {
           <Button variant="secondary" onClick={() => setConfirmReset(true)}>
             Reset to Defaults
           </Button>
-          <Button onClick={() => void handleSave()}>
+          <Button onClick={() => void persistBackend(kind, false)}>
             <Save size={14} strokeWidth={2} /> Save Settings
           </Button>
         </div>
       </header>
+
+      {needsReload && (
+        <div className="mt-6 flex items-center justify-between gap-4 rounded-2xl border border-warning/40 bg-warning/10 px-5 py-4">
+          <p className="text-[12.5px] text-muted">
+            The chain connection changed. This wallet is still running on the previous one — reload it to switch over.
+          </p>
+          <Button size="sm" variant="secondary" onClick={() => void lockAndReload()}>
+            <Lock size={13} strokeWidth={2} /> Lock &amp; reload wallet
+          </Button>
+        </div>
+      )}
 
       <div className="mt-6 flex flex-col divide-y divide-line rounded-2xl border border-line bg-surface">
         {/* Wallet backup */}
@@ -255,18 +398,23 @@ export function SettingsPage() {
         {/* Connection status */}
         <section className="p-6">
           <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-subtle">
-            <span className={`h-1.5 w-1.5 rounded-full ${coreStatus ? "bg-success" : "bg-subtle/40"}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${status?.reachable ? "bg-success" : "bg-subtle/40"}`} />
             Connection Status
-            <span className={`ml-1 font-semibold ${coreStatus ? "text-success" : "text-danger"}`}>
-              {coreStatus ? "Connected" : "Not Connected"}
+            <span className={`ml-1 font-semibold ${status?.reachable ? "text-success" : "text-danger"}`}>
+              {status?.reachable ? "Connected" : "Not Connected"}
             </span>
           </div>
           <div className="mt-3 grid grid-cols-4 gap-3">
             {[
-              ["Bitcoin Version", coreStatus?.subversion || "--"],
-              ["Network", coreStatus?.chain ?? "--"],
-              ["Block Height", coreStatus ? coreStatus.blocks.toLocaleString() : "--"],
-              ["Sync Progress", coreStatus ? `${(coreStatus.verificationProgress * 100).toFixed(1)}%` : "--"],
+              ["Source", kind === "coreRpc" ? "Your node" : "Electrum"],
+              ["Network", status?.chain ?? "--"],
+              ["Block Height", status?.blocks !== undefined ? status.blocks.toLocaleString() : "--"],
+              [
+                "Sync Progress",
+                status?.verificationProgress !== undefined
+                  ? `${(status.verificationProgress * 100).toFixed(1)}%`
+                  : "--",
+              ],
             ].map(([label, value]) => (
               <div key={label} className="rounded-lg border border-line bg-surface-raised px-3.5 py-3">
                 <span className="block text-[11px] text-subtle">{label}</span>
@@ -276,33 +424,92 @@ export function SettingsPage() {
           </div>
         </section>
 
-        {/* Bitcoin Core RPC */}
+        {/* Electrum server */}
         <section className="p-6">
           <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-subtle">
             <SectionDot />
-            Bitcoin Core RPC
+            Electrum Server
+            <ActiveBadge active={kind === "electrum"} />
           </div>
+          <p className="mt-2.5 max-w-2xl text-[13px] leading-relaxed text-muted">
+            The wallet reads the chain from this server. Connecting directly is faster and far more reliable, but the
+            server sees your IP address. Routing through Tor hides it, at the cost of speed — a circuit that stalls or
+            drops mid-swap can hold up the swap, so only choose it if the privacy is worth that risk to you.
+          </p>
+          <div className="mt-3 grid grid-cols-[1fr_auto] items-end gap-3">
+            <TextField
+              label="Server URL"
+              placeholder="tcp://host:50001"
+              value={electrum.url}
+              onChange={(e) => setElectrum((c) => ({ ...c, url: e.target.value }))}
+            />
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[12.5px] font-medium text-muted">Route</label>
+              <SegmentedToggle
+                groupId="electrum-route"
+                value={electrumRoute}
+                onChange={(v) => setElectrum((c) => ({ ...c, useTor: v === "tor" }))}
+                options={[
+                  {
+                    value: "direct",
+                    label: "Direct",
+                    disabled: onionUrl,
+                    title: onionUrl ? "An onion address can only be reached over Tor" : undefined,
+                  },
+                  { value: "tor", label: "Via Tor" },
+                ]}
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex items-center gap-3">
+            <Button size="sm" variant="secondary" onClick={() => void testElectrum()} loading={testingElectrum}>
+              Test connection
+            </Button>
+            {kind !== "electrum" && (
+              <Button size="sm" onClick={() => void persistBackend("electrum", false)}>
+                Use Electrum
+              </Button>
+            )}
+          </div>
+          {electrumRows && <TestResultRows rows={electrumRows} />}
+        </section>
+
+        {/* Own node */}
+        <section className="p-6">
+          <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-subtle">
+            <SectionDot color="bg-success" />
+            Add Your Own Node
+            <ActiveBadge active={kind === "coreRpc"} />
+          </div>
+          <p className="mt-2.5 max-w-2xl text-[13px] leading-relaxed text-muted">
+            Skip the Electrum server entirely and talk to a Bitcoin Core node you run. It needs RPC credentials and
+            ZMQ notifications enabled.
+          </p>
           <div className="mt-3 grid grid-cols-2 gap-6">
             <div>
               <div className="grid grid-cols-2 gap-3">
-                <TextField label="RPC Host" value={RPC_HOST} disabled />
+                <TextField
+                  label="RPC Host"
+                  value={node.host}
+                  onChange={(e) => setNode((c) => ({ ...c, host: e.target.value }))}
+                />
                 <TextField
                   label="RPC Port"
                   type="text"
                   inputMode="numeric"
-                  value={config.rpcPort}
-                  onChange={(e) => setConfig((c) => ({ ...c, rpcPort: Number(e.target.value) || 0 }))}
+                  value={node.port}
+                  onChange={(e) => setNode((c) => ({ ...c, port: Number(e.target.value) || 0 }))}
                 />
                 <TextField
                   label="RPC Username"
-                  value={config.rpcUsername}
-                  onChange={(e) => setConfig((c) => ({ ...c, rpcUsername: e.target.value }))}
+                  value={node.username}
+                  onChange={(e) => setNode((c) => ({ ...c, username: e.target.value }))}
                 />
                 <PasswordField
                   label="RPC Password"
                   placeholder="Enter RPC password"
-                  value={config.rpcPassword}
-                  onChange={(e) => setConfig((c) => ({ ...c, rpcPassword: e.target.value }))}
+                  value={node.password}
+                  onChange={(e) => setNode((c) => ({ ...c, password: e.target.value }))}
                 />
               </div>
               <div className="mt-3">
@@ -310,16 +517,19 @@ export function SettingsPage() {
                   label="ZMQ Port"
                   type="text"
                   inputMode="numeric"
-                  value={config.zmqPort}
-                  onChange={(e) => setConfig((c) => ({ ...c, zmqPort: Number(e.target.value) || 0 }))}
+                  value={node.zmqPort}
+                  onChange={(e) => setNode((c) => ({ ...c, zmqPort: Number(e.target.value) || 0 }))}
                 />
               </div>
               <div className="mt-4 flex items-center gap-3">
-                <Button size="sm" variant="secondary" onClick={() => void testBitcoind()} loading={testingRpc}>
-                  Test Bitcoind
+                <Button size="sm" variant="secondary" onClick={() => void testNode()} loading={testingNode}>
+                  Test connection
+                </Button>
+                <Button size="sm" onClick={() => void persistBackend("coreRpc", true)}>
+                  {kind === "coreRpc" ? "Save node" : "Use this node"}
                 </Button>
               </div>
-              {rpcRows && <TestResultRows rows={rpcRows} />}
+              {nodeRows && <TestResultRows rows={nodeRows} />}
             </div>
 
             <div>
@@ -328,7 +538,7 @@ export function SettingsPage() {
                 <span className="text-subtle">Read-only</span>
               </div>
               <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-line bg-surface-raised p-3 font-mono text-[12px] text-muted">
-                {`zmqpubrawblock=tcp://127.0.0.1:${config.zmqPort}\nzmqpubrawtx=tcp://127.0.0.1:${config.zmqPort}`}
+                {`zmqpubrawblock=tcp://127.0.0.1:${node.zmqPort}\nzmqpubrawtx=tcp://127.0.0.1:${node.zmqPort}`}
               </pre>
               <Button variant="secondary" size="sm" className="mt-2.5 w-full justify-center" onClick={() => void copyZmqConfig()}>
                 {copied ? <Check size={13} strokeWidth={2} /> : <Copy size={13} strokeWidth={2} />}
@@ -354,20 +564,24 @@ export function SettingsPage() {
             <SectionDot color="bg-[#b990ff]" />
             Tor
           </div>
+          <p className="mt-2.5 max-w-2xl text-[13px] leading-relaxed text-muted">
+            Swaps always run over Tor — makers are reachable only as hidden services. These ports are used for that,
+            and for the Electrum server when it is set to route via Tor.
+          </p>
           <div className="mt-3 grid grid-cols-3 gap-3">
             <TextField
               label="Control Port"
               type="text"
               inputMode="numeric"
-              value={config.torControlPort}
-              onChange={(e) => setConfig((c) => ({ ...c, torControlPort: Number(e.target.value) || 0 }))}
+              value={tor.torControlPort}
+              onChange={(e) => setTor((c) => ({ ...c, torControlPort: Number(e.target.value) || 0 }))}
             />
             <TextField
               label="SOCKS Port"
               type="text"
               inputMode="numeric"
-              value={config.torSocksPort}
-              onChange={(e) => setConfig((c) => ({ ...c, torSocksPort: Number(e.target.value) || 0 }))}
+              value={tor.torSocksPort}
+              onChange={(e) => setTor((c) => ({ ...c, torSocksPort: Number(e.target.value) || 0 }))}
             />
             <div className="flex flex-col gap-1.5">
               <label className="text-[12.5px] font-medium text-muted">Auth Password</label>
@@ -375,8 +589,8 @@ export function SettingsPage() {
                 <input
                   type={torPasswordVisible ? "text" : "password"}
                   placeholder="Optional"
-                  value={config.torAuthPassword}
-                  onChange={(e) => setConfig((c) => ({ ...c, torAuthPassword: e.target.value }))}
+                  value={tor.torAuthPassword}
+                  onChange={(e) => setTor((c) => ({ ...c, torAuthPassword: e.target.value }))}
                   className="h-10 w-full rounded-sm border border-line bg-surface-raised px-3 pr-10 text-[13px] text-foreground outline-none transition-colors placeholder:text-subtle focus:border-line-strong"
                 />
                 <button
@@ -422,13 +636,13 @@ export function SettingsPage() {
               <Button variant="secondary" onClick={() => setConfirmReset(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleResetConfirmed}>Reset</Button>
+              <Button onClick={() => void handleResetConfirmed()}>Reset</Button>
             </>
           }
         >
           <p className="text-[13px] text-muted">
-            This resets RPC and Tor connection settings on this screen back to their defaults. It does not affect
-            your wallet or funds.
+            This restores the bundled Electrum server, forgets the node you added, and resets Tor ports back to their
+            defaults. It does not affect your wallet or funds.
           </p>
         </Modal>
       )}

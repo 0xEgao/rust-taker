@@ -6,13 +6,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use coinswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
-use coinswap::wallet::{BackendConfig, Electrum};
-
-use crate::commands::taker_wallet::electrum_backend;
-use crate::error::{AppError, ErrorCode};
+use crate::error::AppError;
 use crate::state::AppState;
-use crate::types::{CoreStatus, PortStatus, RpcSettings, TorStatus, VersionInfo};
+use crate::types::{PortStatus, TorStatus, VersionInfo};
 
 /// Raw TCP reachability probe (RPC / ZMQ / Tor SOCKS / Tor control ports).
 #[tauri::command]
@@ -53,78 +49,6 @@ pub async fn check_port(
     })
     .await
     .map_err(AppError::internal)
-}
-
-/// One bounded attempt is enough for a precheck. The backend's own defaults (a 120s proxied
-/// read timeout plus `max_retries` reconnects) would stall the UI for minutes before verdict.
-const ELECTRUM_PROBE_TIMEOUT_SECS: u8 = 15;
-
-/// Electrum precheck, routed through the same SOCKS proxy the wallet backend uses.
-///
-/// Deliberately not a `check_port` against the Electrum host: that opens a direct clearnet
-/// socket, which both leaks the user's IP to a server all other traffic reaches over Tor and
-/// wrongly reports "unreachable" on networks where only the proxied route works. Requires Tor
-/// to be up, so callers must run this *after* their Tor check.
-#[tauri::command]
-pub async fn check_electrum(socks_port: Option<u16>) -> Result<PortStatus, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let BackendConfig::Electrum(mut config) = electrum_backend(socks_port) else {
-            return PortStatus {
-                reachable: false,
-                error: Some("electrum backend is not configured".to_string()),
-            };
-        };
-        config.max_retries = 0;
-        config.timeout = Some(ELECTRUM_PROBE_TIMEOUT_SECS);
-        // Completes the Electrum handshake and checks the server's genesis hash, so this
-        // rejects a reachable server on the wrong chain — a raw socket probe cannot.
-        match Electrum::new(&config) {
-            Ok(_) => PortStatus {
-                reachable: true,
-                error: None,
-            },
-            Err(e) => PortStatus {
-                reachable: false,
-                error: Some(format!("{e:?}")),
-            },
-        }
-    })
-    .await
-    .map_err(AppError::internal)
-}
-
-/// Bitcoin Core precheck: connect over RPC and report chain/sync status.
-#[tauri::command]
-pub async fn check_bitcoin_core(rpc: RpcSettings) -> Result<CoreStatus, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let url = format!("http://{}:{}", rpc.host, rpc.port);
-        let client = Client::new(&url, Auth::UserPass(rpc.username, rpc.password))
-            .map_err(|e| AppError::new(ErrorCode::RpcUnreachable, format!("{e:?}")))?;
-        let info = client.get_blockchain_info().map_err(|e| {
-            let msg = format!("{e:?}");
-            let code = if msg.contains("401") || msg.to_lowercase().contains("auth") {
-                ErrorCode::RpcAuthFailed
-            } else {
-                ErrorCode::RpcUnreachable
-            };
-            AppError::new(code, msg)
-        })?;
-        let subversion = client
-            .get_network_info()
-            .map(|n| n.subversion)
-            .unwrap_or_default();
-        Ok(CoreStatus {
-            chain: info.chain.to_string(),
-            blocks: info.blocks,
-            headers: info.headers,
-            initial_block_download: info.initial_block_download,
-            synced: !info.initial_block_download && info.blocks == info.headers,
-            subversion,
-            verification_progress: info.verification_progress,
-        })
-    })
-    .await
-    .map_err(AppError::internal)?
 }
 
 #[tauri::command]

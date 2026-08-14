@@ -13,7 +13,7 @@ import type { Balances, MakerPhase, MakerSettings, MakerStatus } from "../../api
 import { SatsAmount } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { formatTorEndpoint } from "../../lib/market-format";
-import { MakerOnboardingIntro } from "./MakerOnboardingIntro";
+import { MakerIntro } from "./MakerIntro";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { useToastStore } from "../../store/toast";
 
@@ -151,7 +151,7 @@ function MakerCard({ maker, onChanged }: { maker: OwnedMaker; onChanged: () => P
           <Button variant="secondary" size="sm" onClick={() => void toggleMaker()} loading={actionLoading} disabled={transitioning}>
             {running ? <Square size={12} /> : <Play size={12} />}{running ? "Stop" : "Start"}
           </Button>
-          <Link to={`/maker/${encodeURIComponent(settings.makerId)}`} className="inline-flex h-8 items-center justify-center rounded-control bg-primary px-4 text-[12px] font-semibold text-white hover:bg-primary-hover">Manage</Link>
+          <Link to={`/maker/${encodeURIComponent(settings.makerId)}`} className="inline-flex h-8 items-center justify-center rounded-control bg-primary px-4 text-[12px] font-semibold text-bg hover:bg-primary-hover">Manage</Link>
         </div>
       </div>
     </article>
@@ -210,12 +210,11 @@ export function MakerPage() {
   }, [makers]);
   const visibleMakers = useMemo(() => makers.filter((maker) => filter === "all" || (filter === "running" ? maker.status?.phase.phase === "running" : maker.status?.phase.phase !== "running")), [filter, makers]);
 
-  // Zero makers is a "nothing exists yet" state, not a dashboard reporting zeros — the metric
-  // row and status filters below would read as a broken install on a first run.
+  // No page padding: the intro sets its own, and its backdrop has to reach the page edges.
   if (!loading && makers.length === 0) {
     return (
-      <div className="h-full overflow-y-auto p-8">
-        <MakerOnboardingIntro />
+      <div className="h-full overflow-y-auto">
+        <MakerIntro />
       </div>
     );
   }
@@ -226,7 +225,7 @@ export function MakerPage() {
         <header className="grid grid-cols-[minmax(260px,0.9fr)_minmax(520px,1.45fr)] items-stretch gap-5 max-[1050px]:grid-cols-1">
           <div className="flex flex-col justify-center py-2">
             <div className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-primary/35 bg-primary/10 px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest text-primary"><span className="h-1.5 w-1.5 rounded-full bg-primary" />Signet</div>
-            <div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-white"><Server size={23} /></span><h1 className="text-[30px] font-bold leading-none text-foreground">Coinswap Maker</h1></div>
+            <div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-bg"><Server size={23} /></span><h1 className="text-[30px] font-bold leading-none text-foreground">Coinswap Maker</h1></div>
             <p className="mt-3 text-[13px] text-muted">Operate maker instances and provide Coinswap liquidity.</p>
           </div>
           <div className="grid grid-cols-3 gap-3 max-[700px]:grid-cols-1">
@@ -242,13 +241,13 @@ export function MakerPage() {
               <h2 className="text-[22px] font-bold text-foreground">Makers</h2>
               <div className="flex h-10 items-center rounded-full border border-line-strong bg-surface-raised p-1" role="tablist">
                 {([ ["all", "All", makers.length], ["running", "Running", stats.running], ["stopped", "Stopped", stats.stopped] ] as const).map(([id, label, count]) => (
-                  <button key={id} type="button" role="tab" aria-selected={filter === id} onClick={() => setFilter(id)} className={`h-8 rounded-full px-3.5 text-[11px] font-semibold ${filter === id ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>{label} <span className="ml-1 font-mono text-[10px] opacity-75">{count}</span></button>
+                  <button key={id} type="button" role="tab" aria-selected={filter === id} onClick={() => setFilter(id)} className={`h-8 rounded-full px-3.5 text-[11px] font-semibold ${filter === id ? "bg-primary text-bg" : "text-muted hover:text-foreground"}`}>{label} <span className="ml-1 font-mono text-[10px] opacity-75">{count}</span></button>
                 ))}
               </div>
             </div>
             <div className="flex gap-2">
               <button type="button" onClick={() => void refresh()} disabled={refreshing} aria-label="Refresh makers" className="grid h-10 w-10 place-items-center rounded-full border border-line-strong bg-surface-raised text-muted hover:text-primary disabled:opacity-60"><RefreshCw size={16} className={refreshing ? "animate-spin" : ""} /></button>
-              <Link to="/maker/new" className="inline-flex h-10 items-center gap-2 rounded-control bg-primary px-5 text-[13px] font-semibold text-white hover:bg-primary-hover"><Plus size={15} />Add maker</Link>
+              <Link to="/maker/new" className="inline-flex h-10 items-center gap-2 rounded-control bg-primary px-5 text-[13px] font-semibold text-bg hover:bg-primary-hover"><Plus size={15} />Add maker</Link>
             </div>
           </div>
 
@@ -256,7 +255,7 @@ export function MakerPage() {
             <div className="grid min-h-[320px] place-items-center text-center text-[13px] text-subtle"><div><RefreshCw size={38} className="mx-auto animate-spin text-primary" /><strong className="mt-3 block text-[15px] text-foreground">Loading your makers…</strong></div></div>
           ) : visibleMakers.length === 0 ? (
             <div className="mt-5 grid min-h-[280px] place-items-center rounded-lg border border-line-strong bg-surface-raised/45 text-center text-[13px] text-subtle">
-              <div><Inbox size={38} className="mx-auto text-primary" /><strong className="mt-3 block text-[15px] text-foreground">{makers.length === 0 ? "Create your first maker" : "No makers in this view"}</strong><span className="mt-1 block">{makers.length === 0 ? "Configure a maker wallet, Tor ports, and fee policy." : "Choose another status filter."}</span>{makers.length === 0 && <Link to="/maker/new" className="mt-5 inline-flex h-10 items-center gap-2 rounded-control bg-primary px-5 font-semibold text-white"><Plus size={15} />Create maker</Link>}</div>
+              <div><Inbox size={38} className="mx-auto text-primary" /><strong className="mt-3 block text-[15px] text-foreground">{makers.length === 0 ? "Create your first maker" : "No makers in this view"}</strong><span className="mt-1 block">{makers.length === 0 ? "Pick a name — ports and fee policy are set for you." : "Choose another status filter."}</span>{makers.length === 0 && <Link to="/maker/new" className="mt-5 inline-flex h-10 items-center gap-2 rounded-control bg-primary px-5 font-semibold text-bg"><Plus size={15} />Create maker</Link>}</div>
             </div>
           ) : (
             <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">{visibleMakers.map((maker) => <MakerCard key={maker.settings.makerId} maker={maker} onChanged={refresh} />)}</div>

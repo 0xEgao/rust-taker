@@ -1,27 +1,25 @@
 import { Check, CheckCircle2, RefreshCw, Settings, X, XCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { useToastStore } from "../../store/toast";
 import { REFRESH_INTERVAL_MS } from "../../store/wallet-cache";
-import { useSessionStore } from "../../store/session";
 import { refreshWalletCache } from "../../lib/wallet-sync";
 
-/** `takerOnly` items need an unlocked taker; Maker works without one. */
-const NAV_ITEMS: { path: string; label: string; d: string; takerOnly?: boolean }[] = [
-  { path: "/", label: "Wallet", takerOnly: true, d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
-  { path: "/market", label: "Market", takerOnly: true, d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
+const NAV_ITEMS: { path: string; label: string; d: string }[] = [
+  { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
+  { path: "/market", label: "Market", d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
   { path: "/maker", label: "Maker", d: '<circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/>' },
-  { path: "/send", label: "Send", takerOnly: true, d: '<path d="M7 17L17 7M9 7h8v8"/>' },
-  { path: "/swap", label: "Swap", takerOnly: true, d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
+  { path: "/send", label: "Send", d: '<path d="M7 17L17 7M9 7h8v8"/>' },
+  { path: "/swap", label: "Swap", d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
 ];
 
 function Logo() {
   return (
     <div className="flex items-center gap-3">
-      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-white">
+      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-on-primary">
         C
       </div>
       <div className="min-w-0 leading-tight">
@@ -33,7 +31,6 @@ function Logo() {
 }
 
 function TopNav() {
-  const takerReady = useSessionStore((s) => s.initialized);
   const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
   const refreshing = useHeaderActionsStore((s) => s.refreshing);
   const [justRefreshed, setJustRefreshed] = useState(false);
@@ -61,27 +58,7 @@ function TopNav() {
       <Logo />
 
       <nav className="flex items-center gap-1" aria-label="Main navigation">
-        {NAV_ITEMS.map((item) =>
-          item.takerOnly && !takerReady ? (
-            <span
-              key={item.path}
-              title="Unlock a wallet to use this"
-              aria-disabled="true"
-              className="flex cursor-not-allowed items-center gap-2 rounded-control px-3.5 py-2 text-[13.5px] font-medium text-subtle/55"
-            >
-              <svg
-                className="h-4 w-4 flex-none stroke-current"
-                viewBox="0 0 24 24"
-                fill="none"
-                strokeWidth={1.8}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-                dangerouslySetInnerHTML={{ __html: item.d }}
-              />
-              <span>{item.label}</span>
-            </span>
-          ) : (
+        {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}
@@ -113,7 +90,7 @@ function TopNav() {
                       className="pointer-events-none absolute -inset-x-14 -bottom-4 -z-10 h-10 blur-md"
                       style={{
                         background:
-                          "radial-gradient(ellipse 50% 100% at 50% 0%, rgba(90,140,255,0.5) 0%, rgba(90,140,255,0.18) 50%, transparent 100%)",
+                          "radial-gradient(ellipse 50% 100% at 50% 0%, color-mix(in oklab, var(--color-primary) 50%, transparent) 0%, color-mix(in oklab, var(--color-primary) 18%, transparent) 50%, transparent 100%)",
                       }}
                     />
                     <motion.span
@@ -121,7 +98,7 @@ function TopNav() {
                       transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.6 }}
                       className="pointer-events-none absolute -inset-x-10 -bottom-1.5 h-px"
                       style={{
-                        background: "linear-gradient(to right, transparent, rgba(111,162,255,0.85), transparent)",
+                        background: "linear-gradient(to right, transparent, color-mix(in oklab, var(--color-primary-hover) 85%, transparent), transparent)",
                       }}
                     />
                   </>
@@ -129,8 +106,7 @@ function TopNav() {
               </>
             )}
           </NavLink>
-          ),
-        )}
+        ))}
       </nav>
 
       <div className="flex items-center gap-2">
@@ -201,24 +177,35 @@ function ToastStack() {
 }
 
 export function AppShell() {
-  const takerReady = useSessionStore((s) => s.initialized);
+  const { pathname } = useLocation();
 
   // Refresh regardless of the active route so Send/Swap never depend on the
-  // Wallet page having been mounted recently. Gated on the taker session because the shell
-  // now also hosts maker-only routes, where every wallet command would fail as NotInitialized.
+  // Wallet page having been mounted recently.
   useEffect(() => {
-    if (!takerReady) return;
     const id = setInterval(() => void refreshWalletCache(), REFRESH_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [takerReady]);
+  }, []);
 
   return (
-    <div className="relative h-screen">
+    // Scopes the accent to the whole maker side, nav item included, so crossing between
+    // maker screens never crosses a colour boundary.
+    <div className="relative h-screen" data-accent={pathname.startsWith("/maker") ? "maker" : undefined}>
       <Background />
       <div className="relative flex h-screen flex-col">
         <TopNav />
         <main className="min-h-0 min-w-0 flex-1">
-          <Outlet />
+          {/* Keyed on the path so every route change replays the entrance. No AnimatePresence:
+              waiting for an exit would delay the new page, and the point is only to mark the
+              switch. Pages own their scroll, so this stays a full-height passthrough. */}
+          <motion.div
+            key={pathname}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
+            className="h-full"
+          >
+            <Outlet />
+          </motion.div>
         </main>
       </div>
       <ToastStack />

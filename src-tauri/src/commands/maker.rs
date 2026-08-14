@@ -14,7 +14,8 @@ use coinswap::utill::get_maker_dir;
 use tauri::{Emitter, Manager};
 
 use crate::commands::maker_settings;
-use crate::commands::taker_wallet::{electrum_backend, wallet_path};
+use crate::commands::chain_backend;
+use crate::commands::taker_wallet::wallet_path;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::state::{try_lock_makers, AppState, MakerHandle, MakerRuntime};
 use crate::types::{
@@ -114,8 +115,9 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> MakerServerConfig {
-    MakerServerConfig {
+fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> Result<MakerServerConfig, AppError> {
+    let backend = chain_backend::resolve(&config.wallet_name, Some(config.socks_port))?;
+    Ok(MakerServerConfig {
         data_dir,
         network_port: config.network_port,
         rpc_port: config.rpc_port,
@@ -126,21 +128,21 @@ fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> MakerServerConfig
         required_confirms: config.required_confirms,
         fidelity_amount: config.fidelity_amount,
         fidelity_timelock: config.fidelity_timelock,
-        backend: electrum_backend(Some(config.socks_port)),
+        backend,
         wallet_name: config.wallet_name,
         control_port: config.control_port,
         socks_port: config.socks_port,
         tor_auth_password: config.tor_auth_password.unwrap_or_default(),
         password: config.wallet_password,
         ..MakerServerConfig::default()
-    }
+    })
 }
 
 async fn construct_server(
     config: MakerInitConfig,
     data_dir: PathBuf,
 ) -> Result<Arc<MakerServer>, AppError> {
-    let server_config = build_config(config, data_dir);
+    let server_config = build_config(config, data_dir)?;
     let server = tauri::async_runtime::spawn_blocking(move || MakerServer::init(server_config))
         .await
         .map_err(from_wallet_join_error)?

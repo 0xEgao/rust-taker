@@ -1,4 +1,4 @@
-import { checkElectrum, getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../api/commands";
+import { checkBackend, getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../api/commands";
 import { useWalletCacheStore } from "../store/wallet-cache";
 import { loadConnectivityDefaults } from "./connectivity";
 
@@ -28,11 +28,11 @@ export function refreshWalletCache(): Promise<void> {
     let slowTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       // Avoid entering coinswap's retry-forever sync while the endpoint is already known
-      // to be unreachable — that loop only exits on success or app shutdown. Probed over
-      // the Tor SOCKS proxy, the same route the sync itself takes.
-      const reachability = await checkElectrum(loadConnectivityDefaults().torSocksPort);
+      // to be unreachable — that loop only exits on success or app shutdown. Probes the
+      // saved backend over the same route the sync itself takes.
+      const reachability = await checkBackend(undefined, loadConnectivityDefaults().torSocksPort);
       if (!reachability.reachable) {
-        throw new Error(reachability.error ?? "Electrum server is unreachable.");
+        throw new Error(reachability.error ?? "The chain backend is unreachable.");
       }
 
       slowTimer = setTimeout(() => {

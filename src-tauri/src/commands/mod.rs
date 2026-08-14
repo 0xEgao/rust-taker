@@ -1,3 +1,4 @@
+pub mod chain_backend;
 pub mod logs;
 pub mod maker;
 pub mod maker_reports;
