@@ -15,14 +15,18 @@ use coinswap::taker::swap_tracker::{
     TaprootExchangeProgress,
 };
 use coinswap::taker::{SwapParams, SwapSummary};
+use coinswap::utill::{estimate_funding_tx_fee_sats, MIN_FEE_RATE};
+use coinswap::wallet::AddressType;
 use tauri::{Emitter, Manager};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
-    MakerFeeInfoDto, MakerProgressDto, ProtocolVersionDto, RecoveryStatus, SwapProgressDto,
-    SwapRequest, SwapSummaryDto, SwapTrackerDto,
+    MakerFeeInfoDto, MakerProgressDto, ProtocolVersionDto, RecoveryStatus, SwapFundingEstimateDto,
+    SwapProgressDto, SwapRequest, SwapSummaryDto, SwapTrackerDto,
 };
+
+use super::taker_wallet::get_wallet_handle;
 
 fn protocol_label(p: ProtocolVersion) -> &'static str {
     match p {
@@ -114,12 +118,19 @@ fn to_maker_progress_dto(m: &MakerProgress) -> MakerProgressDto {
         ExchangeProgress::Legacy(p) => legacy_steps_done(p),
         ExchangeProgress::Taproot(p) => taproot_steps_done(p),
     };
-    done += [m.finalization.privkey_received, m.finalization.privkey_forwarded]
-        .iter()
-        .filter(|d| **d)
-        .count();
+    done += [
+        m.finalization.privkey_received,
+        m.finalization.privkey_forwarded,
+    ]
+    .iter()
+    .filter(|d| **d)
+    .count();
     total += 2;
-    MakerProgressDto { address: m.address.clone(), steps_done: done, steps_total: total }
+    MakerProgressDto {
+        address: m.address.clone(),
+        steps_done: done,
+        steps_total: total,
+    }
 }
 
 fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
@@ -130,6 +141,62 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
         failure_reason: r.failure_reason.clone(),
         makers: r.makers.iter().map(to_maker_progress_dto).collect(),
     }
+}
+
+/// Quote the taker's initial funding transaction using the same wallet coin
+/// selection and fixed protocol fee rate used when the swap actually starts.
+#[tauri::command]
+pub async fn estimate_swap_funding(
+    state: tauri::State<'_, AppState>,
+    amount_sats: u64,
+    outpoints: Option<Vec<crate::types::Outpoint>>,
+) -> Result<SwapFundingEstimateDto, AppError> {
+    let wallet = get_wallet_handle(&state)?;
+    let outpoints = outpoints
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|item| {
+                    let txid = Txid::from_str(&item.txid)
+                        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
+                    Ok(OutPoint::new(txid, item.vout))
+                })
+                .collect::<Result<Vec<_>, AppError>>()
+        })
+        .transpose()?;
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<SwapFundingEstimateDto, AppError> {
+        let wallet = wallet.read()?;
+        let selected = wallet.coin_select(
+            Amount::from_sat(amount_sats),
+            MIN_FEE_RATE,
+            AddressType::P2TR,
+            outpoints,
+            None,
+        )?;
+
+        // Exact weight constants used by Wallet::coin_select: base transaction,
+        // selected inputs, one P2TR swap output, and one P2TR change output.
+        const BASE_TX_WEIGHT: u64 = 42;
+        const INPUT_BASE_WEIGHT: u64 = 164;
+        const P2TR_OUTPUT_WEIGHT: u64 = 172;
+        let input_weight: u64 = selected
+            .iter()
+            .map(|(_, spend)| INPUT_BASE_WEIGHT + spend.estimate_witness_size() as u64)
+            .sum();
+        let weight = BASE_TX_WEIGHT + input_weight + 2 * P2TR_OUTPUT_WEIGHT;
+        let vbytes = weight.div_ceil(4);
+        let fee_sats = (vbytes as f64 * MIN_FEE_RATE).ceil() as u64;
+
+        Ok(SwapFundingEstimateDto {
+            input_count: selected.len(),
+            vbytes,
+            fee_sats,
+            route_mining_fee_per_maker_sats: estimate_funding_tx_fee_sats(),
+        })
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
 /// Phase 1: maker discovery + negotiation, no funds committed. Summary is
@@ -155,7 +222,11 @@ pub async fn prepare_swap(
         ProtocolVersionDto::Legacy => ProtocolVersion::Legacy,
         ProtocolVersionDto::Taproot => ProtocolVersion::Taproot,
     };
-    let mut params = SwapParams::new(protocol, Amount::from_sat(request.amount_sats), request.maker_count);
+    let mut params = SwapParams::new(
+        protocol,
+        Amount::from_sat(request.amount_sats),
+        request.maker_count,
+    );
     if let Some(outpoints) = request.outpoints {
         let converted = outpoints
             .into_iter()
@@ -201,7 +272,9 @@ pub async fn start_swap(
     {
         let mut guard = state.active_swap.lock()?;
         match guard.as_mut() {
-            Some(active) if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared => {
+            Some(active)
+                if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared =>
+            {
                 active.phase = SwapLifecycle::Running;
                 active.started_at = Some(SystemTime::now());
             }
@@ -266,8 +339,10 @@ pub fn get_swap_progress(
     let guard = state.active_swap.lock()?;
     // Only Running/Recovering is worth reconciling after a remount — a terminal phase is stale
     // by definition and would otherwise resurrect the last outcome indefinitely.
-    Ok(guard.as_ref().filter(|a| matches!(a.phase, SwapLifecycle::Running | SwapLifecycle::Recovering)).map(|active| {
-        SwapProgressDto {
+    Ok(guard
+        .as_ref()
+        .filter(|a| matches!(a.phase, SwapLifecycle::Running | SwapLifecycle::Recovering))
+        .map(|active| SwapProgressDto {
             swap_id: active.swap_id.clone(),
             phase: phase_label(active.phase).to_string(),
             started_at: active
@@ -275,8 +350,7 @@ pub fn get_swap_progress(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs()),
             error: active.error.clone(),
-        }
-    }))
+        }))
 }
 
 /// Live per-maker detail for the active swap, straight off `<data_dir>/swap_tracker.cbor` —
@@ -286,8 +360,14 @@ pub fn get_swap_progress(
 pub async fn get_swap_tracker(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<SwapTrackerDto>, AppError> {
-    let swap_id = state.active_swap.lock()?.as_ref().map(|a| a.swap_id.clone());
-    let Some(swap_id) = swap_id else { return Ok(None) };
+    let swap_id = state
+        .active_swap
+        .lock()?
+        .as_ref()
+        .map(|a| a.swap_id.clone());
+    let Some(swap_id) = swap_id else {
+        return Ok(None);
+    };
     let data_dir = state
         .data_dir
         .read()?
@@ -347,4 +427,3 @@ pub fn get_recovery_status(state: tauri::State<'_, AppState>) -> Result<Recovery
         pending_contract_count,
     })
 }
-

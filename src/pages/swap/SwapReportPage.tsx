@@ -1,14 +1,13 @@
-import { ArrowLeft, CheckCircle2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, RefreshCw, Timer, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
 import type { MakerFeeInfo, Offer, SwapReportDetail, SwapStatus } from "../../api/types";
 import { isAppError } from "../../api/types";
-import { Card, Disclosure, ExternalLinkButton, Modal, SatsAmount } from "../../components/ui/display";
+import { BackButton, Card, CopyButton, Disclosure, ExternalLinkButton, IndeterminateBar, Modal, SatsAmount } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
-import { withMinDelay } from "../../lib/timing";
-import { formatDuration, SWAP_STATUS_ICON, SWAP_STATUS_TEXT_TONE, truncateMiddle } from "../../lib/wallet-format";
+import { formatDuration, SATS_PER_BTC, SWAP_STATUS_ICON, SWAP_STATUS_TEXT_TONE, truncateMiddle } from "../../lib/wallet-format";
 
 const STATUS_LABEL: Record<SwapStatus, string> = {
   success: "Completed",
@@ -16,6 +15,39 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
   recovery_timelock: "Recovered (timelock)",
   failed: "Failed",
 };
+
+// One accent per hop so a funding tx is visually tied to the maker it funded, matching the
+// per-maker colours the old app used in this same list.
+const HOP_ACCENTS = ["var(--color-primary)", "var(--color-info)", "var(--color-maker)", "var(--color-success)"];
+const OUTGOING_ACCENT = "var(--color-warning)";
+
+function satsToBtc(sats: number): string {
+  return (sats / SATS_PER_BTC).toFixed(8);
+}
+
+function formatTimestamp(unixSeconds: number): string {
+  if (!unixSeconds) return "—";
+  return new Date(unixSeconds * 1000).toLocaleString();
+}
+
+/** Full txid, not truncated — the whole point of this row is being able to read and copy it. */
+function TxArtifact({ label, txid, accent, arrow }: { label: string; txid: string; accent: string; arrow: string }) {
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_34px_34px] items-center gap-2.5 rounded-control border border-line bg-surface-raised p-5">
+      <div className="min-w-0">
+        <h4 className="mb-3.5 flex items-center gap-3 text-[15px] font-extrabold text-foreground">
+          <span className="font-mono" style={{ color: accent }} aria-hidden>
+            {arrow}
+          </span>
+          {label}
+        </h4>
+        <p className="break-all font-mono text-[12px] leading-relaxed text-muted">{txid}</p>
+      </div>
+      <CopyButton text={txid} title="Copy transaction ID" />
+      <ExternalLinkButton txid={txid} />
+    </div>
+  );
+}
 
 function SectionCard({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -39,7 +71,7 @@ function TxidRow({ label, txid }: { label: string; txid: string }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2">
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-[10.5px] uppercase tracking-wide text-subtle">{label}</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{label}</span>
         <span className="truncate font-mono text-[11.5px] text-muted">{truncateMiddle(txid, 12, 8)}</span>
       </span>
       <ExternalLinkButton txid={txid} />
@@ -77,7 +109,7 @@ function JsonEntries({ value, depth = 0 }: { value: unknown; depth?: number }) {
     <div className="flex flex-col gap-1.5" style={{ marginLeft: depth > 0 ? 12 : 0 }}>
       {entries.map(([key, val]) => (
         <div key={key} className="flex flex-col gap-0.5">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-subtle">{key}</span>
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{key}</span>
           <JsonEntries value={val} depth={depth + 1} />
         </div>
       ))}
@@ -126,9 +158,7 @@ export function SwapReportPage() {
     setVerifying(true);
     setVerifyResult(null);
     try {
-      // The actual RPC check resolves near-instantly, which reads as "did anything happen?" —
-      // hold the loading state for a beat so the check is perceptible.
-      const ok = await withMinDelay(verifyDeniability(swapId), 900);
+      const ok = await verifyDeniability(swapId);
       setVerifyResult({
         ok,
         message: ok
@@ -168,14 +198,7 @@ export function SwapReportPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center gap-3 pb-4">
-        <button
-          type="button"
-          onClick={() => navigate("/swap/reports")}
-          title="Back to Swap Reports"
-          className="flex h-9 w-9 flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-line-strong hover:text-foreground"
-        >
-          <ArrowLeft size={16} strokeWidth={1.8} />
-        </button>
+        <BackButton to="/swap/reports" label="Back to Swap Reports" />
         <div className="flex items-center gap-2.5">
           <Icon size={22} strokeWidth={2} className={SWAP_STATUS_TEXT_TONE[report.status]} />
           <div>
@@ -185,97 +208,87 @@ export function SwapReportPage() {
         </div>
       </div>
 
+      {isFailure && report.errorMessage && (
+        <div className="mb-4 flex shrink-0 items-start gap-3 rounded-control border border-danger/35 bg-danger/[0.06] px-4 py-3.5">
+          <AlertTriangle size={18} strokeWidth={2} className="mt-0.5 flex-none text-danger" />
+          <span className="flex flex-col gap-1">
+            <strong className="text-[13px] font-semibold text-foreground">Failure reason</strong>
+            <span className="break-words font-mono text-[11.5px] leading-relaxed text-danger">{report.errorMessage}</span>
+          </span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.3fr)_1fr]">
         <div className="flex flex-col gap-4">
-          <SectionCard title="Summary">
-            <div className="grid grid-cols-3 gap-3 rounded-control border border-line-strong bg-surface-raised px-3.5 py-3 text-center">
-              <div>
-                <div className="font-mono text-[9px] uppercase tracking-widest text-subtle">Sent</div>
-                <SatsAmount sats={report.outgoingAmountSats} className="mt-1 text-[13px] font-semibold text-foreground" />
-              </div>
-              <div>
-                <div className="font-mono text-[9px] uppercase tracking-widest text-subtle">Received</div>
-                <SatsAmount sats={report.receivedAmountSats} className="mt-1 text-[13px] font-semibold text-foreground" />
-              </div>
-              <div>
-                <div className="font-mono text-[9px] uppercase tracking-widest text-subtle">Duration</div>
-                <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">{formatDuration(report.swapDurationSeconds)}</div>
-              </div>
+          <Card className="grid justify-items-center border-line-strong px-5 py-14 text-center">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+              {isFailure ? "Attempted Amount" : "Amount Swapped"}
+            </span>
+            <SatsAmount sats={report.outgoingAmountSats} glyphScale={0.5} className="my-4 text-[clamp(38px,6vw,58px)] leading-none text-foreground" />
+            <p className="mb-6 font-mono text-[14px] text-muted">≈ {satsToBtc(report.outgoingAmountSats)} BTC</p>
+            <div className="flex flex-wrap items-center justify-center gap-2.5">
+              <span className="inline-flex items-center gap-2 rounded-full border border-primary/45 bg-primary/[0.12] px-4.5 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-primary-hover">
+                <Timer size={15} strokeWidth={1.8} />
+                Duration {formatDuration(report.swapDurationSeconds)}
+              </span>
+              <span className="inline-flex items-center rounded-full border border-line-strong bg-surface-raised px-4.5 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-muted">
+                {report.network}
+              </span>
             </div>
-            <Row label="Network">{report.network}</Row>
-            <Row label="Total fee paid">
-              <SatsAmount sats={report.feePaidSats} />
-            </Row>
-            <Row label="Fee percentage">{report.feePercentage.toFixed(4)}%</Row>
-            <Row label="Mining fee">
-              <SatsAmount sats={report.miningFeeSats} />
-            </Row>
-            <Row label="Maker fees">
-              <SatsAmount sats={report.totalMakerFeesSats} />
-            </Row>
-            {isFailure && report.errorMessage && (
-              <div className="mt-1 flex items-start gap-2 rounded-control border border-danger/35 bg-danger/[0.06] px-3.5 py-2.5 text-[12px] text-danger">
-                <ShieldCheck size={14} strokeWidth={2} className="mt-0.5 flex-none" />
-                <span>{report.errorMessage}</span>
-              </div>
-            )}
-          </SectionCard>
+            <p className="mt-5 font-mono text-[11px] text-subtle">
+              {formatTimestamp(report.startTimestamp)} → {formatTimestamp(report.endTimestamp)}
+            </p>
+          </Card>
 
           <SectionCard title="Transactions">
-            {report.outgoingContractTxid && <TxidRow label="Outgoing Contract" txid={report.outgoingContractTxid} />}
-            {report.incomingContractTxid && <TxidRow label="Incoming Contract" txid={report.incomingContractTxid} />}
+            {report.outgoingContractTxid && (
+              <TxArtifact label="Outgoing Contract Tx" txid={report.outgoingContractTxid} accent={OUTGOING_ACCENT} arrow="↗" />
+            )}
+            {report.incomingContractTxid && (
+              <TxArtifact label="Incoming Contract Tx" txid={report.incomingContractTxid} accent={HOP_ACCENTS[0]} arrow="↙" />
+            )}
             {report.fundingTxids.map((hopTxids, hopIdx) =>
-              hopTxids.map((txid, i) => <TxidRow key={`${hopIdx}-${i}`} label={`Funding · Hop ${hopIdx + 1}`} txid={txid} />),
+              hopTxids.map((txid, i) => (
+                <TxArtifact
+                  key={`${hopIdx}-${i}`}
+                  label={`Funding Transaction · Hop ${hopIdx + 1}`}
+                  txid={txid}
+                  accent={HOP_ACCENTS[hopIdx % HOP_ACCENTS.length]}
+                  arrow="→"
+                />
+              )),
             )}
             {!report.outgoingContractTxid && !report.incomingContractTxid && report.fundingTxids.flat().length === 0 && (
               <p className="text-[12px] text-subtle">No transaction data recorded for this swap.</p>
             )}
           </SectionCard>
 
-          <SectionCard title="Wallet Outputs">
-            {report.inputUtxoAmountsSats.length > 0 && (
-              <div>
-                <span className="font-mono text-[10px] uppercase tracking-widest text-subtle">Input UTXOs</span>
-                <div className="mt-1 flex flex-wrap gap-2">
-                  {report.inputUtxoAmountsSats.map((amt, i) => (
-                    <SatsAmount key={i} sats={amt} className="rounded-control border border-line bg-surface-raised px-2 py-1 text-[11px] text-foreground" />
-                  ))}
-                </div>
-              </div>
-            )}
-            {report.outputChangeUtxos.length > 0 && (
-              <div>
-                <span className="font-mono text-[10px] uppercase tracking-widest text-subtle">Change UTXOs</span>
-                <div className="mt-1 flex flex-col gap-1.5">
-                  {report.outputChangeUtxos.map(([amt, addr], i) => (
-                    <div key={i} className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-1.5">
-                      <span className="truncate font-mono text-[11px] text-muted">{addr}</span>
-                      <SatsAmount sats={amt} className="flex-none text-[11px] text-foreground" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {report.outputSwapUtxos.length > 0 && (
-              <div>
-                <span className="font-mono text-[10px] uppercase tracking-widest text-subtle">Swap UTXOs</span>
-                <div className="mt-1 flex flex-col gap-1.5">
-                  {report.outputSwapUtxos.map(([amt, addr], i) => (
-                    <div key={i} className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-1.5">
-                      <span className="truncate font-mono text-[11px] text-muted">{addr}</span>
-                      <SatsAmount sats={amt} className="flex-none text-[11px] text-success" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {report.inputUtxoAmountsSats.length === 0 && report.outputChangeUtxos.length === 0 && report.outputSwapUtxos.length === 0 && (
-              <p className="text-[12px] text-subtle">No wallet output data recorded for this swap.</p>
-            )}
-          </SectionCard>
         </div>
 
         <div className="flex flex-col gap-4">
+          <SectionCard title="Fee Details">
+            <Row label="Received">
+              <SatsAmount sats={report.receivedAmountSats} />
+            </Row>
+            <Row label="Maker fees">
+              <SatsAmount sats={report.totalMakerFeesSats} />
+            </Row>
+            <Row label="Mining fees">
+              <SatsAmount sats={report.miningFeeSats} />
+            </Row>
+            <div className="mt-1 flex items-baseline justify-between gap-3 border-t border-dashed border-line pt-3.5">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total fee</span>
+              <div className="text-right">
+                <SatsAmount sats={report.feePaidSats} className="font-mono text-[26px] leading-none text-foreground" />
+                <p className="mt-2 font-mono text-[12px] text-muted">{satsToBtc(report.feePaidSats)} BTC</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-dashed border-line pt-3.5">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle"> % Of swap amount</span>
+              <strong className="font-mono text-[15px] font-bold text-foreground">{report.feePercentage.toFixed(3)}%</strong>
+            </div>
+          </SectionCard>
+
           <SectionCard title={`Swap Partners (${report.makersCount})`}>
             {report.makerAddresses.length === 0 && <p className="text-[12px] text-subtle">No makers recorded.</p>}
             {report.makerAddresses.map((address, i) => {
@@ -285,7 +298,7 @@ export function SwapReportPage() {
                   key={address}
                   type="button"
                   onClick={() => openMakerModal({ index: i, address, fee })}
-                  className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3.5 py-3 text-left transition-colors hover:border-line-strong hover:bg-white/[0.04]"
+                  className="lift flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3.5 py-3 text-left outline-none hover:border-line-strong hover:bg-[var(--color-hover)] focus-visible:shadow-ring"
                 >
                   <span className="flex min-w-0 flex-col gap-0.5">
                     <span className="font-mono text-[11px] text-foreground">Maker {i + 1}</span>
@@ -303,7 +316,7 @@ export function SwapReportPage() {
                 {provenOutpoint && (
                   <div className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3.5 py-2">
                     <span className="flex min-w-0 flex-col gap-0.5">
-                      <span className="text-[10px] uppercase tracking-wide text-subtle">Proven outpoint</span>
+                      <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Proven outpoint</span>
                       <span className="truncate font-mono text-[11px] text-muted">
                         {truncateMiddle(provenOutpoint.txid, 10, 6)}:{provenOutpoint.vout}
                       </span>
@@ -315,8 +328,13 @@ export function SwapReportPage() {
                   <Button size="sm" variant="secondary" onClick={() => void handleVerify()} loading={verifying}>
                     Verify on-chain
                   </Button>
-                  {verifying && <span className="text-[11.5px] text-subtle">Checking outpoint on-chain…</span>}
                 </div>
+                {verifying && (
+                  <div className="flex flex-col gap-2">
+                    <IndeterminateBar />
+                    <span className="text-[11.5px] text-subtle">Fetching the contract transaction from the chain…</span>
+                  </div>
+                )}
                 {verifyResult && !verifying && (
                   <div
                     className={`flex items-start gap-2 rounded-control border px-3.5 py-2.5 text-[12px] ${
@@ -373,7 +391,7 @@ export function SwapReportPage() {
           )}
 
           <div className="mt-1 border-t border-dashed border-line pt-3">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-subtle">Fidelity Bond</span>
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Fidelity Bond</span>
             {(() => {
               const bond = offerByAddress[selectedMaker.address];
               return bond ? (
@@ -381,7 +399,7 @@ export function SwapReportPage() {
                   <Row label="Bond amount">
                     <SatsAmount sats={bond.bondAmountSats} />
                   </Row>
-                  <Row label="Locktime height">{bond.bondLocktimeHeight}</Row>
+                  <Row label="Locktime height">Block {bond.bondLocktimeHeight.toLocaleString()}</Row>
                   <Row label="Status">{bond.bondIsSpent ? "Spent" : "Unspent"}</Row>
                   <TxidRow label="Bond Transaction" txid={bond.bondTxid} />
                 </div>
@@ -394,7 +412,7 @@ export function SwapReportPage() {
           </div>
 
           <div className="mt-1 border-t border-dashed border-line pt-3">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-subtle">Transactions</span>
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Transactions</span>
             <div className="mt-2 flex flex-col gap-1.5">
               {(report.fundingTxids[selectedMaker.index] ?? []).map((txid, i) => (
                 <TxidRow key={i} label={`Funding ${i + 1}`} txid={txid} />

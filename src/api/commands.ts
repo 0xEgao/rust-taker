@@ -1,28 +1,38 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AddressType,
+  AddressValidation,
   Balances,
-  CoreStatus,
+  BackendStatus,
+  ChainBackendConfig,
   FeeEstimate,
+  FidelityBond,
   InitConfig,
   InitResult,
   LogLine,
   Maker,
+  MakerInitConfig,
+  MakerSwapReportDetail,
+  MakerSwapReportSummary,
+  MakerPortCheck,
+  MakerSettings,
+  MakerStatus,
   NewAddress,
   OfferBookView,
   Outpoint,
   PortStatus,
   PriceEstimate,
   RecoveryStatus,
-  RpcSettings,
   SendResult,
   SwapLiquidity,
+  SwapFundingEstimate,
   SwapProgress,
   SwapReportDetail,
   SwapReportSummary,
   SwapRequest,
   SwapSummary,
   SwapTrackerProgress,
+  SuggestedMakerPorts,
   TorStatus,
   TxSummary,
   UtxoEntry,
@@ -38,8 +48,26 @@ export function checkPort(
   return invoke("check_port", { host, port, timeoutMs });
 }
 
-export function checkBitcoinCore(rpc: RpcSettings): Promise<CoreStatus> {
-  return invoke("check_bitcoin_core", { rpc });
+export function getChainBackend(): Promise<ChainBackendConfig> {
+  return invoke("get_chain_backend");
+}
+
+export function setChainBackend(config: ChainBackendConfig): Promise<void> {
+  return invoke("set_chain_backend", { config });
+}
+
+/** Clears the saved selection and returns the defaults it fell back to. */
+export function resetChainBackend(): Promise<ChainBackendConfig> {
+  return invoke("reset_chain_backend");
+}
+
+/**
+ * Probes a chain backend. Pass `config` to test unsaved edits; omit it to probe
+ * whichever backend is currently saved. `socksPort` only matters for a Tor-routed
+ * Electrum server.
+ */
+export function checkBackend(config?: ChainBackendConfig, socksPort?: number): Promise<BackendStatus> {
+  return invoke("check_backend", { config: config ?? null, socksPort });
 }
 
 export function checkTor(
@@ -79,7 +107,7 @@ export function getWalletInfo(): Promise<WalletInfo> {
 
 export function restoreWallet(
   walletName: string,
-  rpc: RpcSettings,
+  socksPort: number | undefined,
   backupFilePath: string,
   password?: string,
   dataDir?: string,
@@ -87,7 +115,7 @@ export function restoreWallet(
   return invoke("restore_wallet", {
     dataDir,
     walletName,
-    rpc,
+    socksPort,
     backupFilePath,
     password,
   });
@@ -112,8 +140,16 @@ export function checkSwapLiquidity(): Promise<SwapLiquidity> {
   return invoke("check_swap_liquidity");
 }
 
+export function estimateSwapFunding(amountSats: number, outpoints?: Outpoint[]): Promise<SwapFundingEstimate> {
+  return invoke("estimate_swap_funding", { amountSats, outpoints });
+}
+
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {
   return invoke("get_new_address", { addressType });
+}
+
+export function validateAddress(address: string): Promise<AddressValidation> {
+  return invoke("validate_address", { address });
 }
 
 export function getTransactions(
@@ -166,6 +202,112 @@ export function pollMaker(address: string): Promise<Maker> {
 
 export function removeMaker(address: string): Promise<boolean> {
   return invoke("remove_maker", { address });
+}
+
+// ---------------------------------------------------------------------------
+// Maker operations
+// ---------------------------------------------------------------------------
+
+export function listMakers(): Promise<MakerSettings[]> {
+  return invoke("list_makers");
+}
+
+export function listDashboardImports(): Promise<MakerSettings[]> {
+  return invoke("list_dashboard_imports");
+}
+
+export function importDashboardMakers(makerIds: string[]): Promise<MakerSettings[]> {
+  return invoke("import_dashboard_makers", { makerIds });
+}
+
+export function getMakerStatus(makerId: string): Promise<MakerStatus> {
+  return invoke("get_maker_status", { makerId });
+}
+
+export function initMaker(config: MakerInitConfig): Promise<MakerStatus> {
+  return invoke("init_maker", { config });
+}
+
+export function updateMakerSettings(makerId: string, settings: MakerSettings): Promise<MakerSettings> {
+  return invoke("update_maker_settings", { makerId, settings });
+}
+
+export function startMaker(
+  makerId: string,
+  walletPassword?: string,
+  torAuthPassword?: string,
+): Promise<void> {
+  return invoke("start_maker", { makerId, walletPassword, torAuthPassword });
+}
+
+export function stopMaker(makerId: string): Promise<void> {
+  return invoke("stop_maker", { makerId });
+}
+
+export function getMakerInfo(makerId: string): Promise<WalletInfo> {
+  return invoke("get_maker_info", { makerId });
+}
+
+export function getSavedMakerSettings(makerId: string): Promise<MakerSettings | null> {
+  return invoke("get_saved_maker_settings", { makerId });
+}
+
+export function clearMakerSettings(makerId: string): Promise<void> {
+  return invoke("clear_maker_settings", { makerId });
+}
+
+export function getSuggestedMakerPorts(socksPort: number, controlPort: number): Promise<SuggestedMakerPorts> {
+  return invoke("get_suggested_maker_ports", { socksPort, controlPort });
+}
+
+/** Verifies a maker's listener ports are bindable and unclaimed. Empty result means both are fine. */
+export function checkMakerPorts(
+  networkPort: number,
+  rpcPort: number,
+  socksPort: number,
+  controlPort: number,
+): Promise<MakerPortCheck> {
+  return invoke("check_maker_ports", { networkPort, rpcPort, socksPort, controlPort });
+}
+
+export function getMakerBalances(makerId: string): Promise<Balances> {
+  return invoke("get_maker_balances", { makerId });
+}
+
+export function listMakerUtxos(makerId: string): Promise<UtxoEntry[]> {
+  return invoke("list_maker_utxos", { makerId });
+}
+
+export function getMakerTransactions(makerId: string, count?: number, skip?: number): Promise<TxSummary[]> {
+  return invoke("get_maker_transactions", { makerId, count, skip });
+}
+
+export function getMakerNewAddress(makerId: string, addressType: AddressType): Promise<NewAddress> {
+  return invoke("get_maker_new_address", { makerId, addressType });
+}
+
+export function syncMakerWallet(makerId: string): Promise<void> {
+  return invoke("sync_maker_wallet", { makerId });
+}
+
+export function listMakerFidelityBonds(makerId: string): Promise<FidelityBond[]> {
+  return invoke("list_maker_fidelity_bonds", { makerId });
+}
+
+export function listMakerSwapReports(makerId: string): Promise<MakerSwapReportSummary[]> {
+  return invoke("list_maker_swap_reports", { makerId });
+}
+
+export function getMakerSwapReport(makerId: string, swapId: string): Promise<MakerSwapReportDetail> {
+  return invoke("get_maker_swap_report", { makerId, swapId });
+}
+
+export function verifyMakerDeniability(makerId: string, swapId: string): Promise<boolean> {
+  return invoke("verify_maker_deniability", { makerId, swapId });
+}
+
+export function getMakerLogs(makerId: string, lines?: number): Promise<LogLine[]> {
+  return invoke("get_maker_logs", { makerId, lines });
 }
 
 // ---------------------------------------------------------------------------

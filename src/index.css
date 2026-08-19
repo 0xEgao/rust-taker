@@ -83,17 +83,53 @@
 
   --color-line: rgba(255, 255, 255, 0.08);
   --color-line-strong: rgba(255, 255, 255, 0.16);
+  --color-hover: rgba(255, 255, 255, 0.04);
+  --color-hover-strong: rgba(255, 255, 255, 0.07);
 
   --color-foreground: #f4f6fa;
   --color-muted: #a2a9b8;
   --color-subtle: #72798a;
 
-  --color-primary: #5a8cff;
-  --color-primary-hover: #6b98ff;
+  /* Azure, not blue. Two measured reasons the previous blue never sat right beside the maker
+     violet (h 299.5): it was only 38 degrees away in hue, so it read as a desaturated violet
+     rather than its own colour, and blue cannot hold the violet's chroma at a matching
+     lightness in sRGB. Azure at h 232 is 68 degrees clear of the violet and still 86 clear of
+     the success green, and it holds C 0.148 at L 0.755 — brighter than the violet with all but
+     0.012 of its chroma. */
+  /* Azure-blue. Three constraints, in priority order:
+     hue 244 keeps 56 degrees clear of the maker violet (h 299.5) — the previous #5a8cff/#679cff
+     sat at 262-264, only 35-38 degrees away, which is why it read as a washed-out violet rather
+     than its own colour; lightness 0.715 is deliberately below the earlier azure's 0.755, which
+     read too bright; and chroma 0.156 is the most this hue holds there, above both the violet's
+     0.160-at-0.736 neighbourhood and the earlier azure's 0.148.
+     A purple trial on this side was rejected — with the maker violet running on both, the two
+     roles lost their only colour cue and it still did not fix the real problem, which is that
+     the taker's panels cover the background the gradient paints on. */
+  --color-primary: #36abfc;
+  /* Same delta the maker pair uses: +0.046 lightness, -0.030 chroma. */
+  --color-primary-hover: #65bafb;
+  /* Readable ink for a filled accent surface — a token because both accents are light enough
+     that white on them fails contrast. White on #36abfc is 2.34:1; this is 8.48:1. */
+  --color-on-primary: #0b0e13;
+  /* Maker-side accent. Distinct from primary so operating a service never looks like spending
+     your own coins, and clear of success/warning/danger. Same purple as the Taproot pill. */
+  --color-maker: #b990ff;
+  --color-maker-hover: #c5a4ff;
   --color-success: #31d158;
   --color-warning: #f5c451;
   --color-danger: #ff5a5f;
-  --color-info: #5a8cff;
+  --color-info: #36abfc;
+
+  /* Accent-derived so a scoped `--color-primary` re-tints focus rings and active glows too —
+     as raw rgba they were the blue that survived every override.
+     The ring is layered rather than one flat band: a solid 1px edge carries the contrast a focus
+     indicator needs against any surface, the wide translucent step reads as the ring, and the
+     outer bleed is the glow. `outline` would be simpler but only follows border-radius from
+     Safari 16.4. */
+  --shadow-ring: 0 0 0 1px color-mix(in oklab, var(--color-primary) 60%, transparent),
+    0 0 0 4px color-mix(in oklab, var(--color-primary) 14%, transparent),
+    0 0 20px -2px color-mix(in oklab, var(--color-primary) 34%, transparent);
+  --shadow-glow: 0 0 12px color-mix(in oklab, var(--color-primary) 35%, transparent);
 
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -114,6 +150,16 @@ body {
   @apply bg-bg text-foreground font-mono antialiased;
 }
 
+/* Re-points the accent for a whole subtree. Every shared atom already paints with the primary
+   tokens through `var()`, so a section turns violet here rather than by teaching each atom a
+   second variant — and anything added later is tinted correctly for free. */
+[data-accent="maker"] {
+  --color-primary: var(--color-maker);
+  --color-primary-hover: var(--color-maker-hover);
+  /* --color-on-primary needs no override: the base is already dark ink, because the taker
+     accent is now as light as the maker one. */
+}
+
 /* Tailwind's preflight sets -webkit-appearance: button (not none), so WebKit still
    paints its native button chrome under our own styles — invisible in Chromium, but
    in Safari/WKWebView (what Tauri actually renders with) it shows as a dark box
@@ -121,6 +167,18 @@ body {
 button {
   appearance: none;
   -webkit-appearance: none;
+}
+
+:where(button, a[href], [role="button"]) {
+  outline: none;
+}
+
+:where(button, a[href], [role="button"]):focus-visible {
+  box-shadow: var(--shadow-ring);
+}
+
+:where(button, a[href], [role="button"]):active {
+  translate: 0 1px;
 }
 
 @keyframes market-progress {
@@ -132,11 +190,142 @@ button {
   }
 }
 
+/* Fills from the left, then empties to the right. Both ends are scaleX(0), so the loop closes
+   on itself instead of snapping full-to-empty — that jump read as a stray fast pulse. */
 @keyframes status-fill {
   0% {
     transform: scaleX(0);
+    transform-origin: left;
+  }
+  46% {
+    transform: scaleX(1);
+    transform-origin: left;
+  }
+  54% {
+    transform: scaleX(1);
+    transform-origin: right;
   }
   100% {
-    transform: scaleX(1);
+    transform: scaleX(0);
+    transform-origin: right;
+  }
+}
+
+/* A 1px border that is a gradient rather than a flat colour: light at the top-left, accent at
+   both ends, so an edge reads as lit from one direction instead of uniformly stroked. Painted as
+   a masked pseudo-element because `border-image` does not follow `border-radius`.
+   Two WebKit ordering traps: the `mask` shorthand resets `mask-composite`, so it must come
+   first, and WebKit's legacy keyword for `exclude` is `xor`. */
+/* Tiled fractal noise, used to dither the large dark fills. At 8-bit these low-contrast
+   gradients quantise into flat plateaus tens of pixels tall separated by a single level, which
+   read as a stray band of shadow lying across a panel rather than as a smooth surface. */
+@utility grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+@utility hairline {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    pointer-events: none;
+    background: linear-gradient(
+      160deg,
+      color-mix(in oklab, var(--color-primary) 55%, transparent) 0%,
+      rgba(255, 255, 255, 0.1) 26%,
+      rgba(255, 255, 255, 0.02) 58%,
+      color-mix(in oklab, var(--color-primary) 20%, transparent) 100%
+    );
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+}
+
+@utility raised {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 12px 28px -12px color-mix(in oklab, var(--color-primary) 22%, transparent);
+}
+
+/* Keep the expensive shadow off the transforming content layer. */
+@utility lift {
+  position: relative;
+  isolation: isolate;
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), border-color 200ms,
+    background-color 200ms;
+
+  &:hover {
+    transform: translate3d(0, -3px, 0);
+  }
+
+  &:active {
+    transform: translate3d(0, -1px, 0);
+    transition-duration: 75ms;
+  }
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 200ms;
+    box-shadow: 0 18px 34px -14px rgba(0, 0, 0, 0.85),
+      0 0 22px -6px color-mix(in oklab, var(--color-primary) 45%, transparent);
+  }
+
+  &:hover::after {
+    opacity: 1;
+  }
+}
+
+/* A stationary pointer crosses many cards during scrolling. Suppress the expensive hover layer
+   until the scroll settles so WebKit does not flash shadows and rounded border highlights. */
+.is-scrolling .lift:hover {
+  transform: none;
+}
+
+.is-scrolling .lift:hover::after {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* The panel elevation stack, plus the hover glow the maker cards get from `lift`.
+   It lives on `box-shadow` rather than an `::after` layer because `Card` is `overflow-hidden`,
+   which would clip an outer glow painted on a pseudo-element — the maker's `<article>` has no
+   such clip, which is why `lift` can use one there. An element's own box-shadow is not clipped
+   by its own overflow. */
+@utility card-lit {
+  transition: box-shadow 200ms ease, border-color 200ms ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px color-mix(in oklab, var(--color-primary) 7%, transparent),
+    0 1px 2px rgba(0, 0, 0, 0.45),
+    0 18px 40px -28px rgba(0, 0, 0, 0.9),
+    0 0 30px -18px color-mix(in oklab, var(--color-primary) 28%, transparent);
+
+  /* Same 45% accent at -6px spread `lift` uses, so hovering a taker panel and a maker card
+     produce the same amount of light. */
+  &:hover {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      inset 0 0 0 1px color-mix(in oklab, var(--color-primary) 12%, transparent),
+      0 1px 2px rgba(0, 0, 0, 0.45),
+      0 18px 40px -26px rgba(0, 0, 0, 0.9),
+      0 0 22px -6px color-mix(in oklab, var(--color-primary) 45%, transparent);
   }
 }

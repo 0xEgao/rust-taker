@@ -1,6 +1,11 @@
+pub mod chain_backend;
 pub mod logs;
+pub mod maker;
+pub mod maker_reports;
+pub mod maker_settings;
+pub mod maker_wallet;
 pub mod market;
-pub mod reports;
 pub mod setup;
-pub mod swap;
-pub mod wallet;
+pub mod taker_reports;
+pub mod taker_swap;
+pub mod taker_wallet;

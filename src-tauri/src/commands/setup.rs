@@ -1,16 +1,14 @@
 //! Setup & connectivity commands: wizard prechecks and version info.
 //! All blocking I/O runs via `spawn_blocking` — never on the async runtime.
-//! Wallet lifecycle (init/restore/backup) lives in `commands::wallet`.
+//! Wallet lifecycle (init/restore/backup) lives in `commands::taker_wallet`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use coinswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
-
-use crate::error::{AppError, ErrorCode};
+use crate::error::AppError;
 use crate::state::AppState;
-use crate::types::{CoreStatus, PortStatus, RpcSettings, TorStatus, VersionInfo};
+use crate::types::{PortStatus, TorStatus, VersionInfo};
 
 /// Raw TCP reachability probe (RPC / ZMQ / Tor SOCKS / Tor control ports).
 #[tauri::command]
@@ -51,40 +49,6 @@ pub async fn check_port(
     })
     .await
     .map_err(AppError::internal)
-}
-
-/// Bitcoin Core precheck: connect over RPC and report chain/sync status.
-#[tauri::command]
-pub async fn check_bitcoin_core(rpc: RpcSettings) -> Result<CoreStatus, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let url = format!("http://{}:{}", rpc.host, rpc.port);
-        let client = Client::new(&url, Auth::UserPass(rpc.username, rpc.password))
-            .map_err(|e| AppError::new(ErrorCode::RpcUnreachable, format!("{e:?}")))?;
-        let info = client.get_blockchain_info().map_err(|e| {
-            let msg = format!("{e:?}");
-            let code = if msg.contains("401") || msg.to_lowercase().contains("auth") {
-                ErrorCode::RpcAuthFailed
-            } else {
-                ErrorCode::RpcUnreachable
-            };
-            AppError::new(code, msg)
-        })?;
-        let subversion = client
-            .get_network_info()
-            .map(|n| n.subversion)
-            .unwrap_or_default();
-        Ok(CoreStatus {
-            chain: info.chain.to_string(),
-            blocks: info.blocks,
-            headers: info.headers,
-            initial_block_download: info.initial_block_download,
-            synced: !info.initial_block_download && info.blocks == info.headers,
-            subversion,
-            verification_progress: info.verification_progress,
-        })
-    })
-    .await
-    .map_err(AppError::internal)?
 }
 
 #[tauri::command]

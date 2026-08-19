@@ -6,38 +6,40 @@
 
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
-use coinswap::bitcoin::{OutPoint, Txid};
-use coinswap::bitcoind::bitcoincore_rpc::Auth;
+use coinswap::bitcoin::{Address, OutPoint, Txid};
 use coinswap::fee_estimation::FeeEstimator;
 use coinswap::nostr_coinswap::NOSTR_RELAYS;
 use coinswap::taker::api::ConnectionType;
 use coinswap::taker::{Taker, TakerInitConfig};
-use coinswap::utill::{get_taker_dir, setup_taker_logger};
-use coinswap::wallet::{AddressType, RPCConfig, Wallet};
+use coinswap::utill::get_taker_dir;
+use coinswap::wallet::{AddressType, Wallet};
 
+use crate::commands::chain_backend;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{
-    AddressTypeDto, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig, InitResult,
-    NewAddress, Outpoint, PriceEstimate, RpcSettings, SendResult, SwapLiquidity, TxSummary,
+    AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
+    InitResult, NewAddress, Outpoint, PriceEstimate, SendResult, SwapLiquidity, TxSummary,
     UtxoEntry, WalletInfo,
 };
 
-fn resolve_data_dir(data_dir: &Option<String>) -> PathBuf {
-    data_dir
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(get_taker_dir)
+fn resolve_data_dir(data_dir: &Option<String>) -> Result<PathBuf, AppError> {
+    match data_dir {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => Ok(get_taker_dir()?),
+    }
 }
 
-fn wallet_path(data_dir: &std::path::Path, wallet_name: &str) -> PathBuf {
+/// `pub(crate)` so `commands::maker` can build the maker's own wallet path the same way.
+pub(crate) fn wallet_path(data_dir: &std::path::Path, wallet_name: &str) -> PathBuf {
     data_dir.join("wallets").join(wallet_name)
 }
 
 /// Cloning the Arc (not the Wallet) keeps this independent of the taker mutex.
-fn get_wallet_handle(state: &AppState) -> Result<Arc<RwLock<Wallet>>, AppError> {
+pub(crate) fn get_wallet_handle(state: &AppState) -> Result<Arc<RwLock<Wallet>>, AppError> {
     state
         .wallet
         .read()?
@@ -51,7 +53,7 @@ pub async fn is_wallet_encrypted(
     data_dir: Option<String>,
     wallet_name: String,
 ) -> Result<bool, AppError> {
-    let path = wallet_path(&resolve_data_dir(&data_dir), &wallet_name);
+    let path = wallet_path(&resolve_data_dir(&data_dir)?, &wallet_name);
     tauri::async_runtime::spawn_blocking(move || Wallet::is_wallet_encrypted(&path))
         .await
         .map_err(AppError::internal)?
@@ -60,11 +62,17 @@ pub async fn is_wallet_encrypted(
 
 /// Non-wallet files written into the same directory (crate's report/lock/temp, plus our own
 /// last-issued-address sidecar).
-const NON_WALLET_SUFFIXES: &[&str] = &["_swap_report.json", "_last_address.json", ".lock", ".partial", ".tmp"];
+const NON_WALLET_SUFFIXES: &[&str] = &[
+    "_swap_report.json",
+    "_last_address.json",
+    ".lock",
+    ".partial",
+    ".tmp",
+];
 
 #[tauri::command]
 pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
-    let dir = resolve_data_dir(&data_dir).join("wallets");
+    let dir = resolve_data_dir(&data_dir)?.join("wallets");
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -100,7 +108,7 @@ pub async fn init_taker(
         }
     }
 
-    let data_dir = resolve_data_dir(&config.data_dir);
+    let data_dir = resolve_data_dir(&config.data_dir)?;
     let connection_type = match config.connection_type {
         ConnectionTypeDto::Tor => ConnectionType::Tor,
         ConnectionTypeDto::Clearnet => ConnectionType::Clearnet,
@@ -108,24 +116,19 @@ pub async fn init_taker(
 
     let init_cfg = TakerInitConfig {
         data_dir: Some(data_dir.clone()),
-        wallet_file_name: Some(config.wallet_name.clone()),
-        rpc_config: Some(RPCConfig {
-            url: format!("{}:{}", config.rpc.host, config.rpc.port),
-            auth: Auth::UserPass(config.rpc.username, config.rpc.password),
-            wallet_name: String::new(), // overwritten by Taker::init to the wallet file name
-        }),
+        wallet_name: config.wallet_name.clone(),
+        backend: chain_backend::resolve(&config.wallet_name, config.socks_port)?,
         control_port: config.control_port,
         tor_auth_password: config.tor_auth_password,
         socks_port: config.socks_port.unwrap_or(9050),
-        zmq_addr: config.zmq_addr,
         password: config.wallet_password,
         connection_type,
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
     };
     let wallet_name = config.wallet_name;
 
-    // One-shot OnceLock inside the crate — must run before Taker::init.
-    setup_taker_logger(log::LevelFilter::Info, false, Some(data_dir.clone()));
+    // Our own dual-role logger, not the crate's setup_taker_logger — see logging.rs.
+    crate::logging::set_taker_dir(data_dir.clone());
 
     let taker = tauri::async_runtime::spawn_blocking(move || Taker::init(init_cfg))
         .await
@@ -138,6 +141,9 @@ pub async fn init_taker(
         .map(|w| !w.list_live_contract_spend_info().is_empty())
         .unwrap_or(false);
 
+    // A previous `shutdown` latched this; re-arm so syncs on the new taker aren't
+    // cancelled the moment they start.
+    state.sync_cancel.store(false, Ordering::Relaxed);
     *state.wallet.write()? = Some(taker.get_wallet().clone());
     *state.offer_sync.write()? = Some(taker.offer_sync_client());
     *state.data_dir.write()? = Some(data_dir.clone());
@@ -154,6 +160,9 @@ pub async fn init_taker(
 /// if a swap is running we skip it rather than hang shutdown — abandoning it
 /// is safe, startup recovery picks up unfinished swaps on next init.
 pub fn shutdown(state: &AppState) -> Result<(), AppError> {
+    // Released before the handles below, so a sync already inside the crate's retry loop
+    // unwinds instead of holding a blocking thread against a backend that is going away.
+    state.sync_cancel.store(true, Ordering::Relaxed);
     if let Ok(mut guard) = state.taker.try_lock() {
         guard.take();
     }
@@ -189,24 +198,30 @@ pub fn get_wallet_info(state: tauri::State<'_, AppState>) -> Result<WalletInfo, 
 pub async fn restore_wallet(
     data_dir: Option<String>,
     wallet_name: String,
-    rpc: RpcSettings,
+    socks_port: Option<u16>,
     backup_file_path: String,
     password: Option<String>,
 ) -> Result<(), AppError> {
-    let dir = resolve_data_dir(&data_dir);
+    let dir = resolve_data_dir(&data_dir)?;
     let restored_path = wallet_path(&dir, &wallet_name);
-    let rpc_config = RPCConfig {
-        url: format!("{}:{}", rpc.host, rpc.port),
-        auth: Auth::UserPass(rpc.username, rpc.password),
-        wallet_name: wallet_name.clone(),
-    };
+    let backend = chain_backend::resolve(&wallet_name, socks_port)?;
     let backup_path = PathBuf::from(backup_file_path);
+
+    // `Wallet::restore` refuses to overwrite an existing file and only logs the
+    // refusal, which would leave the post-restore `exists()` check below passing
+    // on the *old* wallet and reporting a restore that never happened.
+    if restored_path.exists() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("a wallet named '{wallet_name}' already exists — pick another name"),
+        ));
+    }
 
     tauri::async_runtime::spawn_blocking(move || {
         coinswap::wallet::ffi::restore_wallet_gui_app(
             Some(dir),
             Some(wallet_name),
-            rpc_config,
+            backend,
             backup_path,
             password,
         )
@@ -233,7 +248,9 @@ pub async fn backup_wallet(
     let wallet = get_wallet_handle(&state)?;
 
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        wallet.read()?.backup_wallet_gui_app(destination_path, password)?;
+        wallet
+            .read()?
+            .backup_wallet_gui_app(destination_path, password)?;
         Ok(())
     })
     .await
@@ -241,6 +258,33 @@ pub async fn backup_wallet(
 }
 
 // --- Wallet operations: balances, addresses, history, UTXOs, send, sync, fees ---
+
+/// Validate address encoding before review without coupling the UI to a
+/// particular Bitcoin network. send_to_address performs the authoritative
+/// active-wallet network check before constructing a transaction.
+#[tauri::command]
+pub fn validate_address(address: String) -> AddressValidation {
+    let address = address.trim();
+    if address.is_empty() {
+        return AddressValidation {
+            valid: false,
+            error: Some("Enter a recipient address.".to_string()),
+        };
+    }
+
+    match Address::from_str(address) {
+        Ok(_) => AddressValidation {
+            valid: true,
+            error: None,
+        },
+        Err(_) => {
+            AddressValidation {
+                valid: false,
+                error: Some("Enter a valid Bitcoin address.".to_string()),
+            }
+        }
+    }
+}
 
 #[tauri::command]
 pub async fn get_balances(state: tauri::State<'_, AppState>) -> Result<BalancesDto, AppError> {
@@ -341,20 +385,33 @@ pub async fn get_new_address(
         };
 
         if let Some(existing) = slot.clone() {
-            let used = wallet.read()?.get_transactions(None, None)?.into_iter().any(|tx| {
-                tx.detail
-                    .address
-                    .is_some_and(|a| a.assume_checked().to_string() == existing)
-            });
+            let used = wallet
+                .read()?
+                .get_transactions(None, None)?
+                .into_iter()
+                .any(|tx| {
+                    tx.detail
+                        .address
+                        .is_some_and(|a| a.assume_checked().to_string() == existing)
+                });
             if !used {
-                return Ok(NewAddress { address: existing, address_type: label.to_string() });
+                return Ok(NewAddress {
+                    address: existing,
+                    address_type: label.to_string(),
+                });
             }
         }
 
-        let address = wallet.write()?.get_next_external_address(addr_type)?.to_string();
+        let address = wallet
+            .write()?
+            .get_next_external_address(addr_type)?
+            .to_string();
         *slot = Some(address.clone());
         save_last_addresses(&path, &cached)?;
-        Ok(NewAddress { address, address_type: label.to_string() })
+        Ok(NewAddress {
+            address,
+            address_type: label.to_string(),
+        })
     })
     .await
     .map_err(AppError::internal)?
@@ -447,8 +504,9 @@ pub async fn send_to_address(
 #[tauri::command]
 pub async fn sync_wallet(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
     let wallet = get_wallet_handle(&state)?;
+    let cancel = state.sync_cancel.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        wallet.write()?.sync_and_save()?;
+        wallet.write()?.sync_and_save(&cancel)?;
         Ok(())
     })
     .await
@@ -489,7 +547,12 @@ pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
         let usd = body
             .get("USD")
             .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| AppError::new(ErrorCode::Internal, "price response missing USD".to_string()))?;
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::Internal,
+                    "price response missing USD".to_string(),
+                )
+            })?;
         Ok(PriceEstimate { usd })
     })
     .await

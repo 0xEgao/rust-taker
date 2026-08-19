@@ -164,7 +164,13 @@ pub fn ensure_tor(socks_port: u16, control_port: u16) -> (TorSource, Option<Chil
         return (TorSource::System, None);
     }
 
-    let tor_dir = coinswap::utill::get_taker_dir().join("tor-manager");
+    let tor_dir = match coinswap::utill::get_taker_dir() {
+        Ok(dir) => dir.join("tor-manager"),
+        Err(e) => {
+            log::warn!("could not resolve taker data dir: {e}");
+            return (TorSource::None, None);
+        }
+    };
     if let Err(e) = fs::create_dir_all(&tor_dir) {
         log::warn!("could not create tor-manager config dir {}: {e}", tor_dir.display());
     }

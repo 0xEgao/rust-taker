@@ -1,6 +1,7 @@
 //! App-level error envelope. Crate errors are `Debug`-only, so everything is
 //! converted here before crossing IPC. Frontend switches on `code`.
 
+use coinswap::maker::MakerError;
 use coinswap::taker::error::TakerError;
 use coinswap::wallet::WalletError;
 
@@ -32,6 +33,13 @@ pub enum ErrorCode {
     NotEnoughMakers,
     ContractsBroadcasted,
     InvalidInput,
+    // maker
+    MakerBusy,
+    MakerNotFound,
+    MakerNotInitialized,
+    MakerAlreadyRunning,
+    MakerNotRunning,
+    ReportNotFound,
     // infrastructure
     StatePoisoned,
     Io,
@@ -59,6 +67,24 @@ impl AppError {
     pub fn swap_in_progress() -> Self {
         Self::new(ErrorCode::SwapInProgress, "a swap is currently running")
     }
+
+    pub fn maker_busy() -> Self {
+        Self::new(
+            ErrorCode::MakerBusy,
+            "a maker start/stop operation is already in progress",
+        )
+    }
+
+    pub fn maker_not_initialized() -> Self {
+        Self::new(ErrorCode::MakerNotInitialized, "maker is not initialized")
+    }
+
+    pub fn maker_not_found(maker_id: &str) -> Self {
+        Self::new(
+            ErrorCode::MakerNotFound,
+            format!("maker '{maker_id}' is not registered"),
+        )
+    }
 }
 
 impl From<TakerError> for AppError {
@@ -71,10 +97,9 @@ impl From<TakerError> for AppError {
             _ => ErrorCode::Internal,
         };
         let details = match &e {
-            TakerError::ContractsBroadcasted(txids) => serde_json::to_value(
-                txids.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
-            )
-            .ok(),
+            TakerError::ContractsBroadcasted(txids) => {
+                serde_json::to_value(txids.iter().map(|t| t.to_string()).collect::<Vec<_>>()).ok()
+            }
             _ => None,
         };
         Self {
@@ -95,15 +120,33 @@ impl From<WalletError> for AppError {
             _ => ErrorCode::WalletLoadFailed,
         };
         let details = match &e {
-            WalletError::InsufficientFund { available, required } => {
-                serde_json::json!({ "available": available, "required": required }).into()
-            }
+            WalletError::InsufficientFund {
+                available,
+                required,
+            } => serde_json::json!({ "available": available, "required": required }).into(),
             _ => None,
         };
         Self {
             code,
             message: format!("{e:?}"),
             details,
+        }
+    }
+}
+
+impl From<MakerError> for AppError {
+    fn from(e: MakerError) -> Self {
+        let code = match &e {
+            MakerError::Wallet(_) => ErrorCode::WalletLoadFailed,
+            MakerError::IO(_) => ErrorCode::Io,
+            MakerError::InsufficientLiquidity { .. } => ErrorCode::InsufficientFunds,
+            MakerError::TorError(_) => ErrorCode::TorUnreachable,
+            _ => ErrorCode::Internal,
+        };
+        Self {
+            code,
+            message: format!("{e:?}"),
+            details: None,
         }
     }
 }

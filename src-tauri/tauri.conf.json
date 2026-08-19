@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Coinswap Taker",
+        "title": "OpenSwap",
         "width": 1400,
         "height": 900
       }

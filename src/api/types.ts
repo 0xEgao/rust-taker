@@ -5,21 +5,38 @@ export interface PortStatus {
   error?: string;
 }
 
-export interface RpcSettings {
+export type ChainBackendKind = "electrum" | "coreRpc";
+
+export interface ElectrumBackend {
+  url: string;
+  /** An `.onion` URL is proxied regardless of this flag — the crate rejects one without a proxy. */
+  useTor: boolean;
+}
+
+export interface NodeBackend {
   host: string;
   port: number;
   username: string;
   password: string;
+  zmqPort: number;
 }
 
-export interface CoreStatus {
-  chain: string;
-  blocks: number;
-  headers: number;
-  initialBlockDownload: boolean;
+export interface ChainBackendConfig {
+  kind: ChainBackendKind;
+  electrum: ElectrumBackend;
+  /** Null until the user adds their own node. */
+  node: NodeBackend | null;
+}
+
+export interface BackendStatus {
+  reachable: boolean;
+  error?: string;
+  chain?: string;
+  blocks?: number;
   synced: boolean;
-  subversion: string;
-  verificationProgress: number;
+  /** Bitcoin Core only; Electrum has no version string to report. */
+  subversion?: string;
+  verificationProgress?: number;
 }
 
 export interface VersionInfo {
@@ -42,8 +59,6 @@ export type ConnectionType = "tor" | "clearnet";
 export interface InitConfig {
   walletName: string;
   walletPassword?: string;
-  rpc: RpcSettings;
-  zmqAddr: string;
   controlPort?: number;
   socksPort?: number;
   torAuthPassword?: string;
@@ -86,6 +101,12 @@ export type ErrorCode =
   | "SWAP_IN_PROGRESS"
   | "INSUFFICIENT_FUNDS"
   | "NOT_ENOUGH_MAKERS"
+  | "MAKER_NOT_FOUND"
+  | "MAKER_NOT_INITIALIZED"
+  | "MAKER_ALREADY_RUNNING"
+  | "MAKER_NOT_RUNNING"
+  | "MAKER_BUSY"
+  | "REPORT_NOT_FOUND"
   | "CONTRACTS_BROADCASTED"
   | "INVALID_INPUT"
   | "STATE_POISONED"
@@ -116,6 +137,11 @@ export type AddressType = "p2wpkh" | "p2tr";
 export interface NewAddress {
   address: string;
   addressType: string;
+}
+
+export interface AddressValidation {
+  valid: boolean;
+  error?: string;
 }
 
 export interface TxSummary {
@@ -194,6 +220,89 @@ export interface OfferBookView {
 }
 
 // ---------------------------------------------------------------------------
+// Maker operations
+// ---------------------------------------------------------------------------
+
+export interface MakerSettings {
+  makerId: string;
+  walletName: string;
+  networkPort: number;
+  rpcPort: number;
+  socksPort: number;
+  controlPort: number;
+  minSwapAmount: number;
+  fidelityAmount: number;
+  fidelityTimelock: number;
+  requiredConfirms: number;
+  baseFee: number;
+  amountRelativeFeePct: number;
+  timeRelativeFeePct: number;
+  dataDir?: string;
+}
+
+export interface MakerInitConfig extends MakerSettings {
+  walletPassword?: string;
+  torAuthPassword?: string;
+}
+
+export interface SuggestedMakerPorts {
+  networkPort: number;
+  rpcPort: number;
+}
+
+/** Per-port conflict message, absent when the port is usable. */
+export interface MakerPortCheck {
+  networkPort?: string;
+  rpcPort?: string;
+}
+
+export type MakerPhase =
+  | { phase: "notConfigured" }
+  | { phase: "initializing" }
+  | { phase: "starting" }
+  | { phase: "running" }
+  | { phase: "stopping" }
+  | { phase: "stopped" }
+  | { phase: "failed"; message: string };
+
+export interface MakerStatus {
+  makerId: string;
+  phase: MakerPhase;
+  running: boolean;
+  torAddress?: string;
+  networkPort: number;
+}
+
+export interface FidelityBond {
+  bondIndex: number;
+  outpoint: Outpoint;
+  amountSats: number;
+  lockTimeHeight: number;
+  isSpent: boolean;
+  isLocked: boolean;
+  bondValueSats?: number;
+}
+
+export interface MakerSwapReportSummary {
+  swapId: string;
+  status: string;
+  startTimestamp: number;
+  endTimestamp: number;
+  incomingAmountSats: number;
+  outgoingAmountSats: number;
+  feeEarnedSats: number;
+}
+
+export interface MakerSwapReportDetail extends MakerSwapReportSummary {
+  network: string;
+  swapDurationSeconds: number;
+  incomingContractTxid: string;
+  outgoingContractTxid: string;
+  timelock: number;
+  deniabilityProof: Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------
 // Swap
 // ---------------------------------------------------------------------------
 
@@ -202,9 +311,17 @@ export type ProtocolVersion = "legacy" | "taproot";
 export interface SwapRequest {
   protocol: ProtocolVersion;
   amountSats: number;
-  makerCount: number;
+  /** Omitted requests get the backend's two-maker route default. */
+  makerCount?: number;
   outpoints?: Outpoint[];
   preferredMakers?: string[];
+}
+
+export interface SwapFundingEstimate {
+  inputCount: number;
+  vbytes: number;
+  feeSats: number;
+  routeMiningFeePerMakerSats: number;
 }
 
 export interface MakerFeeInfo {
@@ -314,9 +431,6 @@ export interface SwapReportDetail {
   makersCount: number;
   makerAddresses: string[];
   makerFeeInfo: MakerFeeInfo[];
-  inputUtxoAmountsSats: number[];
-  outputChangeUtxos: [number, string][];
-  outputSwapUtxos: [number, string][];
   /** The exact outpoint verify_deniability checks on-chain. */
   provenOutpoint: Outpoint | null;
   /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */

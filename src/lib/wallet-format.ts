@@ -147,10 +147,3 @@ export const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
   recovery_timelock: "text-warning",
   failed: "text-danger",
 };
-
-export const SWAP_STATUS_CHIP_TONE: Record<SwapStatus, string> = {
-  success: "border-success/45 bg-success/[0.08] text-success",
-  recovery_hashlock: "border-warning/45 bg-warning/[0.08] text-warning",
-  recovery_timelock: "border-warning/45 bg-warning/[0.08] text-warning",
-  failed: "border-danger/45 bg-danger/[0.08] text-danger",
-};

@@ -1,15 +1,14 @@
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { listSwapReports } from "../../api/commands";
 import type { SwapReportSummary, SwapStatus } from "../../api/types";
 import { isAppError } from "../../api/types";
-import { Card, SatsAmount } from "../../components/ui/display";
+import { BackButton, Card, SatsAmount, StatStrip, StatusChip } from "../../components/ui/display";
 import { SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import {
   formatDuration,
   formatRelativeTime,
-  SWAP_STATUS_CHIP_TONE,
   SWAP_STATUS_ICON,
   truncateMiddle,
 } from "../../lib/wallet-format";
@@ -25,18 +24,14 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
   recovery_timelock: "Recovered (timelock)",
   failed: "Failed",
 };
-
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <Card className="border-line-strong p-4">
-      <span className="font-mono text-[9.5px] uppercase tracking-widest text-subtle">{label}</span>
-      <div className="mt-1 font-mono text-[19px] font-bold text-foreground">{value}</div>
-    </Card>
-  );
-}
+const STATUS_TONE: Record<SwapStatus, "success" | "warning" | "danger"> = {
+  success: "success",
+  recovery_hashlock: "warning",
+  recovery_timelock: "warning",
+  failed: "danger",
+};
 
 export function SwapReportsPage() {
-  const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
   const [reports, setReports] = useState<SwapReportSummary[] | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -76,16 +71,9 @@ export function SwapReportsPage() {
   }, [reports]);
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto px-8 pb-8 pt-2">
+    <div className="h-full overflow-y-auto px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center gap-3 pb-4">
-        <button
-          type="button"
-          onClick={() => navigate("/swap")}
-          title="Back to Swap"
-          className="flex h-9 w-9 flex-none items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-line-strong hover:text-foreground"
-        >
-          <ArrowLeft size={16} strokeWidth={1.8} />
-        </button>
+        <BackButton to="/swap" label="Back to Swap" />
         <div>
           <h1 className="font-header text-[26px] font-bold text-foreground">Swap Reports</h1>
           <p className="mt-1 text-[13.5px] text-muted">History of past swaps for this wallet.</p>
@@ -99,12 +87,15 @@ export function SwapReportsPage() {
         </div>
       ) : (
         <>
-          <section className="grid shrink-0 grid-cols-4 gap-3">
-            <StatCard label="Total Reports" value={String(stats.total)} />
-            <StatCard label="Failed" value={String(stats.failed)} />
-            <StatCard label="Total Volume" value={`${stats.totalVolume.toLocaleString()} sats`} />
-            <StatCard label="Total Fees" value={`${stats.totalFees.toLocaleString()} sats`} />
-          </section>
+          <StatStrip
+            className="shrink-0"
+            items={[
+              { label: "Total reports", value: String(stats.total) },
+              { label: "Failed", value: String(stats.failed), tone: stats.failed > 0 ? "danger" : "foreground" },
+              { label: "Total volume", value: <SatsAmount sats={stats.totalVolume} />, tone: "primary" },
+              { label: "Total fees", value: <SatsAmount sats={stats.totalFees} /> },
+            ]}
+          />
 
           <Card className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-line-strong px-4 py-3">
             <SegmentedToggle
@@ -129,8 +120,8 @@ export function SwapReportsPage() {
             />
           </Card>
 
-          <Card className="mt-4 flex min-h-0 flex-1 flex-col border-line-strong">
-            <div className="grid grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] gap-3 border-b border-line px-4.5 py-3 font-mono text-[10px] uppercase tracking-widest text-subtle">
+          <Card className="mt-4 flex min-h-[min(52vh,470px)] max-h-[min(68vh,680px)] flex-col border-line-strong">
+            <div className="grid grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] gap-3 border-b border-line px-4.5 py-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
               <span />
               <span>Swap ID</span>
               <span>When</span>
@@ -148,29 +139,22 @@ export function SwapReportsPage() {
               {filtered.map((r) => {
                 const Icon = SWAP_STATUS_ICON[r.status];
                 return (
-                  <div
+                  <Link
                     key={r.swapId}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => navigate(`/swap/reports/${encodeURIComponent(r.swapId)}`)}
-                    onKeyDown={(e) => e.key === "Enter" && navigate(`/swap/reports/${encodeURIComponent(r.swapId)}`)}
-                    className="grid cursor-pointer grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] items-center gap-3 px-4.5 py-3 text-left transition-colors duration-200 hover:bg-white/[0.04]"
+                    to={`/swap/reports/${encodeURIComponent(r.swapId)}`}
+                    className="grid cursor-pointer grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] items-center gap-3 px-4.5 py-3 text-left outline-none transition-colors duration-200 hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
                   >
-                    <span className={`flex h-[34px] w-[34px] items-center justify-center rounded-control border ${SWAP_STATUS_CHIP_TONE[r.status]}`}>
-                      <Icon size={17} strokeWidth={2} />
-                    </span>
+                    <StatusChip tone={STATUS_TONE[r.status]} shape="tile" className="h-[34px] w-[34px] justify-center px-0"><Icon size={17} strokeWidth={2} /></StatusChip>
                     <span className="flex min-w-0 flex-col gap-1">
                       <span className="truncate font-mono text-[12px] text-muted">{truncateMiddle(r.swapId, 10, 6)}</span>
-                      <span className={`w-fit rounded-control border px-1.5 py-0.5 font-mono text-[9.5px] tracking-wide ${SWAP_STATUS_CHIP_TONE[r.status]}`}>
-                        {STATUS_LABEL[r.status]}
-                      </span>
+                      <StatusChip tone={STATUS_TONE[r.status]} className="self-start">{STATUS_LABEL[r.status]}</StatusChip>
                     </span>
                     <span className="font-mono text-[11.5px] text-subtle">{formatRelativeTime(r.endTimestamp)}</span>
                     <span className="font-mono text-[11.5px] text-subtle">{formatDuration(r.endTimestamp - r.startTimestamp)}</span>
                     <SatsAmount sats={r.outgoingAmountSats} className="text-[12.5px] font-semibold text-foreground" />
                     <span className="font-mono text-[12px] text-foreground">{r.makersCount}</span>
                     <SatsAmount sats={r.feePaidSats} className="text-[12px] text-warning" />
-                  </div>
+                  </Link>
                 );
               })}
             </div>
