@@ -165,7 +165,7 @@ export function MakerSetupPage() {
   return (
     <IntroStage lead="OpenSwap" accent="Maker" caption={caption} className="min-h-full">
       <div className="mx-auto w-full max-w-lg">
-        <Card glow={stage === "funding"} className="border-line-strong">
+        <Card className={`border-line-strong ${stage === "funding" ? "hairline" : ""}`}>
           <div className="p-8 text-left">
             <Checklist steps={STEP_LABELS.map((label, i) => ({ label, state: stepStates(stage, failedAt.current)[i] }))} />
           </div>

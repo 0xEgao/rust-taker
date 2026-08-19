@@ -138,7 +138,7 @@ function OverviewPanel({
     <div className="space-y-4">
       {balances ? (
         <div className="grid grid-cols-[1.45fr_repeat(2,1fr)] gap-4 max-[1000px]:grid-cols-2 max-[680px]:grid-cols-1">
-          <Card glow className="row-span-2 border-primary/30 p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_18px_55px_-38px_color-mix(in_oklab,var(--color-primary)_65%,transparent)] max-[1000px]:col-span-2 max-[680px]:col-span-1">
+          <Card className="row-span-2 border-primary/30 p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_18px_55px_-38px_color-mix(in_oklab,var(--color-primary)_65%,transparent)] max-[1000px]:col-span-2 max-[680px]:col-span-1">
             <div className="flex items-center justify-between">
               <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total maker balance</span>
               <span className="grid h-8 w-8 place-items-center rounded-control border border-primary/25 bg-primary/10 text-primary"><WalletCards size={15} /></span>

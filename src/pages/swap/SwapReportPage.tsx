@@ -276,15 +276,15 @@ export function SwapReportPage() {
             <Row label="Mining fees">
               <SatsAmount sats={report.miningFeeSats} />
             </Row>
-            <div className="mt-1 border-t border-dashed border-line pt-3.5">
+            <div className="mt-1 flex items-baseline justify-between gap-3 border-t border-dashed border-line pt-3.5">
               <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total fee</span>
-              <div className="mt-2">
+              <div className="text-right">
                 <SatsAmount sats={report.feePaidSats} className="font-mono text-[26px] leading-none text-foreground" />
+                <p className="mt-2 font-mono text-[12px] text-muted">{satsToBtc(report.feePaidSats)} BTC</p>
               </div>
-              <p className="mt-2 font-mono text-[12px] text-muted">{satsToBtc(report.feePaidSats)} BTC</p>
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-dashed border-line pt-3.5">
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Of swap amount</span>
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle"> % Of swap amount</span>
               <strong className="font-mono text-[15px] font-bold text-foreground">{report.feePercentage.toFixed(3)}%</strong>
             </div>
           </SectionCard>

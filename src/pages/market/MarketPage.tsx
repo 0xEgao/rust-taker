@@ -265,7 +265,7 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
             <SatsAmount sats={estimate?.totalFee ?? 0} />
           </strong>
           <small className="col-span-2 font-mono text-[10px] text-subtle">
-            {estimate ? `${totalPercent.toFixed(4)}% of swap amount` : "Enter position to calculate total fee"}
+            {estimate ? `${totalPercent.toFixed(4)} % of swap amount` : "Enter position to calculate total fee"}
           </small>
         </div>
       </div>

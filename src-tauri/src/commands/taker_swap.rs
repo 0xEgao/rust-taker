@@ -192,7 +192,6 @@ pub async fn estimate_swap_funding(
             input_count: selected.len(),
             vbytes,
             fee_sats,
-            fee_rate: MIN_FEE_RATE,
             route_mining_fee_per_maker_sats: estimate_funding_tx_fee_sats(),
         })
     })

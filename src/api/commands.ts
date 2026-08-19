@@ -212,6 +212,14 @@ export function listMakers(): Promise<MakerSettings[]> {
   return invoke("list_makers");
 }
 
+export function listDashboardImports(): Promise<MakerSettings[]> {
+  return invoke("list_dashboard_imports");
+}
+
+export function importDashboardMakers(makerIds: string[]): Promise<MakerSettings[]> {
+  return invoke("import_dashboard_makers", { makerIds });
+}
+
 export function getMakerStatus(makerId: string): Promise<MakerStatus> {
   return invoke("get_maker_status", { makerId });
 }

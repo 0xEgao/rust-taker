@@ -147,7 +147,7 @@ export function SwapReportsPage() {
                     <StatusChip tone={STATUS_TONE[r.status]} shape="tile" className="h-[34px] w-[34px] justify-center px-0"><Icon size={17} strokeWidth={2} /></StatusChip>
                     <span className="flex min-w-0 flex-col gap-1">
                       <span className="truncate font-mono text-[12px] text-muted">{truncateMiddle(r.swapId, 10, 6)}</span>
-                      <StatusChip tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</StatusChip>
+                      <StatusChip tone={STATUS_TONE[r.status]} className="self-start">{STATUS_LABEL[r.status]}</StatusChip>
                     </span>
                     <span className="font-mono text-[11.5px] text-subtle">{formatRelativeTime(r.endTimestamp)}</span>
                     <span className="font-mono text-[11.5px] text-subtle">{formatDuration(r.endTimestamp - r.startTimestamp)}</span>

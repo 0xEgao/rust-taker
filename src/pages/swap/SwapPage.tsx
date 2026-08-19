@@ -72,8 +72,6 @@ import {
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 
-type CoinMode = "auto" | "manual";
-type MakerMode = "auto" | "manual";
 type UtxoFilter = "regular" | "swap";
 type Lifecycle = "configure" | "running" | "finished" | "failed";
 type RouteTone = "idle" | "active" | "success" | "danger";
@@ -392,12 +390,10 @@ export function SwapPage() {
 
   const [unit, setUnit] = useState<Unit>("sats");
   const [amountInput, setAmountInput] = useState("");
-  const [coinMode, setCoinMode] = useState<CoinMode>("auto");
   const [utxoFilter, setUtxoFilter] = useState<UtxoFilter>("regular");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [protocol, setProtocol] = useState<ProtocolVersion>("taproot");
-  const [makerMode, setMakerMode] = useState<MakerMode>("auto");
-  const [makerCount, setMakerCount] = useState(3);
+  const [makerCount, setMakerCount] = useState(2);
   const [customMakerCount, setCustomMakerCount] = useState("5");
   const [selectedMakers, setSelectedMakers] = useState<string[]>([]);
 
@@ -412,6 +408,7 @@ export function SwapPage() {
   const [tracker, setTracker] = useState<SwapTrackerProgress | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [recovering, setRecovering] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [swapLogs, setSwapLogs] = useState<LogLine[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
 
@@ -597,6 +594,11 @@ export function SwapPage() {
     [makers, protocol],
   );
 
+  function pickMakerCount(count: number) {
+    setMakerCount(count);
+    setSelectedMakers([]);
+  }
+
   function toggleMaker(address: string) {
     setSelectedMakers((prev) =>
       prev.includes(address)
@@ -605,18 +607,21 @@ export function SwapPage() {
     );
   }
 
-  const effectiveMakerCount =
-    makerMode === "auto"
-      ? makerCount === 5
-        ? Math.max(2, Number(customMakerCount) || 5)
-        : makerCount
-      : selectedMakers.length;
+  // Nothing ticked in the advanced panel means automatic — no separate mode flag to keep in sync.
+  const manualCoins = selectedOutpoints.length > 0;
+  const manualMakers = selectedMakers.length > 0;
+
+  const effectiveMakerCount = manualMakers
+    ? selectedMakers.length
+    : makerCount === 5
+      ? Math.max(2, Number(customMakerCount) || 5)
+      : makerCount;
 
   const estimateMakers = useMemo(() => {
-    if (makerMode === "manual")
+    if (manualMakers)
       return compatibleMakers.filter((m) => selectedMakers.includes(m.address));
     return compatibleMakers.slice(0, Math.max(0, effectiveMakerCount));
-  }, [compatibleMakers, makerMode, selectedMakers, effectiveMakerCount]);
+  }, [compatibleMakers, manualMakers, selectedMakers, effectiveMakerCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -629,7 +634,7 @@ export function SwapPage() {
     const timer = setTimeout(() => {
       setFundingEstimateStatus("loading");
       const outpoints =
-        coinMode === "manual" && selectedOutpoints.length > 0
+        manualCoins && selectedOutpoints.length > 0
           ? selectedOutpoints
           : undefined;
       void estimateSwapFunding(amountSats, outpoints)
@@ -648,7 +653,7 @@ export function SwapPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [amountSats, coinMode, selectedOutpoints, walletSyncStatus]);
+  }, [amountSats, manualCoins, selectedOutpoints, walletSyncStatus]);
 
   const feeSummary = useMemo(() => {
     const hasCompleteRoute =
@@ -700,15 +705,8 @@ export function SwapPage() {
       list.push("Enter a valid amount.");
     if (amountSats > 0 && liquidity && amountSats > liquidity.maxSwappable)
       list.push("Amount exceeds your swappable balance.");
-    if (coinMode === "manual" && selectedOutpoints.length === 0)
-      list.push("Select at least one UTXO, or switch to Auto select.");
-    if (
-      coinMode === "manual" &&
-      selectedOutpoints.length > 0 &&
-      selectedTotal < amountSats
-    ) {
+    if (manualCoins && selectedTotal < amountSats)
       list.push("Selected UTXOs don't cover the swap amount.");
-    }
     if (
       amountSats > 0 &&
       feeSummary.receiveAmount !== null &&
@@ -716,16 +714,14 @@ export function SwapPage() {
     ) {
       list.push("Estimated receive amount is too small after fees.");
     }
-    if (makerMode === "manual" && selectedMakers.length === 0)
-      list.push("Select at least one maker, or switch to Auto select.");
-    if (effectiveMakerCount < 2)
+    if (manualMakers && selectedMakers.length < 2) {
+      list.push("Pin at least two makers, or untick them all to auto-select.");
+    } else if (effectiveMakerCount < 2) {
       list.push("An OpenSwap route requires at least two makers.");
+    }
     if (compatibleMakers.length === 0) {
       list.push(`No compatible ${protocol} makers found in the offerbook.`);
-    } else if (
-      makerMode === "auto" &&
-      effectiveMakerCount > compatibleMakers.length
-    ) {
+    } else if (!manualMakers && effectiveMakerCount > compatibleMakers.length) {
       list.push(
         `Only ${compatibleMakers.length} compatible maker${compatibleMakers.length === 1 ? "" : "s"} available for ${effectiveMakerCount} hops.`,
       );
@@ -735,11 +731,11 @@ export function SwapPage() {
     amountInput,
     amountSats,
     liquidity,
-    coinMode,
+    manualCoins,
     selectedOutpoints,
     selectedTotal,
     feeSummary.receiveAmount,
-    makerMode,
+    manualMakers,
     selectedMakers,
     compatibleMakers,
     effectiveMakerCount,
@@ -748,6 +744,11 @@ export function SwapPage() {
     walletSyncError,
     fundingEstimateStatus,
   ]);
+
+  // Pinned makers already show up in the Makers section; a UTXO pick has no other home.
+  const advancedSummary = manualCoins
+    ? `${selectedOutpoints.length} UTXO${selectedOutpoints.length === 1 ? "" : "s"} selected`
+    : null;
 
   const canStart =
     amountSats > 0 &&
@@ -773,11 +774,11 @@ export function SwapPage() {
         amountSats,
         makerCount: effectiveMakerCount,
         outpoints:
-          coinMode === "manual" && selectedOutpoints.length > 0
+          manualCoins && selectedOutpoints.length > 0
             ? selectedOutpoints
             : undefined,
         preferredMakers:
-          makerMode === "manual" && selectedMakers.length > 0
+          manualMakers && selectedMakers.length > 0
             ? selectedMakers
             : undefined,
       };
@@ -878,41 +879,29 @@ export function SwapPage() {
     return (
       <div className="flex h-full flex-col items-center overflow-y-auto px-8 py-10">
         <div className="w-full max-w-2xl">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-              {phase === "running" && "Swapping"}
-              {phase === "finished" && "Step complete"}
-              {phase === "failed" && "Swap failed"}
-            </span>
-            <div className="flex items-center gap-3">
-              {phase === "running" && (
-                <RefreshCw
-                  size={30}
-                  strokeWidth={1.8}
-                  className="animate-spin text-primary"
-                />
-              )}
-              {phase === "finished" && (
-                <CheckCircle2
-                  size={30}
-                  strokeWidth={1.8}
-                  className="text-success"
-                />
-              )}
-              {phase === "failed" && (
-                <XCircle size={30} strokeWidth={1.8} className="text-danger" />
-              )}
-              <h1 className="font-header text-[26px] font-bold text-foreground">
-                {phase === "running" && "Swap in progress"}
-                {phase === "finished" && "Swap Complete"}
-                {phase === "failed" && "Swap Failed"}
-              </h1>
-            </div>
-            {swapId && (
-              <p className="font-mono text-[11px] text-subtle">
-                {truncateMiddle(swapId, 10, 6)}
-              </p>
+          <div className="flex items-center justify-center gap-3">
+            {phase === "running" && (
+              <RefreshCw
+                size={30}
+                strokeWidth={1.8}
+                className="animate-spin text-primary"
+              />
             )}
+            {phase === "finished" && (
+              <CheckCircle2
+                size={30}
+                strokeWidth={1.8}
+                className="text-success"
+              />
+            )}
+            {phase === "failed" && (
+              <XCircle size={30} strokeWidth={1.8} className="text-danger" />
+            )}
+            <h1 className="font-header text-[26px] font-bold text-foreground">
+              {phase === "running" && "Swap in progress"}
+              {phase === "finished" && "Swap Complete"}
+              {phase === "failed" && "Swap Failed"}
+            </h1>
           </div>
 
           <Card className="mt-5 flex flex-col gap-4 border-line-strong p-6">
@@ -1012,9 +1001,11 @@ export function SwapPage() {
 
             {(phase === "finished" || phase === "failed") && (
               <div className="flex gap-2.5">
+                <Button variant="secondary" className="flex-1" onClick={resetWizard}>
+                  Back to Swap Page
+                </Button>
                 {swapId && (
                   <Button
-                    variant="secondary"
                     className="flex-1"
                     onClick={() =>
                       navigate(`/swap/reports/${encodeURIComponent(swapId)}`)
@@ -1023,9 +1014,6 @@ export function SwapPage() {
                     View Report
                   </Button>
                 )}
-                <Button className="flex-1" onClick={resetWizard}>
-                  Back to Swap Page
-                </Button>
               </div>
             )}
 
@@ -1121,82 +1109,7 @@ export function SwapPage() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
-            <div className="flex items-center justify-between">
-              <h2 className="font-header text-[13.5px] font-bold text-foreground">
-                Select UTXOs
-              </h2>
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                {selectedOutpoints.length} selected
-              </span>
-            </div>
-            <SegmentedToggle
-              groupId="swap-coin-mode"
-              value={coinMode}
-              onChange={setCoinMode}
-              options={[
-                { value: "auto", label: "Auto select" },
-                { value: "manual", label: "Manual select" },
-              ]}
-            />
-            {coinMode === "manual" && (
-              <div className="flex flex-col gap-2.5">
-                <SegmentedToggle
-                  groupId="swap-utxo-filter"
-                  value={utxoFilter}
-                  onChange={changeUtxoFilter}
-                  options={[
-                    { value: "regular", label: "Regular" },
-                    { value: "swap", label: "Swap" },
-                  ]}
-                />
-                <div className="flex max-h-45 flex-col gap-1.5 overflow-y-auto">
-                  {filteredUtxos.length === 0 && (
-                    <p className="text-[11.5px] text-subtle">
-                      No spendable {utxoFilter} UTXOs.
-                    </p>
-                  )}
-                  {filteredUtxos.map((u) => {
-                    const key = `${u.txid}:${u.vout}`;
-                    const checked = selectedOutpoints.some(
-                      (o) => `${o.txid}:${o.vout}` === key,
-                    );
-                    return (
-                      <label
-                        key={key}
-                        className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
-                      >
-                        <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleOutpoint(u)}
-                            className="accent-primary"
-                          />
-                          {truncateMiddle(u.txid, 8, 6)}:{u.vout}
-                        </span>
-                        <SatsAmount
-                          sats={u.amountSats}
-                          className="flex-none text-[11px] font-semibold text-foreground"
-                        />
-                      </label>
-                    );
-                  })}
-                </div>
-                {selectedOutpoints.length > 0 && (
-                  <p className="text-[11.5px] text-subtle">
-                    Selected:{" "}
-                    <SatsAmount
-                      sats={selectedTotal}
-                      className="text-foreground"
-                    />
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
+          <div className="flex items-center justify-between gap-3 border-t border-line pt-5">
             <h2 className="font-header text-[13.5px] font-bold text-foreground">
               Protocol
             </h2>
@@ -1214,110 +1127,169 @@ export function SwapPage() {
           <div className="flex flex-col gap-2.5 border-t border-line pt-5">
             <div className="flex items-center justify-between">
               <h2 className="font-header text-[13.5px] font-bold text-foreground">
-                Select Makers
+                Makers
               </h2>
               <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                {makerMode === "auto"
-                  ? effectiveMakerCount
-                  : selectedMakers.length}{" "}
-                from {compatibleMakers.length} available
+                {effectiveMakerCount} from {compatibleMakers.length} available
               </span>
             </div>
-            <SegmentedToggle
-              groupId="swap-maker-mode"
-              value={makerMode}
-              onChange={setMakerMode}
-              options={[
-                { value: "auto", label: "Auto select" },
-                { value: "manual", label: "Manual select" },
-              ]}
-            />
-
-            {makerMode === "auto" ? (
-              <>
-                <div className="flex items-start gap-2 rounded-control border border-warning/35 bg-warning/[0.08] px-3.5 py-2.5 text-[12px] text-warning">
-                  <AlertTriangle
-                    size={14}
-                    strokeWidth={2}
-                    className="mt-0.5 flex-none"
-                  />
-                  <span>
-                    Warning: Swapping with only one maker is not private, as
-                    they can deanonymize you. Recommended minimum makers is 2.
-                  </span>
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {MAKER_COUNT_PRESETS.map((n) => (
-                    <PresetTile
-                      key={n}
-                      onClick={() => setMakerCount(n)}
-                      selected={makerCount === n}
-                      label="Makers"
-                      value={n}
-                    />
-                  ))}
-                  <PresetTile
-                    onClick={() => setMakerCount(5)}
-                    selected={makerCount === 5}
-                    label="Custom"
-                    value="5+"
-                  />
-                </div>
-                {makerCount === 5 && (
-                  <TextField
-                    label="Number of makers"
-                    inputMode="numeric"
-                    value={customMakerCount}
-                    onChange={(e) => setCustomMakerCount(e.target.value)}
-                  />
-                )}
-              </>
-            ) : (
-              <div className="flex max-h-45 flex-col gap-1.5 overflow-y-auto">
-                {compatibleMakers.length === 0 && (
-                  <p className="text-[11.5px] text-subtle">
-                    No compatible {protocol} makers in the offerbook.
-                  </p>
-                )}
-                {compatibleMakers.map((m) => (
-                  <label
-                    key={m.address}
-                    className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
-                  >
-                    <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
-                      <input
-                        type="checkbox"
-                        checked={selectedMakers.includes(m.address)}
-                        onChange={() => toggleMaker(m.address)}
-                        className="accent-primary"
-                      />
-                      {formatTorEndpoint(m.address, 10, 6, true)}
-                    </span>
-                    <span className="flex flex-none items-center gap-2 font-mono text-[11px] text-subtle">
-                      {m.offer?.amountRelativeFeePct.toFixed(3)}%
-                      <SatsAmount
-                        sats={m.offer?.bondAmountSats ?? 0}
-                        className="text-foreground"
-                      />
-                    </span>
-                  </label>
-                ))}
-              </div>
+            <div className="grid grid-cols-4 gap-2">
+              {MAKER_COUNT_PRESETS.map((n) => (
+                <PresetTile
+                  key={n}
+                  onClick={() => pickMakerCount(n)}
+                  selected={!manualMakers && makerCount === n}
+                  label="Makers"
+                  value={n}
+                />
+              ))}
+              <PresetTile
+                onClick={() => pickMakerCount(5)}
+                selected={!manualMakers && makerCount === 5}
+                label="Custom"
+                value="5+"
+              />
+            </div>
+            {!manualMakers && makerCount === 5 && (
+              <TextField
+                label="Number of makers"
+                inputMode="numeric"
+                value={customMakerCount}
+                onChange={(e) => setCustomMakerCount(e.target.value)}
+              />
             )}
+            <p className="text-[11.5px] text-subtle">
+              {manualMakers
+                ? `Route pinned to ${selectedMakers.length} specific maker${selectedMakers.length === 1 ? "" : "s"} in advanced options — pick a count to go back to automatic.`
+                : "More makers means stronger privacy and higher fees."}
+            </p>
           </div>
 
-          <div className="flex items-center justify-between gap-3 border-t border-line pt-5">
-            <div>
-              <h2 className="font-header text-[13.5px] font-bold text-foreground">
-                Protocol Funding Rate
-              </h2>
-              <p className="mt-1 text-[11.5px] text-subtle">
-                Set by the OpenSwap protocol for the actual funding transaction.
+          <div className="flex flex-col gap-2 border-t border-line pt-5">
+            <Disclosure label="Advanced options" onOpenChange={setAdvancedOpen}>
+              <div className="flex flex-col gap-5 pt-1">
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-header text-[12.5px] font-bold text-foreground">
+                      Pin Specific Makers
+                    </h3>
+                    <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                      {manualMakers
+                        ? `${selectedMakers.length} pinned`
+                        : "Automatic"}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] text-subtle">
+                    Tick makers to route through them specifically, or leave
+                    them all unticked to auto-select.
+                  </p>
+                  <div className="flex max-h-45 flex-col gap-1.5 overflow-y-auto">
+                    {compatibleMakers.length === 0 && (
+                      <p className="text-[11.5px] text-subtle">
+                        No compatible {protocol} makers in the offerbook.
+                      </p>
+                    )}
+                    {compatibleMakers.map((m) => (
+                      <label
+                        key={m.address}
+                        className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
+                      >
+                        <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
+                          <input
+                            type="checkbox"
+                            checked={selectedMakers.includes(m.address)}
+                            onChange={() => toggleMaker(m.address)}
+                            className="accent-primary"
+                          />
+                          {formatTorEndpoint(m.address, 10, 6, true)}
+                        </span>
+                        <span className="flex flex-none items-center gap-2 font-mono text-[11px] text-subtle">
+                          {m.offer?.amountRelativeFeePct.toFixed(3)}%
+                          <SatsAmount
+                            sats={m.offer?.bondAmountSats ?? 0}
+                            className="text-foreground"
+                          />
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2.5 border-t border-line pt-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-header text-[12.5px] font-bold text-foreground">
+                      Coin Selection
+                    </h3>
+                    <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                      {manualCoins
+                        ? `${selectedOutpoints.length} selected`
+                        : "Automatic"}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] text-subtle">
+                    Tick the UTXOs to fund this swap, or leave them all unticked
+                    to let the wallet choose.
+                  </p>
+                  <SegmentedToggle
+                    groupId="swap-utxo-filter"
+                    value={utxoFilter}
+                    onChange={changeUtxoFilter}
+                    options={[
+                      { value: "regular", label: "Regular" },
+                      { value: "swap", label: "Swap" },
+                    ]}
+                  />
+                  <div className="flex max-h-45 flex-col gap-1.5 overflow-y-auto">
+                    {filteredUtxos.length === 0 && (
+                      <p className="text-[11.5px] text-subtle">
+                        No spendable {utxoFilter} UTXOs.
+                      </p>
+                    )}
+                    {filteredUtxos.map((u) => {
+                      const key = `${u.txid}:${u.vout}`;
+                      const checked = selectedOutpoints.some(
+                        (o) => `${o.txid}:${o.vout}` === key,
+                      );
+                      return (
+                        <label
+                          key={key}
+                          className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
+                        >
+                          <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleOutpoint(u)}
+                              className="accent-primary"
+                            />
+                            {truncateMiddle(u.txid, 8, 6)}:{u.vout}
+                          </span>
+                          <SatsAmount
+                            sats={u.amountSats}
+                            className="flex-none text-[11px] font-semibold text-foreground"
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {manualCoins && (
+                    <p className="text-[11.5px] text-subtle">
+                      Selected:{" "}
+                      <SatsAmount
+                        sats={selectedTotal}
+                        className="text-foreground"
+                      />
+                    </p>
+                  )}
+                </div>
+              </div>
+            </Disclosure>
+            {/* Advanced picks survive collapsing the panel, so they'd otherwise be invisible. */}
+            {!advancedOpen && advancedSummary && (
+              <p className="px-1 text-[11.5px] text-subtle">
+                {advancedSummary}
               </p>
-            </div>
-            <strong className="font-mono text-[13px] text-primary">
-              {fundingEstimate ? `${fundingEstimate.feeRate} sat/vB` : "…"}
-            </strong>
+            )}
           </div>
 
           {warnings.length > 0 && (

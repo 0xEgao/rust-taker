@@ -38,6 +38,7 @@ import {
 import { formatTorEndpoint } from "../../lib/market-format";
 import { MakerIntro } from "./MakerIntro";
 import { useToastStore } from "../../store/toast";
+import { DashboardImport } from "./DashboardImport";
 
 interface OwnedMaker {
   settings: MakerSettings;
@@ -315,7 +316,7 @@ export function MakerPage() {
   if (!loading && makers.length === 0) {
     return (
       <div className="h-full overflow-y-auto">
-        <MakerIntro />
+        <MakerIntro onImported={() => void refresh()} />
       </div>
     );
   }
@@ -336,6 +337,10 @@ export function MakerPage() {
             <LinkButton to="/maker/new"><Plus size={15} /> Add maker</LinkButton>
           </div>
         </header>
+
+        <div className="mt-6">
+          <DashboardImport onImported={() => void refresh()} />
+        </div>
 
         <StatStrip
           className="mt-6"

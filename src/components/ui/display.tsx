@@ -26,22 +26,25 @@ import { walletIdentity } from "../../lib/wallet-identity";
 // an outer glow on a pseudo-element). The glow matches `lift`'s on hover; unlike `lift` it does not
 // translate, because a page-sized panel sliding under the cursor reads as instability rather than
 // as response.
+//
+// The interior blooms this used to carry were wide `blur-3xl` circles, whose gentle falloff
+// quantised into concentric contour rings across the panel in WebKit. Accent light now comes
+// only from `card-lit`'s box-shadow and the `hairline` border, neither of which bands.
 export function Card({
-  glow = false,
   className = "",
   children,
   ...props
-}: { glow?: boolean } & HTMLAttributes<HTMLDivElement>) {
+}: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={`relative isolate overflow-hidden rounded-card border bg-[color-mix(in_oklab,var(--color-surface-raised)_74%,transparent)] card-lit ${className}`}
       {...props}
     >
-      {glow && (
-        <div className="pointer-events-none absolute -left-10 -top-14 -z-10 h-48 w-48 rounded-full bg-primary/20 blur-3xl" />
-      )}
-      <div className="pointer-events-none absolute -bottom-14 -right-10 -z-10 h-48 w-48 rounded-full bg-white/[0.045] blur-3xl" />
       <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-20 bg-gradient-to-b from-white/[0.055] to-transparent" />
+      {/* Dithers the sheen above: at 8-bit these near-black gradients quantise into flat
+          plateaus tens of pixels tall, and the step between two of them reads as a stray band
+          of shadow lying across the panel. Sits above the fill and below the content. */}
+      <div className="grain pointer-events-none absolute inset-0 -z-10 opacity-[0.045]" />
       {children}
     </div>
   );

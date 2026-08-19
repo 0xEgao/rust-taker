@@ -97,7 +97,7 @@ export function MakerSwapReportPage() {
         </header>
         <div className="mt-6 grid grid-cols-[minmax(0,1fr)_340px] gap-4 max-[900px]:grid-cols-1">
           <main className="space-y-4">
-            <Card glow className="border-line-strong p-6">
+            <Card className="hairline border-line-strong p-6">
               <MicroLabel>Fee earned</MicroLabel>
               <strong className="mt-3 block font-numeric text-[38px] text-success">
                 +<SatsAmount sats={report.feeEarnedSats} glyphScale={0.5} />

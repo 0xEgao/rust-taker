@@ -216,6 +216,13 @@ button {
    a masked pseudo-element because `border-image` does not follow `border-radius`.
    Two WebKit ordering traps: the `mask` shorthand resets `mask-composite`, so it must come
    first, and WebKit's legacy keyword for `exclude` is `xor`. */
+/* Tiled fractal noise, used to dither the large dark fills. At 8-bit these low-contrast
+   gradients quantise into flat plateaus tens of pixels tall separated by a single level, which
+   read as a stray band of shadow lying across a panel rather than as a smooth surface. */
+@utility grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
 @utility hairline {
   &::before {
     content: "";

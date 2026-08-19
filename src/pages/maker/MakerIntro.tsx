@@ -8,6 +8,7 @@ import { IntroStage } from "../../components/ui/IntroStage";
 import { loadConnectivityDefaults } from "../../lib/connectivity";
 import { withMinDelay } from "../../lib/timing";
 import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
+import { DashboardImport } from "./DashboardImport";
 
 // Each step usually resolves far quicker than it can be read.
 const MIN_STEP_MS = 900;
@@ -27,7 +28,7 @@ const IDLE: Steps = { tor: "idle", ports: "idle", create: "idle" };
  * defaulted. Ports come from the same pre-flight the full form uses, and the economics from
  * `MAKER_DEFAULTS`, all of which a maker's Settings tab can change afterwards.
  */
-export function MakerIntro() {
+export function MakerIntro({ onImported }: { onImported: () => void }) {
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [stage, setStage] = useState<Stage>("name");
@@ -142,6 +143,10 @@ export function MakerIntro() {
             </>
           )}
         </Card>
+
+        <div className="mt-4">
+          <DashboardImport onImported={onImported} />
+        </div>
 
         <p className="mt-4 text-[11.5px] text-subtle">
           Need to set ports, fees or a wallet password yourself?{" "}

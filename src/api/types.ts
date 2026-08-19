@@ -311,7 +311,8 @@ export type ProtocolVersion = "legacy" | "taproot";
 export interface SwapRequest {
   protocol: ProtocolVersion;
   amountSats: number;
-  makerCount: number;
+  /** Omitted requests get the backend's two-maker route default. */
+  makerCount?: number;
   outpoints?: Outpoint[];
   preferredMakers?: string[];
 }
@@ -320,7 +321,6 @@ export interface SwapFundingEstimate {
   inputCount: number;
   vbytes: number;
   feeSats: number;
-  feeRate: number;
   routeMiningFeePerMakerSats: number;
 }
 

@@ -21,11 +21,6 @@ const CAPTION_FROM = "24.5vh";
 const CAPTION_LEAD_PX = "34px";
 const CAPTION_PX = "16px";
 
-// Tiled fractal noise. Large flat fills of a single dark colour band and read as plastic on
-// this much empty screen; a few percent of grain is what keeps them looking like a surface.
-const GRAIN =
-  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E\")";
-
 /**
  * Light and texture for the stage, over the app's shared background. Absolute rather than
  * fixed so it stays inside the stage when this runs as a page rather than a whole screen, and
@@ -49,7 +44,7 @@ function IntroBackdrop({ reduceMotion }: { reduceMotion: boolean }) {
         className="absolute inset-x-0 bottom-0 h-[50vh]"
         style={{ background: "radial-gradient(ellipse 95% 100% at 50% 118%, color-mix(in oklab, var(--color-primary) 13%, transparent), transparent 72%)" }}
       />
-      <div className="absolute inset-0 opacity-[0.045]" style={{ backgroundImage: GRAIN }} />
+      <div className="grain absolute inset-0 opacity-[0.045]" />
     </motion.div>
   );
 }

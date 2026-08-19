@@ -322,11 +322,17 @@ pub enum ProtocolVersionDto {
 pub struct SwapRequest {
     pub protocol: ProtocolVersionDto,
     pub amount_sats: u64,
+    /// Falls back to the two-maker route floor when a caller omits it.
+    #[serde(default = "default_maker_count")]
     pub maker_count: usize,
     #[serde(default)]
     pub outpoints: Option<Vec<Outpoint>>,
     #[serde(default)]
     pub preferred_makers: Option<Vec<String>>,
+}
+
+fn default_maker_count() -> usize {
+    2
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -335,7 +341,6 @@ pub struct SwapFundingEstimateDto {
     pub input_count: usize,
     pub vbytes: u64,
     pub fee_sats: u64,
-    pub fee_rate: f64,
     pub route_mining_fee_per_maker_sats: u64,
 }
 

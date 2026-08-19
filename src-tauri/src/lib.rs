@@ -87,6 +87,8 @@ pub fn run() {
             // maker settings (persisted, non-secret config)
             maker_settings::list_makers,
             maker_settings::get_saved_maker_settings,
+            maker_settings::list_dashboard_imports,
+            maker_settings::import_dashboard_makers,
             maker_settings::clear_maker_settings,
             maker_settings::get_suggested_maker_ports,
             maker_settings::check_maker_ports,
