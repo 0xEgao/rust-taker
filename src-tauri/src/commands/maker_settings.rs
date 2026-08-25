@@ -438,7 +438,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let data_dir = std::env::temp_dir().join(format!(
-            "rust-taker-maker-config-{}-{unique}",
+            "portal-maker-config-{}-{unique}",
             std::process::id()
         ));
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -570,7 +570,7 @@ mod tests {
             }
         });
         let path = std::env::temp_dir().join(format!(
-            "rust-taker-dashboard-import-{}.json",
+            "portal-dashboard-import-{}.json",
             std::process::id()
         ));
         std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn ignores_encrypted_dashboard_store_until_explicit_migration() {
         let path = std::env::temp_dir().join(format!(
-            "rust-taker-dashboard-encrypted-{}.json",
+            "portal-dashboard-encrypted-{}.json",
             std::process::id()
         ));
         std::fs::write(&path, br#"{"v":1,"data":"encrypted"}"#).unwrap();

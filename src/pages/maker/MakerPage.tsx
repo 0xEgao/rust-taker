@@ -8,6 +8,7 @@ import {
   Play,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
   getMakerBalances,
@@ -17,15 +18,17 @@ import {
   startMaker,
   stopMaker,
 } from "../../api/commands";
-import type {
-  Balances,
-  MakerPhase,
-  MakerSettings,
-  MakerStatus,
+import {
+  isAppError,
+  type Balances,
+  type MakerPhase,
+  type MakerSettings,
+  type MakerStatus,
 } from "../../api/types";
 import {
   EmptyState,
   EntityMonogram,
+  Modal,
   SatsAmount,
   StatStrip,
   StatusChip,
@@ -33,9 +36,11 @@ import {
 import {
   Button,
   LinkButton,
+  PasswordField,
   SegmentedToggle,
 } from "../../components/ui/inputs";
 import { formatTorEndpoint } from "../../lib/market-format";
+import { IntroStage } from "../../components/ui/IntroStage";
 import { MakerIntro } from "./MakerIntro";
 import { useToastStore } from "../../store/toast";
 import { DashboardImport } from "./DashboardImport";
@@ -49,6 +54,10 @@ interface OwnedMaker {
 }
 
 type MakerFilter = "all" | "running" | "stopped";
+
+// Per app launch, not per mount: crossing into the maker side deserves the arrival, returning
+// to the fleet from a workspace does not.
+let introPlayed = false;
 
 const PHASE_CLASS: Record<MakerPhase["phase"], string> = {
   notConfigured: "bg-subtle",
@@ -100,6 +109,9 @@ function MakerCard({
   const pushToast = useToastStore((state) => state.push);
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
+  const [password, setPassword] = useState("");
+  const [unlockError, setUnlockError] = useState<string | undefined>();
   const { settings, status, balances } = maker;
   const phase = status?.phase.phase ?? "notConfigured";
   const running = phase === "running" || phase === "starting";
@@ -116,6 +128,8 @@ function MakerCard({
     });
   }
 
+  // Tried without a password first: a maker's password only lives in process memory, and
+  // quick-created wallets have none, so prompting up front would be noise for most makers.
   async function toggleMaker() {
     setActionLoading(true);
     try {
@@ -127,10 +141,37 @@ function MakerCard({
       );
       await onChanged();
     } catch (error) {
-      pushToast(
-        "error",
-        (error as { message?: string })?.message ??
-          `Could not ${running ? "stop" : "start"} maker.`,
+      if (!running && isAppError(error) && error.code === "WALLET_WRONG_PASSWORD") {
+        setPassword("");
+        setUnlockError(undefined);
+        setUnlocking(true);
+      } else {
+        pushToast(
+          "error",
+          (error as { message?: string })?.message ??
+            `Could not ${running ? "stop" : "start"} maker.`,
+        );
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function submitUnlock() {
+    if (!password) return setUnlockError("Enter the maker wallet password.");
+    setActionLoading(true);
+    setUnlockError(undefined);
+    try {
+      await startMaker(settings.makerId, password);
+      setUnlocking(false);
+      setPassword("");
+      pushToast("success", `${settings.makerId} is starting.`);
+      await onChanged();
+    } catch (error) {
+      setUnlockError(
+        isAppError(error) && error.code === "WALLET_WRONG_PASSWORD"
+          ? "Wrong password for this maker's wallet."
+          : ((error as { message?: string })?.message ?? "Could not start maker."),
       );
     } finally {
       setActionLoading(false);
@@ -228,6 +269,46 @@ function MakerCard({
           </LinkButton>
         </div>
       </div>
+
+      {/* Portalled: each card sits inside a framer-motion wrapper whose transform would
+          otherwise become the containing block for the modal's fixed overlay, trapping it
+          inside the card. Leaving the tree also leaves AppShell's accent scope, so the
+          wrapper re-declares it. */}
+      {unlocking &&
+        createPortal(
+          <div data-accent="maker">
+            <Modal
+              title={`Unlock ${settings.makerId}`}
+              onClose={() => setUnlocking(false)}
+              footer={
+                <>
+                  <Button variant="secondary" onClick={() => setUnlocking(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={() => void submitUnlock()} loading={actionLoading}>
+                    <Play size={13} /> Start maker
+                  </Button>
+                </>
+              }
+            >
+              <p className="text-[12.5px] text-muted">
+                This maker's wallet is encrypted. Its password isn't stored between app
+                launches, so it's needed again to start the maker.
+              </p>
+              <div className="mt-4">
+                <PasswordField
+                  label="Maker wallet password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void submitUnlock()}
+                  error={unlockError}
+                />
+              </div>
+            </Modal>
+          </div>,
+          document.body,
+        )}
     </article>
   );
 }
@@ -236,6 +317,7 @@ export function MakerPage() {
   const [makers, setMakers] = useState<OwnedMaker[]>([]);
   const [filter, setFilter] = useState<MakerFilter>("all");
   const [loading, setLoading] = useState(true);
+  const [introDone, setIntroDone] = useState(introPlayed);
   const pushToast = useToastStore((state) => state.push);
 
   const load = useCallback(async () => {
@@ -312,11 +394,32 @@ export function MakerPage() {
     [filter, makers],
   );
 
-  // No page padding: the intro sets its own, and its backdrop has to reach the page edges.
-  if (!loading && makers.length === 0) {
+  // One stage covers both beats — the fleet loading behind the wordmark, and the create-first-
+  // maker form for an empty fleet — so the arrival never replays between them. No page padding:
+  // the stage sets its own, and its backdrop has to reach the page edges.
+  if (!introDone || loading || makers.length === 0) {
     return (
       <div className="h-full overflow-y-auto">
-        <MakerIntro onImported={() => void refresh()} />
+        <IntroStage
+          lead="Welcome to"
+          accent="Portal"
+          caption="Your maker dashboard"
+          instant={introPlayed}
+          onDone={() => {
+            introPlayed = true;
+            setIntroDone(true);
+          }}
+          className="min-h-full"
+        >
+          {loading ? (
+            <div className="flex items-center justify-center gap-2.5 text-[12.5px] text-muted">
+              <RefreshCw size={14} strokeWidth={1.9} className="animate-spin text-primary" />
+              Loading your makers…
+            </div>
+          ) : (
+            <MakerIntro onImported={() => void refresh()} />
+          )}
+        </IntroStage>
       </div>
     );
   }
@@ -382,41 +485,13 @@ export function MakerPage() {
             <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-subtle">{visibleMakers.length} shown</span>
           </div>
 
-          {loading ? (
-            <div className="grid min-h-[320px] place-items-center text-center text-[13px] text-subtle">
-              <div>
-                <RefreshCw
-                  size={38}
-                  className="mx-auto animate-spin text-primary"
-                />
-                <strong className="mt-3 block text-[15px] text-foreground">
-                  Loading your makers…
-                </strong>
-              </div>
-            </div>
-          ) : visibleMakers.length === 0 ? (
+          {visibleMakers.length === 0 ? (
             <div className="mt-5 rounded-card border border-line-strong bg-surface-raised/45">
               <EmptyState
                 size="lg"
                 icon={<Inbox size={38} />}
-                title={
-                  makers.length === 0
-                    ? "Create your first maker"
-                    : "No makers in this view"
-                }
-                description={
-                  makers.length === 0
-                    ? "Pick a name — ports and fee policy are set for you."
-                    : "Choose another status filter."
-                }
-                action={
-                  makers.length === 0 ? (
-                    <LinkButton to="/maker/new">
-                      <Plus size={15} />
-                      Create maker
-                    </LinkButton>
-                  ) : undefined
-                }
+                title="No makers in this view"
+                description="Choose another status filter."
               />
             </div>
           ) : (

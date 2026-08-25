@@ -1,2 +1,2 @@
-# rust-taker
-An OpenSwap desktop client built with Tauri.
+# portal
+A Portal desktop client built with Tauri.

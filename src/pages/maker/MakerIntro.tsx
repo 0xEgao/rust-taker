@@ -4,7 +4,6 @@ import { checkTor, getSuggestedMakerPorts, initMaker } from "../../api/commands"
 import { Card } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, TextField } from "../../components/ui/inputs";
-import { IntroStage } from "../../components/ui/IntroStage";
 import { loadConnectivityDefaults } from "../../lib/connectivity";
 import { withMinDelay } from "../../lib/timing";
 import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
@@ -89,72 +88,70 @@ export function MakerIntro({ onImported }: { onImported: () => void }) {
   }
 
   return (
-    <IntroStage lead="OpenSwap" accent="Maker" caption="Create a new maker" className="min-h-full">
-      <div className="mx-auto w-full max-w-lg">
-        <Card className="border-line-strong">
-          {stage === "name" ? (
-            <>
-              <div className="p-8 text-left">
-                <TextField
-                  label="Maker name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && void create()}
-                  placeholder="my-maker"
-                  autoFocus
-                  error={malformed ? "Letters, numbers, hyphens and underscores only." : undefined}
-                  hint={malformed ? undefined : "Names the maker and its wallet. Everything else can change later."}
-                />
-              </div>
-              <div className="border-t border-line px-8 py-5">
-                <Button
-                  className="w-full"
-                  disabled={!trimmed || malformed}
-                  onClick={() => void create()}
-                >
-                  Create maker
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="p-8 text-left">
-                <Checklist
-                  steps={[
-                    { label: "Checking Tor", state: steps.tor },
-                    { label: "Reserving ports", state: steps.ports },
-                    { label: `Creating ${trimmed}`, state: steps.create },
-                  ]}
-                />
-              </div>
-              {error && (
-                <div className="border-t border-line px-8 py-5 text-left">
-                  <p className="text-[12.5px] text-danger">{error}</p>
-                  <div className="mt-4 flex gap-3">
-                    <Button variant="secondary" onClick={() => { setStage("name"); setSteps(IDLE); setError(null); }}>
-                      Change name
-                    </Button>
-                    <Button className="flex-1" onClick={() => void create()}>
-                      Retry
-                    </Button>
-                  </div>
+    <div className="mx-auto w-full max-w-lg">
+      <Card className="border-line-strong">
+        {stage === "name" ? (
+          <>
+            <div className="p-8 text-left">
+              <TextField
+                label="Maker name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void create()}
+                placeholder="my-maker"
+                autoFocus
+                error={malformed ? "Letters, numbers, hyphens and underscores only." : undefined}
+                hint={malformed ? undefined : "Names the maker and its wallet. Everything else can change later."}
+              />
+            </div>
+            <div className="border-t border-line px-8 py-5">
+              <Button
+                className="w-full"
+                disabled={!trimmed || malformed}
+                onClick={() => void create()}
+              >
+                Create maker
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="p-8 text-left">
+              <Checklist
+                steps={[
+                  { label: "Checking Tor", state: steps.tor },
+                  { label: "Reserving ports", state: steps.ports },
+                  { label: `Creating ${trimmed}`, state: steps.create },
+                ]}
+              />
+            </div>
+            {error && (
+              <div className="border-t border-line px-8 py-5 text-left">
+                <p className="text-[12.5px] text-danger">{error}</p>
+                <div className="mt-4 flex gap-3">
+                  <Button variant="secondary" onClick={() => { setStage("name"); setSteps(IDLE); setError(null); }}>
+                    Change name
+                  </Button>
+                  <Button className="flex-1" onClick={() => void create()}>
+                    Retry
+                  </Button>
                 </div>
-              )}
-            </>
-          )}
-        </Card>
+              </div>
+            )}
+          </>
+        )}
+      </Card>
 
-        <div className="mt-4">
-          <DashboardImport onImported={onImported} />
-        </div>
-
-        <p className="mt-4 text-[11.5px] text-subtle">
-          Need to set ports, fees or a wallet password yourself?{" "}
-          <Link to="/maker/new" className="text-primary hover:underline">
-            Use the full form
-          </Link>
-        </p>
+      <div className="mt-4">
+        <DashboardImport onImported={onImported} />
       </div>
-    </IntroStage>
+
+      <p className="mt-4 text-[11.5px] text-subtle">
+        Need to set ports, fees or a wallet password yourself?{" "}
+        <Link to="/maker/new" className="text-primary hover:underline">
+          Use the full form
+        </Link>
+      </p>
+    </div>
   );
 }

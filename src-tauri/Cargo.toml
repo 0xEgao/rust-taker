@@ -1,12 +1,12 @@
 [package]
-name = "rust-taker"
+name = "portal"
 version = "0.1.0"
-description = "OpenSwap desktop app (Tauri + React)"
+description = "Portal desktop app (Tauri + React)"
 edition = "2021"
 license = "MIT"
 
 [lib]
-name = "rust_taker_lib"
+name = "portal_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

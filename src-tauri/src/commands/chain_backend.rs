@@ -8,9 +8,11 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use coinswap::bitcoin::{Address, Network};
+use coinswap::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::ListUnspentResultEntry;
 use coinswap::bitcoind::bitcoincore_rpc::jsonrpc::{self, simple_http};
 use coinswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
 use coinswap::utill::get_taker_dir;
@@ -32,6 +34,9 @@ const FILE_NAME: &str = "backend.json";
 
 /// Serializes read-modify-write against the config file, same as `maker_settings`.
 static BACKEND_IO: Mutex<()> = Mutex::new(());
+
+/// Network of the active Electrum server, resolved on first use (see `utxo_address`).
+static ELECTRUM_NETWORK: OnceLock<Option<Network>> = OnceLock::new();
 
 impl Default for ChainBackendConfig {
     fn default() -> Self {
@@ -286,6 +291,41 @@ fn probe_core_rpc(node: &NodeBackendDto) -> BackendStatus {
         subversion: client.get_network_info().ok().map(|n| n.subversion),
         verification_progress: Some(info.verification_progress),
     }
+}
+
+/// Address of a UTXO, re-derived from its scriptPubKey when the backend left it unset:
+/// Electrum's `list_unspent` fills only the script (Core RPC fills the address), so the
+/// wallet's UTXOs would otherwise have no address at all.
+pub(crate) fn utxo_address(entry: &ListUnspentResultEntry) -> Option<String> {
+    if let Some(address) = &entry.address {
+        return Some(address.clone().assume_checked().to_string());
+    }
+    let network = electrum_network()?;
+    Address::from_script(&entry.script_pub_key, network)
+        .ok()
+        .map(|a| a.to_string())
+}
+
+/// `Wallet` keeps its network private, so it comes from the Electrum handshake. Probed once
+/// per process — switching backend means restarting the app, and retrying on every UTXO
+/// listing would stall the wallet page for the probe timeout while a server is unreachable.
+fn electrum_network() -> Option<Network> {
+    *ELECTRUM_NETWORK.get_or_init(|| {
+        let config = load();
+        if config.kind != ChainBackendKind::Electrum {
+            return None;
+        }
+        let mut electrum = electrum_config(&config.electrum, None);
+        electrum.max_retries = 0;
+        electrum.timeout = Some(PROBE_TIMEOUT_SECS);
+        match Electrum::new(&electrum).and_then(|c| c.get_blockchain_info()) {
+            Ok(info) => Some(info.chain),
+            Err(e) => {
+                log::warn!("could not read network from Electrum; UTXO addresses stay blank: {e:?}");
+                None
+            }
+        }
+    })
 }
 
 #[cfg(test)]

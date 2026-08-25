@@ -1,5 +1,7 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { useEffect, useState, type ReactNode } from "react";
+import { ArrowLeft } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 // Absolute beats rather than chained animation callbacks, so the whole sequence reads in one
 // place: blank → wordmark arrives centre stage → it docks at the top → the caption repeats that
@@ -58,35 +60,68 @@ export function IntroStage({
   lead,
   accent,
   caption,
+  back,
+  instant = false,
+  onDone,
   className = "",
   children,
 }: {
   lead: string;
   accent: string;
   caption: string;
+  back?: { to: string; label: string; title: string };
+  instant?: boolean;
+  onDone?: () => void;
   className?: string;
   children: ReactNode;
 }) {
-  const [stage, setStage] = useState(0);
+  const [stage, setStage] = useState(instant ? 4 : 0);
   const reduceMotion = useReducedMotion() ?? false;
+  // Held in a ref so an inline callback re-created on every render can't restart the sequence.
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
 
   useEffect(() => {
-    if (reduceMotion) {
+    if (reduceMotion || instant) {
       setStage(4);
+      onDoneRef.current?.();
       return;
     }
     const timers = [
       setTimeout(() => setStage(1), WORDMARK_UP_MS),
       setTimeout(() => setStage(2), CAPTION_IN_MS),
       setTimeout(() => setStage(3), CAPTION_UP_MS),
-      setTimeout(() => setStage(4), BODY_MS),
+      setTimeout(() => {
+        setStage(4);
+        onDoneRef.current?.();
+      }, BODY_MS),
     ];
     return () => timers.forEach(clearTimeout);
-  }, [reduceMotion]);
+  }, [reduceMotion, instant]);
 
   return (
     <div className={`relative flex flex-col items-center overflow-hidden px-4 pb-16 pt-[14vh] text-center ${className}`}>
       <IntroBackdrop reduceMotion={reduceMotion} />
+
+      {stage >= 4 && back && (
+        <motion.div
+          initial={{ opacity: reduceMotion || instant ? 1 : 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          className="absolute left-8 top-5 z-10"
+        >
+          {/* The shell's maker-mode logo, repeated: leaving a side of the app is the same
+              control wherever the user meets it. */}
+          <Link
+            to={back.to}
+            title={back.title}
+            className="flex items-center gap-2 rounded-control font-header text-[15px] font-bold text-foreground outline-none transition-colors hover:text-primary focus-visible:shadow-ring"
+          >
+            <ArrowLeft size={16} strokeWidth={2} className="text-primary" />
+            {back.label}
+          </Link>
+        </motion.div>
+      )}
 
       {/* Arrival and travel sit on separate nodes: scale and y both write `transform`, so one
           element cannot animate them independently. */}

@@ -4,9 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
+import { useSessionStore } from "../../store/session";
 import { useToastStore } from "../../store/toast";
-import { REFRESH_INTERVAL_MS } from "../../store/wallet-cache";
-import { refreshWalletCache } from "../../lib/wallet-sync";
 import { IconButton } from "../ui/display";
 
 const TAKER_NAV_ITEMS: { path: string; label: string; d: string }[] = [
@@ -16,22 +15,41 @@ const TAKER_NAV_ITEMS: { path: string; label: string; d: string }[] = [
   { path: "/swap", label: "Swap", d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
 ];
 
-function Logo({ makerMode }: { makerMode: boolean }) {
+function Logo({
+  makerMode,
+  atMakerRoot,
+  takerUnlocked,
+}: {
+  makerMode: boolean;
+  atMakerRoot: boolean;
+  takerUnlocked: boolean;
+}) {
+  // Only the fleet leaves the maker side; every maker sub-page steps back to the fleet first.
+  // A maker-only session has no taker to return to — leaving means going back to the role
+  // picker and unlocking a wallet there.
+  const [to, title] = !makerMode
+    ? ["/", "Open wallet"]
+    : !atMakerRoot
+      ? ["/maker", "Back to your makers"]
+      : takerUnlocked
+        ? ["/", "Return to Taker wallet"]
+        : ["/launch", "Back to start"];
+
   return (
     <NavLink
-      to="/"
-      title={makerMode ? "Return to Taker wallet" : "Open wallet"}
+      to={to}
+      title={title}
       className="group flex items-center gap-3 rounded-control outline-none focus-visible:shadow-ring"
     >
       {makerMode ? (
         <span className="flex items-center gap-2 font-header text-[15px] font-bold text-foreground transition-colors group-hover:text-primary">
-          <ArrowLeft size={16} strokeWidth={2} className="text-primary" /> OpenSwap
+          <ArrowLeft size={16} strokeWidth={2} className="text-primary" /> Portal
         </span>
       ) : (
         <>
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.24),0_6px_16px_-8px_color-mix(in_oklab,var(--color-primary)_60%,transparent)]">C</div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.24),0_6px_16px_-8px_color-mix(in_oklab,var(--color-primary)_60%,transparent)]">P</div>
           <div className="min-w-0 leading-tight">
-            <div className="font-header text-[15px] font-bold text-foreground">OpenSwap</div>
+            <div className="font-header text-[15px] font-bold text-foreground">Portal</div>
             <div className="text-[11px] text-subtle">Taker Wallet</div>
           </div>
         </>
@@ -40,7 +58,15 @@ function Logo({ makerMode }: { makerMode: boolean }) {
   );
 }
 
-function TopNav({ makerMode }: { makerMode: boolean }) {
+function TopNav({
+  makerMode,
+  atMakerRoot,
+  takerUnlocked,
+}: {
+  makerMode: boolean;
+  atMakerRoot: boolean;
+  takerUnlocked: boolean;
+}) {
   const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
   const refreshing = useHeaderActionsStore((s) => s.refreshing);
   const [justRefreshed, setJustRefreshed] = useState(false);
@@ -65,7 +91,7 @@ function TopNav({ makerMode }: { makerMode: boolean }) {
         backdropFilter: "blur(6px)",
       }}
     >
-      <Logo makerMode={makerMode} />
+      <Logo makerMode={makerMode} atMakerRoot={atMakerRoot} takerUnlocked={takerUnlocked} />
 
       <nav className="flex items-center gap-1" aria-label="Main navigation">
         {makerMode ? (
@@ -136,18 +162,22 @@ function TopNav({ makerMode }: { makerMode: boolean }) {
         )}
       </nav>
 
-      {!makerMode ? <div className="flex items-center justify-self-end gap-2">
-        <IconButton
-          onClick={() => onRefresh?.()}
-          disabled={!onRefresh}
-          label="Refresh"
-          className={justRefreshed ? "text-success" : ""}
-          icon={justRefreshed ? (
-            <Check size={16} strokeWidth={2} />
-          ) : (
-            <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
-          )}
-        />
+      {/* Refresh is taker-only (Wallet is the only page that registers a handler), but the
+          chain-backend and Tor settings are shared, so the maker side keeps its own way in. */}
+      <div className="flex items-center justify-self-end gap-2">
+        {!makerMode && (
+          <IconButton
+            onClick={() => onRefresh?.()}
+            disabled={!onRefresh}
+            label="Refresh"
+            className={justRefreshed ? "text-success" : ""}
+            icon={justRefreshed ? (
+              <Check size={16} strokeWidth={2} />
+            ) : (
+              <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
+            )}
+          />
+        )}
         <NavLink
           to="/settings"
           title="Settings"
@@ -159,7 +189,7 @@ function TopNav({ makerMode }: { makerMode: boolean }) {
         >
           <Settings size={16} strokeWidth={1.8} />
         </NavLink>
-      </div> : <div aria-hidden="true" />}
+      </div>
     </header>
   );
 }
@@ -209,13 +239,8 @@ export function AppShell() {
   const { pathname } = useLocation();
   const reduceMotion = useReducedMotion();
   const makerMode = pathname.startsWith("/maker");
-
-  // Refresh regardless of the active route so Send/Swap never depend on the
-  // Wallet page having been mounted recently.
-  useEffect(() => {
-    const id = setInterval(() => void refreshWalletCache(), REFRESH_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, []);
+  const atMakerRoot = pathname === "/maker";
+  const takerUnlocked = useSessionStore((s) => s.initialized);
 
   useEffect(() => {
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -238,7 +263,7 @@ export function AppShell() {
     <div className="relative h-screen" data-accent={makerMode ? "maker" : undefined}>
       <Background />
       <div className="relative flex h-screen flex-col">
-        <TopNav makerMode={makerMode} />
+        <TopNav makerMode={makerMode} atMakerRoot={atMakerRoot} takerUnlocked={takerUnlocked} />
         <main className="flex min-h-0 min-w-0 flex-1">
           {/* Keyed on the path so every route change gets a deliberate upward reveal. The new
               route enters immediately; avoiding a blocking exit keeps navigation responsive. */}

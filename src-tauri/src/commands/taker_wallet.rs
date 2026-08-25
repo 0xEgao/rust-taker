@@ -456,7 +456,7 @@ pub async fn list_utxos(state: tauri::State<'_, AppState>) -> Result<Vec<UtxoEnt
                 vout: entry.vout,
                 amount_sats: entry.amount.to_sat(),
                 confirmations: entry.confirmations,
-                address: entry.address.map(|a| a.assume_checked().to_string()),
+                address: chain_backend::utxo_address(&entry),
                 spendable: entry.spendable,
                 solvable: entry.solvable,
                 spend_type: spend_info.to_string(),

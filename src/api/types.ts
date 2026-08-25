@@ -322,6 +322,8 @@ export interface SwapFundingEstimate {
   vbytes: number;
   feeSats: number;
   routeMiningFeePerMakerSats: number;
+  /** Claiming the incoming contract at the end of the swap; depends on the protocol. */
+  sweepFeeSats: number;
 }
 
 export interface MakerFeeInfo {

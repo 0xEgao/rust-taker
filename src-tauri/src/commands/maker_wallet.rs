@@ -12,6 +12,7 @@ use std::sync::{Arc, RwLock};
 use coinswap::bitcoin::{OutPoint, Txid};
 use coinswap::wallet::{AddressType, Wallet};
 
+use crate::commands::chain_backend;
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{
@@ -71,7 +72,7 @@ pub async fn list_maker_utxos(
                 vout: entry.vout,
                 amount_sats: entry.amount.to_sat(),
                 confirmations: entry.confirmations,
-                address: entry.address.map(|a| a.assume_checked().to_string()),
+                address: chain_backend::utxo_address(&entry),
                 spendable: entry.spendable,
                 solvable: entry.solvable,
                 spend_type: spend_info.to_string(),

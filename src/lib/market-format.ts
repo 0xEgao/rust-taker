@@ -22,11 +22,6 @@ export interface MakerFeeEstimate {
   refundLocktime: number;
 }
 
-export interface RouteMakerFeeEstimate {
-  totalFeeSats: number;
-  receiveAmountSats: number;
-}
-
 // totalFee = baseFee + amount*volumeRate + refundLocktime*amount*timeRate.
 // refundLocktime = 20 * (totalMakers - position + 1).
 export function estimateMakerFee(opts: {
@@ -49,12 +44,13 @@ export function estimateMakerFee(opts: {
   };
 }
 
-/** Mirrors Taker::prepare_coinswap: each hop prices the amount remaining after
- * the previous hop, and each individual maker fee is rounded up to sats. */
+/** Total maker fees for a whole route, in sats. Mirrors Taker::prepare_coinswap: each hop
+ * prices the amount remaining after the previous hop, and each individual maker fee is
+ * rounded up to sats. */
 export function estimateRouteMakerFees(
   makers: { baseFee: number; amountRelativeFeePct: number; timeRelativeFeePct: number }[],
   amountSats: number,
-): RouteMakerFeeEstimate {
+): number {
   let remaining = amountSats;
   let totalFeeSats = 0;
   for (let i = 0; i < makers.length; i += 1) {
@@ -69,5 +65,5 @@ export function estimateRouteMakerFees(
     // The crate carries the unrounded f64 amount into the next hop.
     remaining = Math.max(0, remaining - estimate.totalFee);
   }
-  return { totalFeeSats, receiveAmountSats: Math.max(0, amountSats - totalFeeSats) };
+  return totalFeeSats;
 }

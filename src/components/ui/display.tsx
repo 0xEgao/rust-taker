@@ -788,25 +788,17 @@ export function IconButton({
 
 export function Tooltip({
   content,
-  align = "center",
   children,
 }: {
   content: ReactNode;
-  align?: "left" | "center" | "right";
   children: ReactNode;
 }) {
-  const position =
-    align === "left"
-      ? "left-0"
-      : align === "right"
-        ? "right-0"
-        : "left-1/2 -translate-x-1/2";
   return (
     <span className="group relative inline-flex">
       {children}
       <span
         role="tooltip"
-        className={`pointer-events-none absolute top-[calc(100%+9px)] z-20 w-max max-w-[260px] translate-y-1.5 rounded-card border border-line-strong bg-bg px-2.5 py-2 text-left text-[11.5px] font-medium normal-case leading-snug tracking-normal text-foreground opacity-0 shadow-lg transition-[opacity,transform] group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100 ${position}`}
+        className="pointer-events-none absolute left-1/2 top-[calc(100%+9px)] z-20 w-max max-w-[260px] -translate-x-1/2 translate-y-1.5 rounded-card border border-line-strong bg-bg px-2.5 py-2 text-left text-[11.5px] font-medium normal-case leading-snug tracking-normal text-foreground opacity-0 shadow-lg transition-[opacity,transform] group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100"
       >
         {content}
       </span>

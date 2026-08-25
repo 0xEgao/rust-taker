@@ -123,6 +123,9 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
   const resetSession = useSessionStore((s) => s.reset);
+  // Reachable from a maker-only session for the shared chain/Tor config, so anything that
+  // acts on the taker's wallet has nothing to act on and is hidden.
+  const takerUnlocked = useSessionStore((s) => s.initialized);
 
   const [tor, setTor] = useState<ConnectivityConfig>(loadConnectivityDefaults);
   const [savedTorFingerprint, setSavedTorFingerprint] = useState(() =>
@@ -354,6 +357,9 @@ export function SettingsPage() {
       // Already gone, or a swap holds the lock — either way the session must reset.
     }
     resetSession();
+    // This page is outside RequireTaker, so nothing bounces us out on its own. Makers keep
+    // running: shutdown_taker doesn't touch them, and neither does this.
+    navigate("/launch", { replace: true });
   }
 
   async function copyZmqConfig() {
@@ -380,7 +386,7 @@ export function SettingsPage() {
 
   async function performBackup(password: string) {
     const destinationPath = await save({
-      defaultPath: `openswap-wallet-backup-${new Date().toISOString().split("T")[0]}.json`,
+      defaultPath: `portal-wallet-backup-${new Date().toISOString().split("T")[0]}.json`,
       filters: [{ name: "JSON Files", extensions: ["json"] }],
     });
     if (!destinationPath) return;
@@ -411,7 +417,9 @@ export function SettingsPage() {
               Settings
             </h1>
             <p className="mt-2 text-[12.5px] text-muted">
-              Manage wallet backup, chain connection, and Tor configuration.
+              {takerUnlocked
+                ? "Manage wallet backup, chain connection, and Tor configuration."
+                : "Manage chain connection and Tor configuration."}
             </p>
           </div>
           <Button variant="secondary" onClick={() => setConfirmReset(true)}>
@@ -419,7 +427,9 @@ export function SettingsPage() {
           </Button>
         </header>
 
-        {needsReload && (
+        {/* A maker re-reads the saved backend on its next start, so it needs no equivalent
+            prompt — only a running taker is pinned to the connection it booted with. */}
+        {needsReload && takerUnlocked && (
           <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-card border border-warning/40 bg-warning/10 px-5 py-4">
             <p className="text-[12.5px] text-muted">
               The chain connection changed. This wallet is still using the
@@ -745,7 +755,7 @@ export function SettingsPage() {
             </div>
           </SettingsSection>
 
-          <SettingsSection
+          {takerUnlocked && <SettingsSection
             className="col-span-2 max-[980px]:col-span-1"
             title="Wallet backup"
             subtitle="Create an encrypted export for recovery or migration"
@@ -794,10 +804,11 @@ export function SettingsPage() {
                 </Button>
               </div>
             )}
-          </SettingsSection>
+          </SettingsSection>}
         </div>
 
-        <SettingsSection
+        {/* /logs is the taker's debug.log; each maker's own log lives in its workspace. */}
+        {takerUnlocked && <SettingsSection
           className="mt-4"
           title="Utilities"
           subtitle="Diagnostics and local application records"
@@ -820,7 +831,7 @@ export function SettingsPage() {
               <ScrollText size={14} strokeWidth={2} /> View logs
             </Button>
           </div>
-        </SettingsSection>
+        </SettingsSection>}
 
         <Card className="mt-4 border-line-strong p-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
@@ -832,7 +843,9 @@ export function SettingsPage() {
                 {settingsDirty
                   ? "Unsaved connection or Tor changes are ready to save."
                   : needsReload
-                    ? "Settings are saved. Reload the wallet to use the new chain connection."
+                    ? takerUnlocked
+                      ? "Settings are saved. Reload the wallet to use the new chain connection."
+                      : "Settings are saved. Restart a maker to use the new chain connection."
                     : "Connection and Tor settings are up to date."}
               </p>
             </div>

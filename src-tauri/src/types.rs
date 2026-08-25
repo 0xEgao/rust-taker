@@ -342,6 +342,7 @@ pub struct SwapFundingEstimateDto {
     pub vbytes: u64,
     pub fee_sats: u64,
     pub route_mining_fee_per_maker_sats: u64,
+    pub sweep_fee_sats: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

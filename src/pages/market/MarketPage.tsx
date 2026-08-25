@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ExternalLink, Inbox, Info, RefreshCw, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ExternalLink, Inbox, RefreshCw, Search } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOffers, pollMaker, removeMaker, syncOfferbook } from "../../api/commands";
@@ -11,7 +11,7 @@ import { explorerTxUrl } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
 type MakerStatus = "good" | "bad" | "unresponsive";
-type SortKey = "fee" | "baseFee" | "liquidityFee" | "timeRate" | "minSwap" | "maxSwap" | "bond";
+type SortKey = "baseFee" | "liquidityFee" | "timeRate" | "minSwap" | "maxSwap" | "bond";
 type SortDir = "asc" | "desc";
 
 // The crate re-syncs the offerbook on its own every 10 minutes, so without re-reading it the
@@ -28,10 +28,10 @@ const STATUS_TAB_CLASS: Record<MakerStatus, { text: string; glow: string }> = {
   unresponsive: { text: "text-warning", glow: "bg-warning/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-warning)_35%,transparent)]" },
 };
 
-// Address/Fee/Swap range/Fidelity Bond/Actions gate whether a maker is usable at all, so they stay
+// Address/Swap range/Fidelity Bond/Actions gate whether a maker is usable at all, so they stay
 // visible; the raw Base/Liquidity/Time fee breakdown is a detail tucked behind the expand toggle.
 const MAKER_TABLE_GRID = {
-  collapsed: "grid-cols-[minmax(150px,1.4fr)_repeat(3,minmax(90px,0.85fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
+  collapsed: "grid-cols-[minmax(150px,1.4fr)_repeat(2,minmax(90px,0.85fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
   expanded:
     "grid-cols-[minmax(150px,1.35fr)_repeat(5,minmax(74px,0.78fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
 };
@@ -49,14 +49,6 @@ const MAKER_ROW_TEXT = {
 // One height for both modes — sized for collapsed's larger text — so toggling the expand button
 // doesn't jump row height, only the column layout and font size change.
 const MAKER_ROW_HEIGHT = "min-h-[clamp(46px,4vw,58px)]";
-
-// Fixed scenario for the collapsed "Fee" column's ranking estimate — same formula as the Calculate
-// modal, just pinned to one baseline so every maker's number means the same thing.
-const FEE_REFERENCE_SCENARIO = { amountSats: 10_000, makerPosition: 1, totalMakers: 3 };
-const FEE_REFERENCE_TOOLTIP =
-  `Estimated total fee for a ${FEE_REFERENCE_SCENARIO.amountSats.toLocaleString()} sat swap as the ` +
-  `first hop of a ${FEE_REFERENCE_SCENARIO.totalMakers}-maker route (base + liquidity + time fee). ` +
-  "A fixed baseline for comparing makers, not your actual quote — use Calculate for that.";
 
 function SortHeader({
   label,
@@ -408,43 +400,26 @@ export function MarketPage() {
   }
 
   const rows = useMemo(() => {
-    const withFee = displayed.map((maker) => {
-      const offer = maker.offer;
-      const referenceFee = offer
-        ? estimateMakerFee({
-            baseFee: offer.baseFee,
-            amountRelativeFeePct: offer.amountRelativeFeePct,
-            timeRelativeFeePct: offer.timeRelativeFeePct,
-            amountSats: FEE_REFERENCE_SCENARIO.amountSats,
-            makerPosition: FEE_REFERENCE_SCENARIO.makerPosition,
-            totalMakers: FEE_REFERENCE_SCENARIO.totalMakers,
-          }).totalFee
-        : 0;
-      return { maker, offer, referenceFee };
-    });
+    if (!sortKey) return displayed;
 
-    if (!sortKey) return withFee;
-
-    const valueOf = (row: (typeof withFee)[number]): number => {
+    const valueOf = ({ offer }: Maker): number => {
       switch (sortKey) {
-        case "fee":
-          return row.referenceFee;
         case "baseFee":
-          return row.offer?.baseFee ?? 0;
+          return offer?.baseFee ?? 0;
         case "liquidityFee":
-          return row.offer?.amountRelativeFeePct ?? 0;
+          return offer?.amountRelativeFeePct ?? 0;
         case "timeRate":
-          return row.offer?.timeRelativeFeePct ?? 0;
+          return offer?.timeRelativeFeePct ?? 0;
         case "minSwap":
-          return row.offer?.minSize ?? 0;
+          return offer?.minSize ?? 0;
         case "maxSwap":
-          return row.offer?.maxSize ?? 0;
+          return offer?.maxSize ?? 0;
         case "bond":
-          return row.offer?.bondAmountSats ?? 0;
+          return offer?.bondAmountSats ?? 0;
       }
     };
 
-    const sorted = [...withFee].sort((a, b) => valueOf(a) - valueOf(b));
+    const sorted = [...displayed].sort((a, b) => valueOf(a) - valueOf(b));
     if (sortDir === "desc") sorted.reverse();
     return sorted;
   }, [displayed, sortKey, sortDir]);
@@ -493,12 +468,8 @@ export function MarketPage() {
         <div>
           <h1 className="font-header text-[26px] font-bold leading-none text-foreground">Market</h1>
           <p className="mt-1.5 max-w-lg text-[13px] text-muted">
-            Live view of OpenSwap makers routing through your Tor circuit.
+            Live view of Portal makers routing through your Tor circuit.
           </p>
-          <div className="mt-3 flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-            <span className="h-[7px] w-[7px] rounded-full bg-success shadow-[0_0_12px_color-mix(in_oklab,var(--color-success)_72%,transparent)]" />
-            <span>{good.length + bad.length + unresponsive.length} makers available</span>
-          </div>
         </div>
         <Button
           onClick={() => void refresh()}
@@ -612,22 +583,6 @@ export function MarketPage() {
             {showAllColumns && (
               <SortHeader label="Time Rate" sortKey="timeRate" active={sortKey} dir={sortDir} onSort={toggleSort} />
             )}
-            {!showAllColumns && (
-              <Tooltip content={FEE_REFERENCE_TOOLTIP} align="right">
-                <SortHeader
-                  label={
-                    <span className="inline-flex items-center gap-1">
-                      Fee
-                      <Info size={11} strokeWidth={2} />
-                    </span>
-                  }
-                  sortKey="fee"
-                  active={sortKey}
-                  dir={sortDir}
-                  onSort={toggleSort}
-                />
-              </Tooltip>
-            )}
             <SortHeader label="Min Swap" sortKey="minSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
             <SortHeader label="Max Swap" sortKey="maxSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
             <SortHeader label="Fidelity Bond" sortKey="bond" active={sortKey} dir={sortDir} onSort={toggleSort} />
@@ -655,7 +610,8 @@ export function MarketPage() {
                 <strong className="text-[15px] text-foreground">No {tab} makers found</strong>
               </div>
             ) : (
-              rows.map(({ maker, offer, referenceFee }) => {
+              rows.map((maker) => {
+                const offer = maker.offer;
                 const isPolling = pollingAddress === maker.address;
                 return (
                   <div
@@ -682,11 +638,6 @@ export function MarketPage() {
                     {showAllColumns && (
                       <div className="text-right font-semibold text-foreground">
                         {(offer?.timeRelativeFeePct ?? 0).toFixed(4)}
-                      </div>
-                    )}
-                    {!showAllColumns && (
-                      <div className="text-right font-semibold text-primary">
-                        {Math.round(referenceFee).toLocaleString()}
                       </div>
                     )}
                     <div className="text-right font-semibold text-subtle">

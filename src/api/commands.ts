@@ -22,6 +22,7 @@ import type {
   Outpoint,
   PortStatus,
   PriceEstimate,
+  ProtocolVersion,
   RecoveryStatus,
   SendResult,
   SwapLiquidity,
@@ -140,8 +141,12 @@ export function checkSwapLiquidity(): Promise<SwapLiquidity> {
   return invoke("check_swap_liquidity");
 }
 
-export function estimateSwapFunding(amountSats: number, outpoints?: Outpoint[]): Promise<SwapFundingEstimate> {
-  return invoke("estimate_swap_funding", { amountSats, outpoints });
+export function estimateSwapFunding(
+  amountSats: number,
+  protocol: ProtocolVersion,
+  outpoints?: Outpoint[],
+): Promise<SwapFundingEstimate> {
+  return invoke("estimate_swap_funding", { amountSats, protocol, outpoints });
 }
 
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {

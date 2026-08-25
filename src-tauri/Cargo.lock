@@ -3402,6 +3402,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal"
+version = "0.1.0"
+dependencies = [
+ "coinswap",
+ "dirs 6.0.0",
+ "libtor",
+ "log",
+ "log4rs",
+ "minreq",
+ "serde",
+ "serde_cbor",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3765,25 +3784,6 @@ name = "rust-coinselect"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a3ec89a5204b1492f300f2bbbb88d64ae189bef97b2b61f5d39f66276dd4346"
-
-[[package]]
-name = "rust-taker"
-version = "0.1.0"
-dependencies = [
- "coinswap",
- "dirs 6.0.0",
- "libtor",
- "log",
- "log4rs",
- "minreq",
- "serde",
- "serde_cbor",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
-]
 
 [[package]]
 name = "rustc-hash"

@@ -163,7 +163,7 @@ export function MakerSetupPage() {
             : `Starting ${id}`;
 
   return (
-    <IntroStage lead="OpenSwap" accent="Maker" caption={caption} className="min-h-full">
+    <IntroStage lead="Portal" accent="Maker" caption={caption} className="min-h-full">
       <div className="mx-auto w-full max-w-lg">
         <Card className={`border-line-strong ${stage === "funding" ? "hairline" : ""}`}>
           <div className="p-8 text-left">
@@ -214,7 +214,7 @@ export function MakerSetupPage() {
 
           {stage === "live" && (
             <div className="flex items-center justify-between gap-4 border-t border-line px-8 py-5">
-              <p className="text-[12.5px] text-muted">Serving swaps on the OpenSwap network.</p>
+              <p className="text-[12.5px] text-muted">Serving swaps on the Portal network.</p>
               <Button onClick={() => navigate(`/maker/${encodeURIComponent(id)}`)}>
                 Open maker
                 <ArrowRight size={15} strokeWidth={2} />

@@ -143,15 +143,28 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
     }
 }
 
-/// Quote the taker's initial funding transaction using the same wallet coin
-/// selection and fixed protocol fee rate used when the swap actually starts.
+/// Mirrors `contract_and_timelock_vsize(_, ContractSpend { cooperative: true })`, which is
+/// `pub(crate)` along with its size constants. Cooperative is the success path — the
+/// script-path sizes only apply to hashlock recovery, which a quote isn't describing.
+const TAPROOT_SWEEP_VBYTES: u64 = 112;
+const LEGACY_SWEEP_VBYTES: u64 = 150;
+
+/// Quote every on-chain cost the taker bears directly: the initial funding transaction (same
+/// wallet coin selection and fixed protocol fee rate the swap itself uses), the per-hop mining
+/// fee each maker deducts from the routed amount, and the sweep that claims the incoming
+/// contract at the end.
 #[tauri::command]
 pub async fn estimate_swap_funding(
     state: tauri::State<'_, AppState>,
     amount_sats: u64,
+    protocol: ProtocolVersionDto,
     outpoints: Option<Vec<crate::types::Outpoint>>,
 ) -> Result<SwapFundingEstimateDto, AppError> {
     let wallet = get_wallet_handle(&state)?;
+    let sweep_vbytes = match protocol {
+        ProtocolVersionDto::Taproot => TAPROOT_SWEEP_VBYTES,
+        ProtocolVersionDto::Legacy => LEGACY_SWEEP_VBYTES,
+    };
     let outpoints = outpoints
         .map(|items| {
             items
@@ -193,6 +206,9 @@ pub async fn estimate_swap_funding(
             vbytes,
             fee_sats,
             route_mining_fee_per_maker_sats: estimate_funding_tx_fee_sats(),
+            // Truncating, not rounded up: matches the crate's own
+            // `Amount::from_sat((feerate * vsize as f64) as u64)`.
+            sweep_fee_sats: (sweep_vbytes as f64 * MIN_FEE_RATE) as u64,
         })
     })
     .await

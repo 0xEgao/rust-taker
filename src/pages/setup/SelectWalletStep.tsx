@@ -391,7 +391,14 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   return (
     <>
-      <IntroStage lead="Welcome to" accent="OpenSwap" caption={CAPTIONS[viewMode]} className="min-h-screen">
+      <IntroStage
+        lead="Welcome to"
+        accent="Portal"
+        caption={CAPTIONS[viewMode]}
+        // Withheld mid-checklist: leaving then would abandon an init that is already running.
+        back={viewMode === "checking" ? undefined : { to: "/launch", label: "Portal", title: "Back to start" }}
+        className="min-h-screen"
+      >
         {/* The grid needs room for two wallet cards abreast; every other view is a single
             column and looks stranded at that width. */}
         <div className={`mx-auto w-full ${viewMode === "grid" ? "max-w-2xl" : viewMode === "unlock" ? "max-w-xl" : "max-w-lg"}`}>

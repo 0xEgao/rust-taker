@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "rust-taker",
+  "productName": "Portal",
   "version": "0.1.0",
-  "identifier": "com.citadel.rust-taker",
+  "identifier": "com.citadel.portal",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenSwap",
+        "title": "Portal",
         "width": 1400,
         "height": 900
       }
