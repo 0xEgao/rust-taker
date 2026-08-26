@@ -1,4 +1,3 @@
-import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
@@ -15,7 +14,7 @@ import { useNavigate } from "react-router-dom";
 import {
   backupWallet,
   checkBackend,
-  checkPort,
+  checkCoreZmq,
   checkTor,
   getChainBackend,
   resetChainBackend,
@@ -50,6 +49,7 @@ import {
   type ConnectivityConfig,
 } from "../../lib/connectivity";
 import { useSessionStore } from "../../store/session";
+import { useWalletCacheStore } from "../../store/wallet-cache";
 import { useToastStore } from "../../store/toast";
 
 const BITCOIN_GUIDE_URL =
@@ -60,6 +60,7 @@ const DEFAULT_NODE: NodeBackend = {
   port: 38332,
   username: "user",
   password: "password",
+  passwordConfigured: false,
   zmqPort: 28332,
 };
 
@@ -72,7 +73,7 @@ function activeFingerprint(
 ) {
   return kind === "electrum"
     ? `electrum|${electrum.url}|${electrum.useTor}`
-    : `node|${node.host}|${node.port}|${node.username}|${node.password}|${node.zmqPort}`;
+    : `node|${node.host}|${node.port}|${node.username}|${node.zmqPort}`;
 }
 
 function connectivityFingerprint(config: ConnectivityConfig) {
@@ -123,6 +124,7 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
   const resetSession = useSessionStore((s) => s.reset);
+  const resetWalletCache = useWalletCacheStore((s) => s.reset);
   // Reachable from a maker-only session for the shared chain/Tor config, so anything that
   // acts on the taker's wallet has nothing to act on and is hidden.
   const takerUnlocked = useSessionStore((s) => s.initialized);
@@ -191,7 +193,7 @@ export function SettingsPage() {
     setKind(c.kind);
     setElectrum(c.electrum);
     setNodeAdded(c.node !== null);
-    if (c.node) setNode(c.node);
+    if (c.node) setNode({ ...c.node, password: "" });
   }
 
   async function persistBackend(nextKind: ChainBackendKind, addNode: boolean) {
@@ -210,7 +212,10 @@ export function SettingsPage() {
       );
       return;
     }
-    applyConfig(config);
+    applyConfig({
+      ...config,
+      node: config.node ? { ...config.node, password: "", passwordConfigured: true } : null,
+    });
     setSavedFingerprint(
       activeFingerprint(
         config.kind,
@@ -270,7 +275,7 @@ export function SettingsPage() {
     const config: ChainBackendConfig = { kind: "coreRpc", electrum, node };
     const [rpcResult, zmqResult] = await Promise.allSettled([
       checkBackend(config, tor.torSocksPort),
-      checkPort(node.host, node.zmqPort),
+      checkCoreZmq(node.host, node.zmqPort),
     ]);
     setNodeRows([
       { ...describe(rpcResult), label: "RPC" },
@@ -290,23 +295,18 @@ export function SettingsPage() {
 
   async function testTor() {
     setTestingTor(true);
-    // checkTor ensures Tor is actually running (system/host-binary/embedded fallback) before
-    // its handshake — run it first so the SOCKS-port check below reflects that, not a race.
     const [torResult] = await Promise.allSettled([
       checkTor(tor.torSocksPort, tor.torControlPort, tor.torAuthPassword),
-    ]);
-    const [socksResult] = await Promise.allSettled([
-      checkPort(RPC_HOST, tor.torSocksPort),
     ]);
     setTorRows([
       {
         label: "SOCKS Port",
-        ok: socksResult.status === "fulfilled" && socksResult.value.reachable,
+        ok: torResult.status === "fulfilled" && torResult.value.reachable,
         message:
-          socksResult.status === "fulfilled"
-            ? socksResult.value.reachable
+          torResult.status === "fulfilled"
+            ? torResult.value.reachable
               ? `Port ${tor.torSocksPort} reachable`
-              : (socksResult.value.error ?? "Unreachable")
+              : (torResult.value.error ?? "Unreachable")
             : "Unreachable",
       },
       {
@@ -353,9 +353,14 @@ export function SettingsPage() {
   async function lockAndReload() {
     try {
       await shutdownTaker();
-    } catch {
-      // Already gone, or a swap holds the lock — either way the session must reset.
+    } catch (e) {
+      pushToast(
+        "error",
+        (e as { message?: string })?.message ?? "Wallet could not be locked.",
+      );
+      return;
     }
+    resetWalletCache();
     resetSession();
     // This page is outside RequireTaker, so nothing bounces us out on its own. Makers keep
     // running: shutdown_taker doesn't touch them, and neither does this.
@@ -385,25 +390,20 @@ export function SettingsPage() {
   }
 
   async function performBackup(password: string) {
-    const destinationPath = await save({
-      defaultPath: `portal-wallet-backup-${new Date().toISOString().split("T")[0]}.json`,
-      filters: [{ name: "JSON Files", extensions: ["json"] }],
-    });
-    if (!destinationPath) return;
-
     setBackingUp(true);
     try {
-      await backupWallet(destinationPath, password);
-      pushToast("success", `Backup created at ${destinationPath}`);
+      const displayName = await backupWallet(password);
+      pushToast("success", `Encrypted backup created: ${displayName}`);
       setBackupOpen(false);
-      setBackupPassword("");
-      setBackupConfirm("");
     } catch (e) {
+      if ((e as { code?: string })?.code === "USER_CANCELLED") return;
       pushToast(
         "error",
         `Backup failed: ${(e as { message?: string })?.message ?? "unknown error"}`,
       );
     } finally {
+      setBackupPassword("");
+      setBackupConfirm("");
       setBackingUp(false);
     }
   }
@@ -620,7 +620,11 @@ export function SettingsPage() {
               <div className="mt-3">
                 <PasswordField
                   label="RPC Password"
-                  placeholder="Enter RPC password"
+                  placeholder={
+                    node.passwordConfigured
+                      ? "Stored password (enter to replace)"
+                      : "Enter RPC password"
+                  }
                   value={node.password}
                   onChange={(e) =>
                     setNode((current) => ({

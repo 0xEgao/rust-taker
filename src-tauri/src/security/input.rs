@@ -1,0 +1,96 @@
+use std::path::{Component, Path};
+
+use crate::error::{AppError, ErrorCode};
+
+pub const MIN_PASSWORD_LENGTH: usize = 8;
+pub const MAX_LEAF_NAME_BYTES: usize = 128;
+
+pub fn validate_password(password: &str, label: &str) -> Result<(), AppError> {
+    if password.trim().is_empty() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("{label} cannot be empty"),
+        ));
+    }
+    if password.chars().count() < MIN_PASSWORD_LENGTH {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("{label} must be at least {MIN_PASSWORD_LENGTH} characters"),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_leaf_name(value: &str, label: &str) -> Result<(), AppError> {
+    let path = Path::new(value);
+    let invalid_component = path.components().count() != 1
+        || !matches!(path.components().next(), Some(Component::Normal(_)));
+    let invalid_chars = value.is_empty()
+        || value.len() > MAX_LEAF_NAME_BYTES
+        || value.chars().any(char::is_control)
+        || value.contains(['/', '\\'])
+        || value.ends_with(['.', ' ']);
+    let stem = value
+        .trim_end_matches(['.', ' '])
+        .split_once('.')
+        .map_or(value, |(stem, _)| stem)
+        .to_ascii_uppercase();
+    let windows_reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
+
+    if invalid_component || invalid_chars || windows_reserved {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("{label} must be one safe file name"),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_tor_control_secret(secret: &str) -> Result<(), AppError> {
+    if secret.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "Tor authentication password cannot contain CR, LF, or NUL",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaf_names_reject_traversal_and_platform_devices() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../wallet",
+            "a/b",
+            "a\\b",
+            "CON",
+            "LPT1.txt",
+            "name.",
+        ] {
+            assert!(validate_leaf_name(bad, "walletName").is_err(), "{bad}");
+        }
+        assert!(validate_leaf_name("maker-01_wallet", "walletName").is_ok());
+    }
+
+    #[test]
+    fn passwords_are_not_trimmed_but_effectively_empty_is_rejected() {
+        assert!(validate_password("        ", "password").is_err());
+        assert!(validate_password(" pass word ", "password").is_ok());
+    }
+
+    #[test]
+    fn tor_control_injection_is_rejected() {
+        assert!(validate_tor_control_secret("password\r\nSIGNAL HALT").is_err());
+        assert!(validate_tor_control_secret("quotes-are-handled-elsewhere").is_ok());
+    }
+}

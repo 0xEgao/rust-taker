@@ -3407,6 +3407,7 @@ version = "0.1.0"
 dependencies = [
  "coinswap",
  "dirs 6.0.0",
+ "libc",
  "libtor",
  "log",
  "log4rs",
@@ -3418,6 +3419,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

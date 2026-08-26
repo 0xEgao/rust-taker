@@ -2,7 +2,7 @@
 //! `MakerServer` objects exist only in this app process and never auto-start.
 
 use std::net::TcpListener;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
@@ -11,12 +11,14 @@ use std::time::Duration;
 use coinswap::maker::api::MIN_SWAP_AMOUNT;
 use coinswap::maker::{start_server, MakerServer, MakerServerConfig};
 use coinswap::utill::get_maker_dir;
+use coinswap::wallet::Wallet;
 use tauri::{Emitter, Manager};
 
-use crate::commands::maker_settings;
 use crate::commands::chain_backend;
+use crate::commands::maker_settings;
 use crate::commands::taker_wallet::wallet_path;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
+use crate::security::input::{validate_leaf_name, validate_password, validate_tor_control_secret};
 use crate::state::{try_lock_makers, AppState, MakerHandle, MakerRuntime};
 use crate::types::{
     MakerInitConfig, MakerPhase, MakerPhaseEvent, MakerSettingsDto, MakerStatusDto, WalletInfo,
@@ -30,13 +32,6 @@ fn valid_id(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-}
-
-fn valid_wallet_name(value: &str) -> bool {
-    let path = Path::new(value);
-    !value.trim().is_empty()
-        && path.components().count() == 1
-        && matches!(path.components().next(), Some(Component::Normal(_)))
 }
 
 fn default_maker_data_dir(maker_id: &str) -> Result<PathBuf, AppError> {
@@ -61,11 +56,7 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
             "makerId must contain only letters, numbers, '-' or '_'".to_string(),
         ));
     }
-    if !valid_wallet_name(&config.wallet_name) {
-        return Err(invalid(
-            "walletName must be a non-empty file name".to_string(),
-        ));
-    }
+    validate_leaf_name(&config.wallet_name, "walletName")?;
 
     let ports = [
         ("networkPort", config.network_port),
@@ -262,8 +253,41 @@ pub async fn init_maker(
     config.maker_id = config.maker_id.trim().to_string();
     config.wallet_name = config.wallet_name.trim().to_string();
     validate_maker_config(&config)?;
+    let password = config.wallet_password.as_deref().ok_or_else(|| {
+        AppError::new(
+            ErrorCode::InvalidInput,
+            "Portal-created makers require a wallet password",
+        )
+    })?;
+    validate_password(password, "maker wallet password")?;
+    if let Some(secret) = config.tor_auth_password.as_deref() {
+        validate_tor_control_secret(secret)?;
+        if !secret.is_empty() {
+            *app.state::<AppState>().tor_auth_secret.lock()? =
+                Some(zeroize::Zeroizing::new(secret.to_string()));
+        }
+    }
+    if config
+        .tor_auth_password
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+    {
+        config.tor_auth_password = app
+            .state::<AppState>()
+            .tor_auth_secret
+            .lock()?
+            .as_ref()
+            .map(|secret| secret.to_string());
+    }
     let maker_id = config.maker_id.clone();
     let data_dir = resolve_maker_data_dir(&config)?;
+    if config.data_dir.is_some() && data_dir.exists() {
+        crate::security::fs::require_private_dir(&data_dir)?;
+    } else {
+        crate::security::fs::ensure_private_dir(&data_dir)?;
+    }
+    crate::security::fs::ensure_private_dir(&data_dir.join("wallets"))?;
     ensure_unique_registration(&maker_id, &data_dir, config.network_port, config.rpc_port)?;
     // `ensure_unique_registration` has already ruled out a registration for this ID or data
     // directory, so a wallet sitting here has none — and nothing can register an existing one.
@@ -304,7 +328,6 @@ pub async fn init_maker(
             maker_id.clone(),
             MakerHandle {
                 settings: settings.clone(),
-                wallet_password: config.wallet_password.clone(),
                 runtime: None,
                 phase: MakerPhase::Initializing,
                 generation: 0,
@@ -352,6 +375,7 @@ pub async fn init_maker(
         running: false,
         tor_address: None,
         network_port,
+        wallet_encrypted: Some(true),
     })
 }
 
@@ -418,16 +442,11 @@ pub fn update_maker_settings(
     Ok(settings)
 }
 
-fn insert_saved_registration(
-    state: &AppState,
-    settings: MakerSettingsDto,
-    password: Option<String>,
-) -> Result<(), AppError> {
+fn insert_saved_registration(state: &AppState, settings: MakerSettingsDto) -> Result<(), AppError> {
     let maker_id = settings.maker_id.clone();
     let mut makers = state.makers.lock()?;
     makers.entry(maker_id).or_insert(MakerHandle {
         settings,
-        wallet_password: password,
         runtime: None,
         phase: MakerPhase::Stopped,
         generation: 0,
@@ -445,16 +464,27 @@ pub async fn start_maker(
     tor_auth_password: Option<String>,
 ) -> Result<(), AppError> {
     let state = app.state::<AppState>();
+    if let Some(secret) = tor_auth_password.as_deref() {
+        validate_tor_control_secret(secret)?;
+        if !secret.is_empty() {
+            *state.tor_auth_secret.lock()? = Some(zeroize::Zeroizing::new(secret.to_string()));
+        }
+    }
+    let tor_auth_password = if tor_auth_password.as_deref().unwrap_or_default().is_empty() {
+        state
+            .tor_auth_secret
+            .lock()?
+            .as_ref()
+            .map(|secret| secret.to_string())
+    } else {
+        tor_auth_password
+    };
     // Reload before every start so config.toml remains the source of truth even
     // when it was edited outside this process between maker runs.
     let persisted_settings =
         maker_settings::load(&maker_id)?.ok_or_else(|| AppError::maker_not_found(&maker_id))?;
     if !state.makers.lock()?.contains_key(&maker_id) {
-        insert_saved_registration(
-            &state,
-            persisted_settings.clone(),
-            wallet_password.clone(),
-        )?;
+        insert_saved_registration(&state, persisted_settings.clone())?;
     }
 
     {
@@ -477,9 +507,6 @@ pub async fn start_maker(
         let stored_tor_auth_password = entry.settings.tor_auth_password.take();
         entry.settings = persisted_settings;
         entry.settings.tor_auth_password = stored_tor_auth_password;
-        if wallet_password.is_some() {
-            entry.wallet_password = wallet_password;
-        }
         if tor_auth_password.is_some() {
             entry.settings.tor_auth_password = tor_auth_password;
         }
@@ -490,12 +517,12 @@ pub async fn start_maker(
     }
     emit_phase(&app, &maker_id, MakerPhase::Initializing);
 
-    let (settings, password) = {
+    let settings = {
         let makers = state.makers.lock()?;
         let entry = makers
             .get(&maker_id)
             .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
-        (entry.settings.clone(), entry.wallet_password.clone())
+        entry.settings.clone()
     };
 
     // Fail before wallet/runtime construction when another application or a
@@ -525,7 +552,7 @@ pub async fn start_maker(
             return Err(AppError::new(ErrorCode::InvalidInput, message));
         }
     }
-    let config = settings.clone().into_init(password);
+    let config = settings.clone().into_init(wallet_password);
     if let Err(error) = validate_maker_config(&config) {
         if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
             entry.phase = MakerPhase::Failed {
@@ -740,7 +767,7 @@ pub fn get_maker_status(
 ) -> Result<MakerStatusDto, AppError> {
     if !state.makers.lock()?.contains_key(&maker_id) {
         if let Some(settings) = maker_settings::load(&maker_id)? {
-            insert_saved_registration(&state, settings, None)?;
+            insert_saved_registration(&state, settings)?;
         }
     }
     let makers = state.makers.lock()?;
@@ -764,12 +791,20 @@ pub fn get_maker_status(
             .as_deref()
             .and_then(|data_dir| read_tor_hostname(Path::new(data_dir)))
     });
+    let wallet_encrypted = entry.settings.data_dir.as_deref().and_then(|data_dir| {
+        Wallet::is_wallet_encrypted(&wallet_path(
+            Path::new(data_dir),
+            &entry.settings.wallet_name,
+        ))
+        .ok()
+    });
     Ok(MakerStatusDto {
         maker_id,
         phase: entry.phase.clone(),
         running,
         tor_address,
         network_port: entry.settings.network_port,
+        wallet_encrypted,
     })
 }
 
@@ -780,7 +815,7 @@ pub fn get_maker_info(
 ) -> Result<WalletInfo, AppError> {
     if !state.makers.lock()?.contains_key(&maker_id) {
         if let Some(settings) = maker_settings::load(&maker_id)? {
-            insert_saved_registration(&state, settings, None)?;
+            insert_saved_registration(&state, settings)?;
         }
     }
     let makers = state.makers.lock()?;
@@ -842,8 +877,8 @@ mod tests {
 
     #[test]
     fn wallet_names_are_single_components() {
-        assert!(valid_wallet_name("wallet.dat"));
-        assert!(!valid_wallet_name("../wallet.dat"));
-        assert!(!valid_wallet_name("nested/wallet.dat"));
+        assert!(validate_leaf_name("wallet.dat", "walletName").is_ok());
+        assert!(validate_leaf_name("../wallet.dat", "walletName").is_err());
+        assert!(validate_leaf_name("nested/wallet.dat", "walletName").is_err());
     }
 }

@@ -48,6 +48,24 @@ pub struct ChainBackendConfig {
     pub node: Option<NodeBackendDto>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeBackendViewDto {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password_configured: bool,
+    pub zmq_port: u16,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainBackendView {
+    pub kind: ChainBackendKind,
+    pub electrum: ElectrumBackendDto,
+    pub node: Option<NodeBackendViewDto>,
+}
+
 /// Result of probing a chain backend. Electrum answers the height/chain questions
 /// from its tip subscription, so both backends fill the same shape; `subversion`
 /// is the one field only Core can report.
@@ -132,6 +150,13 @@ pub struct WalletInfo {
     pub wallet_name: String,
     pub wallet_path: String,
     pub data_dir: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSelectionView {
+    pub selection_id: uuid::Uuid,
+    pub display_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +284,10 @@ pub struct FeeEstimate {
 #[serde(rename_all = "camelCase")]
 pub struct PriceEstimate {
     pub usd: f64,
+    /// True when the live price service failed and Portal returned the last
+    /// successfully saved quote instead.
+    pub cached: bool,
+    pub fetched_at: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +641,8 @@ pub struct MakerStatusDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tor_address: Option<String>,
     pub network_port: u16,
+    /// None means the wallet file could not be inspected without opening it.
+    pub wallet_encrypted: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize)]

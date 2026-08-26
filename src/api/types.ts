@@ -18,6 +18,8 @@ export interface NodeBackend {
   port: number;
   username: string;
   password: string;
+  /** Whether Rust has a stored credential; the credential itself is never returned. */
+  passwordConfigured?: boolean;
   zmqPort: number;
 }
 
@@ -78,6 +80,11 @@ export interface WalletInfo {
   dataDir: string;
 }
 
+export interface RestoreSelection {
+  selectionId: string;
+  displayName: string;
+}
+
 // Mirrors src-tauri/src/error.rs — every failed invoke() rejects with this.
 export interface AppError {
   code: ErrorCode;
@@ -107,6 +114,12 @@ export type ErrorCode =
   | "MAKER_NOT_RUNNING"
   | "MAKER_BUSY"
   | "REPORT_NOT_FOUND"
+  | "USER_CANCELLED"
+  | "AUTHORIZATION_DENIED"
+  | "SENSITIVE_OPERATION_IN_PROGRESS"
+  | "INSECURE_DATA_DIRECTORY"
+  | "INVALID_FILE_SELECTION"
+  | "BACKEND_ROUTE_CHANGED"
   | "CONTRACTS_BROADCASTED"
   | "INVALID_INPUT"
   | "STATE_POISONED"
@@ -183,6 +196,9 @@ export interface FeeEstimate {
 
 export interface PriceEstimate {
   usd: number;
+  /** The live request failed and Portal returned its last successfully saved quote. */
+  cached: boolean;
+  fetchedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +257,7 @@ export interface MakerSettings {
 }
 
 export interface MakerInitConfig extends MakerSettings {
-  walletPassword?: string;
+  walletPassword: string;
   torAuthPassword?: string;
 }
 
@@ -271,6 +287,8 @@ export interface MakerStatus {
   running: boolean;
   torAddress?: string;
   networkPort: number;
+  /** Undefined when the wallet file could not be inspected. */
+  walletEncrypted?: boolean;
 }
 
 export interface FidelityBond {

@@ -364,7 +364,12 @@ pub fn get_suggested_maker_ports(
 /// Deliberately not `setup::check_port`: that connects and reports success when something
 /// is *already listening*, the inverse of what a port we intend to bind needs — wiring it
 /// in here would approve exactly the ports that are taken.
-fn port_conflict(port: u16, socks_port: u16, control_port: u16, taken: &HashMap<u16, String>) -> Option<String> {
+fn port_conflict(
+    port: u16,
+    socks_port: u16,
+    control_port: u16,
+    taken: &HashMap<u16, String>,
+) -> Option<String> {
     if port == 0 {
         return Some("Not a valid port.".to_string());
     }
@@ -472,10 +477,9 @@ mod tests {
     /// them has to load, since deleting them is what stops that import resurrecting makers.
     #[test]
     fn legacy_guard_fields_are_ignored() {
-        let decoded: StoredMakers = serde_json::from_str(
-            r#"{"makers":{},"dashboardMigrated":true,"deleted":["Zoro"]}"#,
-        )
-        .unwrap();
+        let decoded: StoredMakers =
+            serde_json::from_str(r#"{"makers":{},"dashboardMigrated":true,"deleted":["Zoro"]}"#)
+                .unwrap();
         assert!(decoded.makers.is_empty());
     }
 
@@ -542,7 +546,10 @@ mod tests {
         drop(free);
         let result = check_maker_ports(port, port, 9050, 9051).unwrap();
         assert!(result.network_port.is_none());
-        assert!(result.rpc_port.expect("duplicate must be caught").contains("differ"));
+        assert!(result
+            .rpc_port
+            .expect("duplicate must be caught")
+            .contains("differ"));
     }
 
     #[test]

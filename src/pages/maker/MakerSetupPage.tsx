@@ -6,7 +6,7 @@ import { getMakerBalances, getMakerLogs, getMakerStatus, startMaker } from "../.
 import type { LogLine, MakerPhase } from "../../api/types";
 import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
-import { Button, LinkButton } from "../../components/ui/inputs";
+import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
 
 /**
@@ -64,6 +64,9 @@ export function MakerSetupPage() {
   const [deposit, setDeposit] = useState<{ address: string; sats: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [walletPassword, setWalletPassword] = useState("");
+  const [startingWithPassword, setStartingWithPassword] = useState(false);
   // Which step to mark failed — the stage at the time, since `stage` becomes "error".
   const failedAt = useRef(0);
 
@@ -97,6 +100,10 @@ export function MakerSetupPage() {
         if (cancelled) return;
         // Resuming an interrupted setup, or arriving at an already-running maker.
         if (status.running) return applyPhase(status.phase);
+        if (status.walletEncrypted) {
+          setNeedsPassword(true);
+          return;
+        }
         await startMaker(id);
       } catch (e) {
         if (!cancelled) fail((e as { message?: string })?.message ?? "Could not start the maker.");
@@ -108,6 +115,20 @@ export function MakerSetupPage() {
       void unlisten.then((off) => off());
     };
   }, [id, applyPhase, fail]);
+
+  async function startEncryptedMaker() {
+    if (!walletPassword) return;
+    setStartingWithPassword(true);
+    try {
+      await startMaker(id, walletPassword);
+      setWalletPassword("");
+      setNeedsPassword(false);
+    } catch (e) {
+      setError((e as { message?: string })?.message ?? "Could not unlock the maker wallet.");
+    } finally {
+      setStartingWithPassword(false);
+    }
+  }
 
   // One poll drives both the log panel and stage detection: the deposit address exists only
   // in the log, and coins landing shows up there before any balance read reflects it.
@@ -169,6 +190,25 @@ export function MakerSetupPage() {
           <div className="p-8 text-left">
             <Checklist steps={STEP_LABELS.map((label, i) => ({ label, state: stepStates(stage, failedAt.current)[i] }))} />
           </div>
+
+          {needsPassword && (
+            <div className="border-t border-line px-8 py-6 text-left">
+              <PasswordField
+                label="Maker wallet password"
+                autoComplete="current-password"
+                value={walletPassword}
+                onChange={(e) => { setWalletPassword(e.target.value); setError(null); }}
+                error={error ?? undefined}
+              />
+              <p className="mt-3 text-[11.5px] leading-5 text-subtle">
+                Portal does not retain maker wallet passwords. Enter it each time this encrypted
+                maker is started.
+              </p>
+              <Button className="mt-4 w-full" loading={startingWithPassword} disabled={!walletPassword} onClick={() => void startEncryptedMaker()}>
+                Unlock &amp; start maker
+              </Button>
+            </div>
+          )}
 
           {stage === "funding" && (
             <div className="border-t border-line px-8 py-6 text-left">

@@ -7,17 +7,21 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::error::AppError;
+use crate::security::input::validate_tor_control_secret;
 use crate::state::AppState;
 use crate::types::{PortStatus, TorStatus, VersionInfo};
 
-/// Raw TCP reachability probe (RPC / ZMQ / Tor SOCKS / Tor control ports).
+/// Purpose-specific Core ZMQ reachability check. Portal only supports a local
+/// endpoint; remote users must expose it through a trusted local tunnel.
 #[tauri::command]
-pub async fn check_port(
-    host: String,
-    port: u16,
-    timeout_ms: Option<u64>,
-) -> Result<PortStatus, AppError> {
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(3000));
+pub async fn check_core_zmq(host: String, port: u16) -> Result<PortStatus, AppError> {
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
+        return Ok(PortStatus {
+            reachable: false,
+            error: Some("Use a trusted local tunnel for remote Bitcoin Core ZMQ".to_string()),
+        });
+    }
+    let timeout = Duration::from_secs(3);
     tauri::async_runtime::spawn_blocking(move || {
         let addr = match (host.as_str(), port).to_socket_addrs() {
             Ok(mut addrs) => match addrs.next() {
@@ -55,8 +59,7 @@ pub async fn check_port(
 pub fn get_version_info(app: tauri::AppHandle) -> VersionInfo {
     VersionInfo {
         app_version: app.package_info().version.to_string(),
-        // Path dependency for now; becomes a pinned git rev for releases.
-        coinswap_source: "local path (../../coinswap)".to_string(),
+        coinswap_source: format!("git {}", env!("PORTAL_COINSWAP_REV")),
     }
 }
 
@@ -70,9 +73,24 @@ pub async fn check_tor(
     control_port: u16,
     tor_auth_password: String,
 ) -> Result<TorStatus, AppError> {
+    validate_tor_control_secret(&tor_auth_password)?;
+    let password = if tor_auth_password.is_empty() {
+        state
+            .tor_auth_secret
+            .lock()?
+            .as_ref()
+            .map(|secret| secret.to_string())
+            .unwrap_or_default()
+    } else {
+        *state.tor_auth_secret.lock()? = Some(zeroize::Zeroizing::new(tor_auth_password.clone()));
+        tor_auth_password
+    };
     let (status, child) = tauri::async_runtime::spawn_blocking(move || {
         let (source, child) = crate::tor::ensure_tor(socks_port, control_port);
-        (run_tor_handshake(control_port, &tor_auth_password, source), child)
+        (
+            run_tor_handshake(socks_port, control_port, &password, source),
+            child,
+        )
     })
     .await
     .map_err(AppError::internal)?;
@@ -83,8 +101,14 @@ pub async fn check_tor(
     Ok(status)
 }
 
-fn run_tor_handshake(control_port: u16, password: &str, source: crate::tor::TorSource) -> TorStatus {
-    let source = Some(source.as_str().to_string());
+fn run_tor_handshake(
+    socks_port: u16,
+    control_port: u16,
+    password: &str,
+    source: crate::tor::TorSource,
+) -> TorStatus {
+    let source_kind = source;
+    let source = Some(source_kind.as_str().to_string());
     let unreachable = |err: String| TorStatus {
         reachable: false,
         authenticated: false,
@@ -92,6 +116,10 @@ fn run_tor_handshake(control_port: u16, password: &str, source: crate::tor::TorS
         error: Some(err),
         source: source.clone(),
     };
+
+    if !crate::tor::socks5_responds(socks_port) {
+        return unreachable("configured SOCKS port did not complete a SOCKS5 greeting".into());
+    }
 
     let addr = match format!("127.0.0.1:{control_port}").to_socket_addrs() {
         Ok(mut addrs) => match addrs.next() {
@@ -113,10 +141,51 @@ fn run_tor_handshake(control_port: u16, password: &str, source: crate::tor::TorS
         Err(e) => return unreachable(e.to_string()),
     };
 
-    if stream
-        .write_all(format!("AUTHENTICATE \"{password}\"\r\n").as_bytes())
-        .is_err()
+    if stream.write_all(b"PROTOCOLINFO 1\r\n").is_err() {
+        return unreachable("failed to send PROTOCOLINFO".into());
+    }
+    let mut protocol_lines = Vec::new();
+    for _ in 0..32 {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line.len() > 8192 {
+            return unreachable("invalid Tor PROTOCOLINFO response".into());
+        }
+        let done = line.starts_with("250 OK");
+        protocol_lines.push(line);
+        if done {
+            break;
+        }
+    }
+    if protocol_lines.is_empty()
+        || !protocol_lines[0].starts_with("250-PROTOCOLINFO")
+        || !protocol_lines
+            .last()
+            .is_some_and(|line| line.starts_with("250 OK"))
     {
+        return unreachable("control port did not identify itself as Tor".into());
+    }
+
+    let auth_bytes = if matches!(
+        source_kind,
+        crate::tor::TorSource::HostBinary | crate::tor::TorSource::Embedded
+    ) {
+        match crate::tor::managed_cookie() {
+            Ok(cookie) => cookie,
+            Err(e) => return unreachable(format!("managed Tor cookie unavailable: {e}")),
+        }
+    } else {
+        password.as_bytes().to_vec()
+    };
+    let command = if auth_bytes.is_empty() {
+        "AUTHENTICATE\r\n".to_string()
+    } else {
+        let encoded = auth_bytes
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>();
+        format!("AUTHENTICATE {encoded}\r\n")
+    };
+    if stream.write_all(command.as_bytes()).is_err() {
         return unreachable("failed to send AUTHENTICATE".into());
     }
     let mut resp = String::new();
@@ -130,7 +199,10 @@ fn run_tor_handshake(control_port: u16, password: &str, source: crate::tor::TorS
         };
     }
 
-    if stream.write_all(b"GETINFO status/bootstrap-phase\r\n").is_err() {
+    if stream
+        .write_all(b"GETINFO status/bootstrap-phase\r\n")
+        .is_err()
+    {
         return TorStatus {
             reachable: true,
             authenticated: true,

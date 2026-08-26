@@ -209,7 +209,9 @@ mod tests {
     fn report_path_falls_back_when_there_is_no_stem() {
         assert_eq!(
             report_path(Path::new("/data"), ".wallet"),
-            Path::new("/data").join("wallets").join(".wallet_swap_report.json")
+            Path::new("/data")
+                .join("wallets")
+                .join(".wallet_swap_report.json")
         );
     }
 }

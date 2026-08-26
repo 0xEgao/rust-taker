@@ -6,6 +6,7 @@ import type { MakerInitConfig, MakerPortCheck } from "../../api/types";
 import { Card, Disclosure } from "../../components/ui/display";
 import { Button, LinkButton, PasswordField, SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
 import { loadConnectivityDefaults } from "../../lib/connectivity";
+import { validateNewPassword } from "../../lib/password-policy";
 import { useToastStore } from "../../store/toast";
 import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
 
@@ -55,6 +56,7 @@ export function AddMakerPage() {
   const [walletName, setWalletName] = useState("");
   const [dataDir, setDataDir] = useState("");
   const [walletPassword, setWalletPassword] = useState("");
+  const [walletPasswordConfirm, setWalletPasswordConfirm] = useState("");
   const [torAuthPassword, setTorAuthPassword] = useState(tor.torAuthPassword);
   const [values, setValues] = useState<Values>(INITIAL_VALUES);
 
@@ -75,6 +77,7 @@ export function AddMakerPage() {
 
   const trimmedId = makerId.trim();
   const malformedId = trimmedId.length > 0 && !MAKER_ID_PATTERN.test(trimmedId);
+  const walletPasswordError = validateNewPassword(walletPassword, walletPasswordConfirm);
 
   useEffect(() => {
     void getSuggestedMakerPorts(tor.torSocksPort, tor.torControlPort)
@@ -123,7 +126,7 @@ export function AddMakerPage() {
   }, [numbers.networkPort, numbers.rpcPort, numbers.socksPort, numbers.controlPort]);
 
   const config = useMemo<MakerInitConfig | null>(() => {
-    if (!trimmedId || malformedId) return null;
+    if (!trimmedId || malformedId || walletPasswordError) return null;
     if (Object.values(numbers).some((n) => !Number.isFinite(n) || n < 0)) return null;
     if (numbers.requiredConfirms < 1) return null;
     return {
@@ -131,7 +134,7 @@ export function AddMakerPage() {
       // A maker's wallet is its own, so the id doubles as the wallet name unless overridden.
       walletName: walletName.trim() || trimmedId,
       dataDir: dataDir.trim() || undefined,
-      walletPassword: walletPassword || undefined,
+      walletPassword,
       torAuthPassword: torAuthPassword || undefined,
       networkPort: numbers.networkPort,
       rpcPort: numbers.rpcPort,
@@ -145,7 +148,7 @@ export function AddMakerPage() {
       fidelityAmount: numbers.fidelityAmount,
       fidelityTimelock: numbers.fidelityTimelock,
     };
-  }, [trimmedId, malformedId, walletName, dataDir, walletPassword, torAuthPassword, numbers]);
+  }, [trimmedId, malformedId, walletName, dataDir, walletPassword, walletPasswordError, torAuthPassword, numbers]);
 
   const blocked = torError !== null || portErrors.networkPort !== undefined || portErrors.rpcPort !== undefined;
 
@@ -158,6 +161,8 @@ export function AddMakerPage() {
     setCreating(true);
     try {
       await initMaker(config);
+      setWalletPassword("");
+      setWalletPasswordConfirm("");
       pushToast("success", `${config.makerId} was created and registered.`);
       navigate(`/maker/${encodeURIComponent(config.makerId)}/setup`);
     } catch (error) {
@@ -205,17 +210,29 @@ export function AddMakerPage() {
               hint={malformedId ? undefined : "Also names its wallet. Everything below is already set."}
             />
             <div className="mt-3">
-              <Disclosure label="Wallet name, data directory, password">
+              <Disclosure label="Wallet name and data directory">
                 <div className="flex flex-col gap-3 pt-1">
                   <TextField label="Wallet name" placeholder={trimmedId || "Same as Maker ID"} value={walletName} onChange={(e) => setWalletName(e.target.value)} />
                   <TextField label="Data directory" placeholder="Default maker directory" value={dataDir} onChange={(e) => setDataDir(e.target.value)} />
-                  <PasswordField label="Wallet password" autoComplete="new-password" value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
                   <p className="text-[11.5px] leading-5 text-subtle">
-                    Wallet name and data directory are permanent, and the wallet password sets the
-                    wallet file's encryption — none of the three can be changed later.
+                    Wallet name and data directory are permanent and cannot be changed later.
                   </p>
                 </div>
               </Disclosure>
+            </div>
+            <div className="mt-4 flex flex-col gap-3 border-t border-line pt-4">
+              <PasswordField label="Wallet password" autoComplete="new-password" value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
+              <PasswordField
+                label="Confirm wallet password"
+                autoComplete="new-password"
+                value={walletPasswordConfirm}
+                onChange={(e) => setWalletPasswordConfirm(e.target.value)}
+                error={walletPassword || walletPasswordConfirm ? walletPasswordError : undefined}
+              />
+              <p className="text-[11.5px] leading-5 text-subtle">
+                Portal encrypts every maker wallet it creates. Losing this password can make its
+                funds unrecoverable.
+              </p>
             </div>
           </div>
 

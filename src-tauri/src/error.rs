@@ -40,6 +40,12 @@ pub enum ErrorCode {
     MakerAlreadyRunning,
     MakerNotRunning,
     ReportNotFound,
+    UserCancelled,
+    AuthorizationDenied,
+    SensitiveOperationInProgress,
+    InsecureDataDirectory,
+    InvalidFileSelection,
+    BackendRouteChanged,
     // infrastructure
     StatePoisoned,
     Io,
@@ -84,6 +90,14 @@ impl AppError {
             ErrorCode::MakerNotFound,
             format!("maker '{maker_id}' is not registered"),
         )
+    }
+
+    pub fn user_cancelled(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::UserCancelled, message)
+    }
+
+    pub fn authorization_denied(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::AuthorizationDenied, message)
     }
 }
 

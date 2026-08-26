@@ -34,5 +34,7 @@ export function loadConnectivityDefaults(): ConnectivityConfig {
 }
 
 export function saveConnectivityDefaults(config: ConnectivityConfig) {
+  // Persist the complete user-selected configuration so startup can reconnect
+  // without silently replacing any chosen defaults.
   localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
 }

@@ -381,6 +381,7 @@ export function SwapPage() {
     };
   }, [balances]);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
+  const [btcPriceCached, setBtcPriceCached] = useState(false);
   const [makers, setMakers] = useState<Maker[]>([]);
   const [fundingEstimate, setFundingEstimate] =
     useState<SwapFundingEstimate | null>(null);
@@ -426,8 +427,14 @@ export function SwapPage() {
     );
     // BTC/USD price is best-effort, same as Send — leave the USD unit disabled rather than toast.
     void getBtcPrice()
-      .then((p) => setBtcPrice(p.usd))
-      .catch(() => setBtcPrice(null));
+      .then((p) => {
+        setBtcPrice(p.usd);
+        setBtcPriceCached(p.cached);
+      })
+      .catch(() => {
+        setBtcPrice(null);
+        setBtcPriceCached(false);
+      });
 
     // Reconcile a swap already in flight (app restart mid-swap, or navigating back here).
     void getSwapProgress().then((progress) => {
@@ -779,9 +786,8 @@ export function SwapPage() {
     warnings.length === 0 &&
     !submitting;
 
-  // prepareSwap + startSwap in one action — the crate's negotiated SwapSummary is shown on the
-  // progress screen itself rather than gating on a separate confirm click (see also §3.2 of the
-  // design notes, which suggested a confirm step; kept as one action per direct product feedback).
+  // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
+  // dialog, bound to the authoritative prepared summary; there is no second renderer modal.
   async function handleStartSwap() {
     if (useWalletCacheStore.getState().syncStatus !== "synced") {
       pushToast(
@@ -813,7 +819,9 @@ export function SwapPage() {
       setPhase("running");
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      pushToast("error", err?.message ?? "Failed to start swap.");
+      if (err?.code !== "AUTHORIZATION_DENIED" && err?.code !== "USER_CANCELLED") {
+        pushToast("error", err?.message ?? "Failed to start swap.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1104,7 +1112,11 @@ export function SwapPage() {
                     label: "USD",
                     disabled: btcPrice === null,
                     title:
-                      btcPrice === null ? "BTC price unavailable" : undefined,
+                      btcPrice === null
+                        ? "BTC price unavailable"
+                        : btcPriceCached
+                          ? "Using the last saved BTC price because the live update failed"
+                          : undefined,
                   },
                 ]}
               />

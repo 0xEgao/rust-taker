@@ -3,15 +3,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::JoinHandle;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use coinswap::maker::MakerServer;
 use coinswap::taker::offers::OfferSyncClient;
 use coinswap::taker::Taker;
 use coinswap::wallet::Wallet;
+use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::error::AppError;
-use crate::types::{MakerPhase, MakerSettingsDto};
+use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto, SwapSummaryDto};
 
 /// Non-blocking taker lock — fails fast with SwapInProgress instead of
 /// blocking for however long a running swap holds the mutex.
@@ -47,7 +49,6 @@ pub struct MakerRuntime {
 /// explicit stop; only settings and wallet files survive those boundaries.
 pub struct MakerHandle {
     pub settings: MakerSettingsDto,
-    pub wallet_password: Option<String>,
     pub runtime: Option<MakerRuntime>,
     pub phase: MakerPhase,
     /// Prevents an old server/watcher thread from updating a newer lifecycle.
@@ -64,8 +65,19 @@ pub struct AppState {
     pub offer_sync: RwLock<Option<OfferSyncClient>>,
     /// Set at `init_taker`; not exposed by `Taker` itself.
     pub data_dir: RwLock<Option<PathBuf>>,
+    /// Exact chain route used to construct the active taker. Saved settings may
+    /// change, but this stays pinned until verified shutdown/reinitialization.
+    pub active_chain_backend: RwLock<Option<ChainBackendConfig>>,
+    pub active_socks_port: RwLock<Option<u16>>,
     /// Single active swap slot; one swap at a time by design.
     pub active_swap: Mutex<Option<ActiveSwap>>,
+    /// Serializes native approval/file dialogs and their immediately following
+    /// private-key or fund-moving operation.
+    pub sensitive_operation_active: Arc<AtomicBool>,
+    /// Rust-owned local file choices. The renderer receives only a random ID.
+    pub pending_file_selections: Mutex<HashMap<Uuid, PendingFileSelection>>,
+    /// Optional external-Tor credential. Never serialized or returned over IPC.
+    pub tor_auth_secret: Mutex<Option<Zeroizing<String>>>,
     /// Aborts an in-flight `Wallet::sync_and_save`. The crate's `sync_no_fail` retries a failing
     /// backend forever and only exits on success or this flag, so without it an Electrum outage
     /// pins a blocking thread for the rest of the process's life.
@@ -86,8 +98,15 @@ pub struct AppState {
 pub struct ActiveSwap {
     pub swap_id: String,
     pub phase: SwapLifecycle,
+    pub prepared: Option<SwapSummaryDto>,
+    pub backend_fingerprint: String,
     pub started_at: Option<SystemTime>,
     pub error: Option<String>,
+}
+
+pub struct PendingFileSelection {
+    pub path: PathBuf,
+    pub created_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

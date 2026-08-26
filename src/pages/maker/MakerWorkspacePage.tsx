@@ -689,21 +689,20 @@ function SettingsPanel({
   );
 
   async function save(next: MakerSettings) {
-    const shouldRestart = running;
+    const shouldStop = running;
     let settingsWereSaved = false;
     setSaving(true);
     try {
-      if (shouldRestart) await stopMaker(makerId);
+      if (shouldStop) await stopMaker(makerId);
       const saved = await updateMakerSettings(makerId, next);
       settingsWereSaved = true;
-      if (shouldRestart) await startMaker(makerId);
       setForm(settingsToForm(saved));
       setConfirmSave(false);
       await onSaved();
       pushToast(
         "success",
-        shouldRestart
-          ? "Maker settings saved and the maker restarted."
+        shouldStop
+          ? "Maker settings saved. Re-enter the wallet password to restart the maker."
           : "Maker settings saved to config.toml.",
       );
     } catch (e) {
@@ -714,7 +713,7 @@ function SettingsPanel({
         "error",
         settingsWereSaved
           ? `Settings were saved, but the maker could not restart: ${message}`
-          : shouldRestart
+          : shouldStop
             ? `Could not apply settings. The maker may be stopped: ${message}`
             : message,
       );
@@ -900,7 +899,7 @@ function SettingsPanel({
           <div className="space-y-3 text-[12px] leading-5 text-muted">
             <p>
               The changes will be written to this maker’s config.toml.
-              {running && " The maker will stop briefly and restart with the updated values."}
+              {running && " The maker will stop; re-enter its wallet password to restart it."}
             </p>
             {parsed.networkPort !== settings.networkPort && (
               <div className="flex gap-3 rounded-control border border-warning/30 bg-warning/[0.07] p-3">

@@ -128,13 +128,16 @@ function MakerCard({
     });
   }
 
-  // Tried without a password first: a maker's password only lives in process memory, and
-  // quick-created wallets have none, so prompting up front would be noise for most makers.
   async function toggleMaker() {
     setActionLoading(true);
     try {
       if (running) await stopMaker(settings.makerId);
-      else await startMaker(settings.makerId);
+      else if (status?.walletEncrypted) {
+        setPassword("");
+        setUnlockError(undefined);
+        setUnlocking(true);
+        return;
+      } else await startMaker(settings.makerId);
       pushToast(
         "success",
         `${settings.makerId} ${running ? "stopped" : "is starting"}.`,

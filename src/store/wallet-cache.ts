@@ -46,6 +46,7 @@ interface WalletCacheState {
   setHistoryData: (transactions: TxSummary[]) => void;
   setHistoryError: (message: string) => void;
   setStoredData: (data: { info: WalletInfo; balances: Balances; utxos: UtxoEntry[] }) => void;
+  reset: () => void;
 }
 
 export const useWalletCacheStore = create<WalletCacheState>((set) => ({
@@ -94,4 +95,16 @@ export const useWalletCacheStore = create<WalletCacheState>((set) => ({
   // Wallet balances and UTXOs are backed by the encrypted wallet file. Transaction
   // history is rebuilt from the chain backend and has a separate loading state.
   setStoredData: (data) => set(data),
+  reset: () => set({
+    info: null,
+    balances: null,
+    utxos: [],
+    transactions: [],
+    walletKey: null,
+    syncStatus: "idle",
+    syncError: null,
+    lastSuccessfulSyncAt: null,
+    historyStatus: "idle",
+    historyError: null,
+  }),
 }));

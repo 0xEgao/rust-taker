@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
-import { Card, Modal, SatsAmount } from "../../components/ui/display";
+import { Card, SatsAmount } from "../../components/ui/display";
 import { Button, PresetTile, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import {
   classifySpendType,
@@ -28,6 +28,7 @@ function SendPanel() {
   const [utxos, setUtxos] = useState<UtxoEntry[]>([]);
   const [fees, setFees] = useState<FeeEstimate | null>(null);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
+  const [btcPriceCached, setBtcPriceCached] = useState(false);
 
   const [recipient, setRecipient] = useState("");
   const [recipientValidation, setRecipientValidation] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
@@ -37,7 +38,6 @@ function SendPanel() {
   const [feeKey, setFeeKey] = useState<FeeKey>("mid");
   const [customFeeRate, setCustomFeeRate] = useState("");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
-  const [reviewing, setReviewing] = useState(false);
   const [sending, setSending] = useState(false);
 
   const load = useCallback(async () => {
@@ -52,8 +52,14 @@ function SendPanel() {
     // BTC/USD price is best-effort — sats/BTC still work fine without it, so its own failure
     // shouldn't toast an error, just leave the USD option disabled.
     void getBtcPrice()
-      .then((p) => setBtcPrice(p.usd))
-      .catch(() => setBtcPrice(null));
+      .then((p) => {
+        setBtcPrice(p.usd);
+        setBtcPriceCached(p.cached);
+      })
+      .catch(() => {
+        setBtcPrice(null);
+        setBtcPriceCached(false);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -122,9 +128,9 @@ function SendPanel() {
   }, [recipient]);
 
   const walletReadyToSpend = walletSyncStatus === "synced";
-  const canReview = walletReadyToSpend && recipientValidation === "valid" && amountSats > 0 && feeRate > 0;
+  const canSend = walletReadyToSpend && recipientValidation === "valid" && amountSats > 0 && feeRate > 0;
 
-  async function confirmSend() {
+  async function submitSend() {
     if (useWalletCacheStore.getState().syncStatus !== "synced") {
       pushToast("error", "Wait for wallet synchronization before sending.");
       return;
@@ -141,11 +147,12 @@ function SendPanel() {
       setRecipient("");
       setAmountInput("");
       setSelectedOutpoints([]);
-      setReviewing(false);
       await load();
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      pushToast("error", err?.message ?? "Send failed.");
+      if (err?.code !== "AUTHORIZATION_DENIED" && err?.code !== "USER_CANCELLED") {
+        pushToast("error", err?.message ?? "Send failed.");
+      }
     } finally {
       setSending(false);
     }
@@ -206,7 +213,17 @@ function SendPanel() {
           options={[
             { value: "sats", label: "sats" },
             { value: "btc", label: "BTC" },
-            { value: "usd", label: "USD", disabled: btcPrice === null, title: btcPrice === null ? "BTC price unavailable" : undefined },
+            {
+              value: "usd",
+              label: "USD",
+              disabled: btcPrice === null,
+              title:
+                btcPrice === null
+                  ? "BTC price unavailable"
+                  : btcPriceCached
+                    ? "Using the last saved BTC price because the live update failed"
+                    : undefined,
+            },
           ]}
         />
       </div>
@@ -287,53 +304,9 @@ function SendPanel() {
 
       <div className="flex-1" />
 
-      <Button size="md" disabled={!canReview} onClick={() => setReviewing(true)}>
-        Review &amp; Send
+      <Button size="md" disabled={!canSend} loading={sending} onClick={() => void submitSend()}>
+        Send
       </Button>
-
-      {reviewing && (
-        <Modal
-          title="Confirm send"
-          onClose={() => !sending && setReviewing(false)}
-          footer={
-            <>
-              <Button variant="secondary" onClick={() => setReviewing(false)} disabled={sending}>
-                Cancel
-              </Button>
-              <Button onClick={() => void confirmSend()} loading={sending} disabled={!walletReadyToSpend}>
-                Confirm &amp; Broadcast
-              </Button>
-            </>
-          }
-        >
-          <div className="flex flex-col gap-2.5 text-[13px]">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-subtle">To</span>
-              <span className="truncate font-mono text-foreground" title={recipient}>
-                {truncateMiddle(recipient, 14, 8)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-subtle">Amount</span>
-              <SatsAmount sats={amountSats} className="font-semibold text-foreground" />
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-subtle">Fee rate</span>
-              <strong className="font-mono text-foreground">{formatFeeRate(feeRate)} s/vB</strong>
-            </div>
-            {selectedOutpoints.length > 0 && (
-              <div className="flex items-center justify-between">
-                <span className="text-subtle">Coins selected</span>
-                <strong className="font-mono text-foreground">{selectedOutpoints.length}</strong>
-              </div>
-            )}
-          </div>
-          <p className="mt-1 text-[11px] text-subtle">
-            The exact network fee is determined when the transaction is built — this broadcasts immediately, there is no
-            separate signing step.
-          </p>
-        </Modal>
-      )}
     </Card>
   );
 }

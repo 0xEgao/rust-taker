@@ -19,7 +19,7 @@ pub async fn get_logs(
         .clone()
         .ok_or_else(AppError::not_initialized)?;
     let path = data_dir.join("debug.log");
-    let want = lines.unwrap_or(100);
+    let want = lines.unwrap_or(100).min(1000);
 
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<LogLine>, AppError> {
         Ok(crate::logging::tail_lines(&path, want)?
@@ -53,7 +53,7 @@ pub async fn get_maker_logs(
             .ok_or_else(AppError::maker_not_initialized)?
     };
     let path = data_dir.join("debug.log");
-    let want = lines.unwrap_or(100);
+    let want = lines.unwrap_or(100).min(1000);
 
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<LogLine>, AppError> {
         Ok(crate::logging::tail_lines(&path, want)?

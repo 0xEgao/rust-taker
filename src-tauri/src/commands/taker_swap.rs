@@ -18,8 +18,10 @@ use coinswap::taker::{SwapParams, SwapSummary};
 use coinswap::utill::{estimate_funding_tx_fee_sats, MIN_FEE_RATE};
 use coinswap::wallet::AddressType;
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::error::{AppError, ErrorCode};
+use crate::security::operation::{ensure_main_window, SensitiveOperation, SensitiveOperationGuard};
 use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
     MakerFeeInfoDto, MakerProgressDto, ProtocolVersionDto, RecoveryStatus, SwapFundingEstimateDto,
@@ -268,9 +270,20 @@ pub async fn prepare_swap(
     .map_err(AppError::internal)??;
 
     let dto = to_summary_dto(&summary);
+    let active_backend = state
+        .active_chain_backend
+        .read()?
+        .clone()
+        .ok_or_else(AppError::not_initialized)?;
+    let active_socks_port = state.active_socks_port.read()?.unwrap_or(9050);
     *state.active_swap.lock()? = Some(ActiveSwap {
         swap_id: summary.swap_id,
         phase: SwapLifecycle::Prepared,
+        prepared: Some(dto.clone()),
+        backend_fingerprint: crate::commands::chain_backend::fingerprint(
+            &active_backend,
+            active_socks_port,
+        ),
         started_at: None,
         error: None,
     });
@@ -282,15 +295,108 @@ pub async fn prepare_swap(
 #[tauri::command]
 pub async fn start_swap(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     swap_id: String,
 ) -> Result<(), AppError> {
+    ensure_main_window(&window)?;
+    let _operation = SensitiveOperationGuard::acquire(
+        &state.sensitive_operation_active,
+        SensitiveOperation::StartSwap,
+    )?;
+    let prepared = {
+        let guard = state.active_swap.lock()?;
+        match guard.as_ref() {
+            Some(active)
+                if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared =>
+            {
+                active.prepared.clone().ok_or_else(|| {
+                    AppError::new(ErrorCode::InvalidInput, "prepared swap summary is missing")
+                })?
+            }
+            Some(active) if active.phase == SwapLifecycle::Running => {
+                return Err(AppError::swap_in_progress())
+            }
+            _ => {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    "no prepared swap with this id — call prepare_swap first",
+                ))
+            }
+        }
+    };
+    let preflight_fingerprint = crate::commands::chain_backend::preflight_active(&state).await?;
+    let expected_fingerprint = state
+        .active_swap
+        .lock()?
+        .as_ref()
+        .map(|active| active.backend_fingerprint.clone())
+        .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "prepared swap disappeared"))?;
+    if preflight_fingerprint != expected_fingerprint {
+        return Err(AppError::new(
+            ErrorCode::BackendRouteChanged,
+            "active backend route changed after swap preparation",
+        ));
+    }
+    let route = {
+        let config = state
+            .active_chain_backend
+            .read()?
+            .clone()
+            .ok_or_else(AppError::not_initialized)?;
+        let socks_port = state.active_socks_port.read()?.unwrap_or(9050);
+        crate::commands::chain_backend::route_description(&config, socks_port)
+    };
+    let maker_list = prepared
+        .makers
+        .iter()
+        .map(|maker| maker.address.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let message = format!(
+        "Protocol: {}\nChain data route: {}\nSend: {} sats ({:.8} BTC)\nEstimated receive: {} sats\nEstimated total fee: {} sats\nMakers ({}):\n{}\n\nPreparing did not move funds. Starting now may commit funds for the duration of the swap. Start this swap?",
+        prepared.protocol,
+        route,
+        prepared.send_amount_sats,
+        prepared.send_amount_sats as f64 / 100_000_000.0,
+        prepared.estimated_receive_amount_sats,
+        prepared.total_estimated_fee_sats,
+        prepared.makers.len(),
+        maker_list,
+    );
+    let dialog_window = window.clone();
+    let approved = tauri::async_runtime::spawn_blocking(move || {
+        dialog_window
+            .dialog()
+            .message(message)
+            .parent(&dialog_window)
+            .title("Confirm Coinswap")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Start swap".to_string(),
+                "Cancel".to_string(),
+            ))
+            .blocking_show()
+    })
+    .await
+    .map_err(AppError::internal)?;
+    if !approved {
+        return Err(AppError::authorization_denied(
+            "swap start was not approved",
+        ));
+    }
     {
         let mut guard = state.active_swap.lock()?;
         match guard.as_mut() {
             Some(active)
                 if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared =>
             {
+                if active.backend_fingerprint != preflight_fingerprint {
+                    return Err(AppError::new(
+                        ErrorCode::BackendRouteChanged,
+                        "backend route changed while awaiting swap approval",
+                    ));
+                }
                 active.phase = SwapLifecycle::Running;
                 active.started_at = Some(SystemTime::now());
             }
