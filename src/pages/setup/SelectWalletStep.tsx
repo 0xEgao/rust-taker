@@ -1,11 +1,11 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { dirname } from "@tauri-apps/api/path";
-import { FolderOpen, FolderPlus, Plus } from "lucide-react";
+import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { checkBackend, checkTor, getChainBackend, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { checkBackend, checkTor, chooseRestoreBackup, getChainBackend, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
-import type { ChainBackendKind, InitResult } from "../../api/types";
+import type { ChainBackendKind, InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
@@ -29,7 +29,7 @@ interface SelectWalletStepProps {
   onSuccess: (result: InitResult, restored: boolean) => void;
 }
 
-type ViewMode = "grid" | "unlock" | "create" | "checking";
+type ViewMode = "grid" | "unlock" | "create" | "restore" | "checking";
 type CheckStage = "backend" | "tor" | "wallet";
 
 interface CheckFailure {
@@ -68,6 +68,7 @@ const CAPTIONS: Record<ViewMode, string> = {
   grid: "Select your wallet",
   unlock: "Unlock your wallet",
   create: "Create a new wallet",
+  restore: "Restore an encrypted backup",
   checking: "Setting things up",
 };
 
@@ -89,6 +90,9 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   const [createName, setCreateName] = useState(randomWalletName());
   const [createPassword, setCreatePassword] = useState("");
   const [createConfirm, setCreateConfirm] = useState("");
+  const [restoreSelection, setRestoreSelection] = useState<RestoreSelection | null>(null);
+  const [restoreName, setRestoreName] = useState(randomWalletName());
+  const [restorePassword, setRestorePassword] = useState("");
 
   const [connectivity, setConnectivity] = useState<ConnectivityConfig>(loadConnectivityDefaults);
   const [steps, setSteps] = useState<Steps>(IDLE_STEPS);
@@ -149,6 +153,20 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     selectWallet(basename(path));
   }
 
+  async function beginRestore() {
+    try {
+      const selection = await chooseRestoreBackup();
+      setRestoreSelection(selection);
+      setRestoreName(randomWalletName());
+      setRestorePassword("");
+      setViewMode("restore");
+    } catch (e) {
+      if ((e as { code?: string })?.code !== "USER_CANCELLED") {
+        setFailure({ stage: "wallet", message: (e as { message?: string })?.message ?? "Could not select the backup." });
+      }
+    }
+  }
+
   // Validated as the user types so the submit stays disabled, rather than accepting the click
   // and reporting what's wrong afterwards.
   const canCreate =
@@ -162,6 +180,17 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   function submitUnlock() {
     if (!selectedWallet) return;
     runChecks({ mode: "load", walletName: selectedWallet, password: unlockPassword });
+  }
+
+  function submitRestore() {
+    if (!restoreSelection || !restoreName.trim()) return;
+    runChecks({
+      mode: "restore",
+      walletName: restoreName.trim(),
+      selectionId: restoreSelection.selectionId,
+      displayName: restoreSelection.displayName,
+      password: restorePassword || undefined,
+    });
   }
 
   async function runChecks(wallet: WalletChoice) {
@@ -212,7 +241,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       const result = await withMinDelay(
         (async () => {
           if (wallet.mode === "restore") {
-            await restoreWallet(wallet.walletName, connectivity.torSocksPort, wallet.backupFilePath, wallet.password, dataDir);
+            await restoreWallet(wallet.walletName, connectivity.torSocksPort, wallet.selectionId, wallet.password, dataDir);
           }
           return initTaker({
             walletName: wallet.walletName,
@@ -257,7 +286,12 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   function cancelFailure() {
     setFailure(null);
-    setViewMode(pendingWallet?.mode === "create" ? "create" : "unlock");
+    // A failure raised before any attempt (backup picker) has no pending wallet, and the
+    // current view is already the one that can correct it.
+    if (!pendingWallet) return;
+    setViewMode(
+      pendingWallet.mode === "create" ? "create" : pendingWallet.mode === "restore" ? "restore" : "unlock",
+    );
   }
 
   const firstRun = wallets?.length === 0;
@@ -306,6 +340,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={() => setViewMode("create")}>
         <Plus size={13} strokeWidth={1.8} />
         Create new wallet
+      </Button>
+      <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={() => void beginRestore()}>
+        <RotateCcw size={13} strokeWidth={1.8} />
+        Restore backup
       </Button>
     </div>
   );
@@ -391,7 +429,14 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   return (
     <>
-      <IntroStage lead="Welcome to" accent="OpenSwap" caption={CAPTIONS[viewMode]} className="min-h-screen">
+      <IntroStage
+        lead="Welcome to"
+        accent="Portal"
+        caption={CAPTIONS[viewMode]}
+        // Withheld mid-checklist: leaving then would abandon an init that is already running.
+        back={viewMode === "checking" ? undefined : { to: "/launch", label: "Portal", title: "Back to start" }}
+        className="min-h-screen"
+      >
         {/* The grid needs room for two wallet cards abreast; every other view is a single
             column and looks stranded at that width. */}
         <div className={`mx-auto w-full ${viewMode === "grid" ? "max-w-2xl" : viewMode === "unlock" ? "max-w-xl" : "max-w-lg"}`}>
@@ -493,6 +538,39 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
                     </Button>
                   </div>
                   {walletActions}
+                </div>
+              </>
+            )}
+
+            {viewMode === "restore" && restoreSelection && (
+              <>
+                <div className="flex flex-col gap-5 p-8 text-left">
+                  <div className="rounded-card border border-line bg-surface-raised px-4 py-3">
+                    <p className="font-mono text-[10px] uppercase tracking-widest text-subtle">Selected backup</p>
+                    <p className="mt-1 text-[12.5px] text-foreground">{restoreSelection.displayName}</p>
+                  </div>
+                  <TextField
+                    label="New wallet name"
+                    value={restoreName}
+                    onChange={(e) => setRestoreName(e.target.value)}
+                  />
+                  <PasswordField
+                    label="Backup password"
+                    placeholder="Leave empty only for a legacy plaintext backup"
+                    value={restorePassword}
+                    onChange={(e) => setRestorePassword(e.target.value)}
+                    onKeyDown={onEnter(submitRestore)}
+                  />
+                  <p className="text-[11.5px] leading-5 text-warning">
+                    Portal always creates encrypted backups. An empty password is supported only
+                    when importing an older backup created elsewhere.
+                  </p>
+                </div>
+                <div className="flex gap-3 border-t border-line px-8 py-5">
+                  <Button variant="secondary" onClick={() => setViewMode("grid")}>Cancel</Button>
+                  <Button className="flex-1" disabled={!restoreName.trim()} onClick={submitRestore}>
+                    Restore &amp; continue
+                  </Button>
                 </div>
               </>
             )}

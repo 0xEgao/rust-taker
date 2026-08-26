@@ -1,6 +1,7 @@
 mod commands;
 mod error;
 mod logging;
+mod security;
 mod state;
 mod tor;
 mod types;
@@ -19,13 +20,14 @@ pub fn run() {
         .manage(state::AppState::default())
         .invoke_handler(tauri::generate_handler![
             // setup / connectivity
-            setup::check_port,
+            setup::check_core_zmq,
             setup::check_tor,
             setup::get_version_info,
             // chain backend selection
             chain_backend::get_chain_backend,
             chain_backend::set_chain_backend,
             chain_backend::reset_chain_backend,
+            chain_backend::chain_backend_reload_pending,
             chain_backend::check_backend,
             // taker wallet lifecycle
             taker_wallet::is_wallet_encrypted,
@@ -33,6 +35,7 @@ pub fn run() {
             taker_wallet::init_taker,
             taker_wallet::shutdown_taker,
             taker_wallet::get_wallet_info,
+            taker_wallet::choose_restore_backup,
             taker_wallet::restore_wallet,
             taker_wallet::backup_wallet,
             // taker wallet operations
@@ -81,7 +84,6 @@ pub fn run() {
             maker_wallet::list_maker_utxos,
             maker_wallet::get_maker_new_address,
             maker_wallet::get_maker_transactions,
-            maker_wallet::send_from_maker_wallet,
             maker_wallet::sync_maker_wallet,
             maker_wallet::list_maker_fidelity_bonds,
             // maker settings (persisted, non-secret config)

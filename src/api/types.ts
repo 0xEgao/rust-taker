@@ -18,6 +18,8 @@ export interface NodeBackend {
   port: number;
   username: string;
   password: string;
+  /** Whether Rust has a stored credential; the credential itself is never returned. */
+  passwordConfigured?: boolean;
   zmqPort: number;
 }
 
@@ -47,6 +49,8 @@ export interface VersionInfo {
 // bootstrapProgress is informational only — coinswap's own init doesn't gate on it.
 export interface TorStatus {
   reachable: boolean;
+  /** Independent SOCKS5 greeting result, even when the control port fails. */
+  socksReachable: boolean;
   authenticated: boolean;
   bootstrapProgress?: number;
   error?: string;
@@ -78,6 +82,11 @@ export interface WalletInfo {
   dataDir: string;
 }
 
+export interface RestoreSelection {
+  selectionId: string;
+  displayName: string;
+}
+
 // Mirrors src-tauri/src/error.rs — every failed invoke() rejects with this.
 export interface AppError {
   code: ErrorCode;
@@ -107,6 +116,13 @@ export type ErrorCode =
   | "MAKER_NOT_RUNNING"
   | "MAKER_BUSY"
   | "REPORT_NOT_FOUND"
+  | "USER_CANCELLED"
+  | "AUTHORIZATION_DENIED"
+  | "WALLET_SESSION_CHANGED"
+  | "SENSITIVE_OPERATION_IN_PROGRESS"
+  | "INSECURE_DATA_DIRECTORY"
+  | "INVALID_FILE_SELECTION"
+  | "BACKEND_ROUTE_CHANGED"
   | "CONTRACTS_BROADCASTED"
   | "INVALID_INPUT"
   | "STATE_POISONED"
@@ -183,6 +199,10 @@ export interface FeeEstimate {
 
 export interface PriceEstimate {
   usd: number;
+  /** The live request failed and Portal returned its last successfully saved quote. */
+  cached: boolean;
+  /** Unix timestamp in seconds for the live quote or persisted fallback. */
+  fetchedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +261,7 @@ export interface MakerSettings {
 }
 
 export interface MakerInitConfig extends MakerSettings {
-  walletPassword?: string;
+  walletPassword: string;
   torAuthPassword?: string;
 }
 
@@ -271,6 +291,8 @@ export interface MakerStatus {
   running: boolean;
   torAddress?: string;
   networkPort: number;
+  /** Undefined when the wallet file could not be inspected. */
+  walletEncrypted?: boolean;
 }
 
 export interface FidelityBond {
@@ -322,6 +344,8 @@ export interface SwapFundingEstimate {
   vbytes: number;
   feeSats: number;
   routeMiningFeePerMakerSats: number;
+  /** Claiming the incoming contract at the end of the swap; depends on the protocol. */
+  sweepFeeSats: number;
 }
 
 export interface MakerFeeInfo {
@@ -339,6 +363,7 @@ export interface SwapSummary {
   protocol: string;
   sendAmountSats: number;
   makers: MakerFeeInfo[];
+  /** Maker fees plus route mining fees and the final incoming-contract sweep. */
   totalEstimatedFeeSats: number;
   estimatedReceiveAmountSats: number;
 }

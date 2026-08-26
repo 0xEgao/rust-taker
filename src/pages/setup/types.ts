@@ -3,7 +3,7 @@ import { homeDir, join } from "@tauri-apps/api/path";
 export type WalletChoice =
   | { mode: "create"; walletName: string; password: string }
   | { mode: "load"; walletName: string; password?: string }
-  | { mode: "restore"; walletName: string; backupFilePath: string; password?: string };
+  | { mode: "restore"; walletName: string; selectionId: string; displayName: string; password?: string };
 
 // Matches coinswap::utill::get_taker_dir() — get_home_dir().join(".coinswap").join("taker").
 export async function getDefaultDataDir(): Promise<string> {

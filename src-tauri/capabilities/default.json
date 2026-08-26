@@ -1,11 +1,41 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Explicit command and plugin capability for Portal's main wallet window",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
-    "dialog:default"
+    "dialog:allow-open",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://mempool.citadelfoss.xyz/*" },
+        { "url": "https://github.com/citadel-tech/coinswap/*" }
+      ]
+    },
+    "allow-check-core-zmq", "allow-check-tor", "allow-get-version-info",
+    "allow-get-chain-backend", "allow-set-chain-backend", "allow-reset-chain-backend",
+    "allow-check-backend", "allow-is-wallet-encrypted", "allow-list-wallets",
+    "allow-init-taker", "allow-shutdown-taker", "allow-get-wallet-info",
+    "allow-choose-restore-backup", "allow-restore-wallet", "allow-backup-wallet",
+    "allow-get-balances", "allow-check-swap-liquidity", "allow-validate-address",
+    "allow-get-new-address", "allow-get-transactions", "allow-list-utxos",
+    "allow-send-to-address", "allow-sync-wallet", "allow-estimate-fees",
+    "allow-get-btc-price", "allow-get-offers", "allow-sync-offerbook",
+    "allow-poll-maker", "allow-remove-maker", "allow-prepare-swap",
+    "allow-estimate-swap-funding", "allow-start-swap", "allow-get-swap-progress",
+    "allow-get-swap-tracker", "allow-recover-swap", "allow-get-recovery-status",
+    "allow-list-swap-reports", "allow-get-swap-report", "allow-verify-deniability",
+    "allow-get-logs", "allow-init-maker", "allow-update-maker-settings",
+    "allow-start-maker", "allow-stop-maker", "allow-get-maker-status",
+    "allow-get-maker-info", "allow-list-maker-swap-reports",
+    "allow-get-maker-swap-report", "allow-verify-maker-deniability",
+    "allow-get-maker-balances", "allow-list-maker-utxos",
+    "allow-get-maker-new-address", "allow-get-maker-transactions",
+    "allow-sync-maker-wallet", "allow-list-maker-fidelity-bonds",
+    "allow-list-makers", "allow-get-saved-maker-settings",
+    "allow-list-dashboard-imports", "allow-import-dashboard-makers",
+    "allow-clear-maker-settings", "allow-get-suggested-maker-ports",
+    "allow-check-maker-ports", "allow-get-maker-logs"
   ]
 }

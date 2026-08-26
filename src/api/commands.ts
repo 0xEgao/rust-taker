@@ -22,7 +22,9 @@ import type {
   Outpoint,
   PortStatus,
   PriceEstimate,
+  ProtocolVersion,
   RecoveryStatus,
+  RestoreSelection,
   SendResult,
   SwapLiquidity,
   SwapFundingEstimate,
@@ -40,16 +42,20 @@ import type {
   WalletInfo,
 } from "./types";
 
-export function checkPort(
+export function checkCoreZmq(
   host: string,
   port: number,
-  timeoutMs?: number,
 ): Promise<PortStatus> {
-  return invoke("check_port", { host, port, timeoutMs });
+  return invoke("check_core_zmq", { host, port });
 }
 
 export function getChainBackend(): Promise<ChainBackendConfig> {
   return invoke("get_chain_backend");
+}
+
+/** True when the running taker still holds a route the saved config no longer describes. */
+export function chainBackendReloadPending(): Promise<boolean> {
+  return invoke("chain_backend_reload_pending");
 }
 
 export function setChainBackend(config: ChainBackendConfig): Promise<void> {
@@ -108,7 +114,7 @@ export function getWalletInfo(): Promise<WalletInfo> {
 export function restoreWallet(
   walletName: string,
   socksPort: number | undefined,
-  backupFilePath: string,
+  selectionId: string,
   password?: string,
   dataDir?: string,
 ): Promise<void> {
@@ -116,16 +122,19 @@ export function restoreWallet(
     dataDir,
     walletName,
     socksPort,
-    backupFilePath,
+    selectionId,
     password,
   });
 }
 
+export function chooseRestoreBackup(): Promise<RestoreSelection> {
+  return invoke("choose_restore_backup");
+}
+
 export function backupWallet(
-  destinationPath: string,
-  password?: string,
-): Promise<void> {
-  return invoke("backup_wallet", { destinationPath, password });
+  password: string,
+): Promise<string> {
+  return invoke("backup_wallet", { password });
 }
 
 // ---------------------------------------------------------------------------
@@ -140,8 +149,12 @@ export function checkSwapLiquidity(): Promise<SwapLiquidity> {
   return invoke("check_swap_liquidity");
 }
 
-export function estimateSwapFunding(amountSats: number, outpoints?: Outpoint[]): Promise<SwapFundingEstimate> {
-  return invoke("estimate_swap_funding", { amountSats, outpoints });
+export function estimateSwapFunding(
+  amountSats: number,
+  protocol: ProtocolVersion,
+  outpoints?: Outpoint[],
+): Promise<SwapFundingEstimate> {
+  return invoke("estimate_swap_funding", { amountSats, protocol, outpoints });
 }
 
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {

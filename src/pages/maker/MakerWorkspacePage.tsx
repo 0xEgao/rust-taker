@@ -35,6 +35,7 @@ import {
   syncMakerWallet,
   updateMakerSettings,
 } from "../../api/commands";
+import { isAppError } from "../../api/types";
 import type {
   Balances,
   FidelityBond,
@@ -689,21 +690,20 @@ function SettingsPanel({
   );
 
   async function save(next: MakerSettings) {
-    const shouldRestart = running;
+    const shouldStop = running;
     let settingsWereSaved = false;
     setSaving(true);
     try {
-      if (shouldRestart) await stopMaker(makerId);
+      if (shouldStop) await stopMaker(makerId);
       const saved = await updateMakerSettings(makerId, next);
       settingsWereSaved = true;
-      if (shouldRestart) await startMaker(makerId);
       setForm(settingsToForm(saved));
       setConfirmSave(false);
       await onSaved();
       pushToast(
         "success",
-        shouldRestart
-          ? "Maker settings saved and the maker restarted."
+        shouldStop
+          ? "Maker settings saved. Re-enter the wallet password to restart the maker."
           : "Maker settings saved to config.toml.",
       );
     } catch (e) {
@@ -713,8 +713,8 @@ function SettingsPanel({
       pushToast(
         "error",
         settingsWereSaved
-          ? `Settings were saved, but the maker could not restart: ${message}`
-          : shouldRestart
+          ? `Settings were saved, but the view could not refresh: ${message}`
+          : shouldStop
             ? `Could not apply settings. The maker may be stopped: ${message}`
             : message,
       );
@@ -736,8 +736,8 @@ function SettingsPanel({
         </div>
       ) : running ? (
         <div className="rounded-control border border-primary/30 bg-primary/[0.07] px-4 py-3 text-[12px] text-primary">
-          Saving changes briefly stops this maker, writes its config.toml, and
-          starts it again with the updated configuration.
+          Saving changes stops this maker and writes its config.toml. Re-enter
+          its wallet password afterwards to start it again.
         </div>
       ) : null}
       <Card className="border-line-strong p-5">
@@ -834,7 +834,7 @@ function SettingsPanel({
               {error ??
                 (dirty
                   ? running
-                    ? "Unsaved changes will be written to config.toml, then the maker will restart."
+                    ? "Unsaved changes will be written to config.toml, then the maker stops until you start it again."
                     : "Unsaved changes will be written to this maker’s config.toml."
                   : "config.toml is up to date.")}
             </p>
@@ -853,7 +853,7 @@ function SettingsPanel({
               onClick={requestSave}
             >
               <Save size={14} />
-              {running ? "Save & restart" : "Save changes"}
+              {running ? "Save & stop" : "Save changes"}
             </Button>
           </div>
         </div>
@@ -881,7 +881,7 @@ function SettingsPanel({
       </Card>
       {confirmSave && typeof parsed !== "string" && (
         <Modal
-          title={running ? "Save and restart maker?" : "Save maker settings?"}
+          title={running ? "Save and stop maker?" : "Save maker settings?"}
           onClose={() => setConfirmSave(false)}
           footer={
             <>
@@ -892,7 +892,7 @@ function SettingsPanel({
                 Cancel
               </Button>
               <Button onClick={() => void save(parsed)} loading={saving}>
-                {running ? "Save & restart" : "Save changes"}
+                {running ? "Save & stop" : "Save changes"}
               </Button>
             </>
           }
@@ -900,7 +900,7 @@ function SettingsPanel({
           <div className="space-y-3 text-[12px] leading-5 text-muted">
             <p>
               The changes will be written to this maker’s config.toml.
-              {running && " The maker will stop briefly and restart with the updated values."}
+              {running && " The maker will stop; re-enter its wallet password to restart it."}
             </p>
             {parsed.networkPort !== settings.networkPort && (
               <div className="flex gap-3 rounded-control border border-warning/30 bg-warning/[0.07] p-3">
@@ -976,6 +976,7 @@ export function MakerWorkspacePage() {
   const [showStart, setShowStart] = useState(false);
   const [walletPassword, setWalletPassword] = useState("");
   const [torPassword, setTorPassword] = useState("");
+  const [startError, setStartError] = useState<string | undefined>();
   const [copied, setCopied] = useState(false);
   const load = useCallback(async () => {
     const [nextStatus, nextSettings, nextInfo] = await Promise.all([
@@ -1012,6 +1013,7 @@ export function MakerWorkspacePage() {
   );
   async function start() {
     setActionLoading(true);
+    setStartError(undefined);
     try {
       await startMaker(
         id,
@@ -1023,9 +1025,10 @@ export function MakerWorkspacePage() {
       setTorPassword("");
       await load();
     } catch (e) {
-      pushToast(
-        "error",
-        (e as { message?: string }).message ?? "Could not start maker.",
+      setStartError(
+        isAppError(e) && e.code === "WALLET_WRONG_PASSWORD"
+          ? "Wrong password for this maker's wallet."
+          : ((e as { message?: string }).message ?? "Could not start maker."),
       );
     } finally {
       setActionLoading(false);
@@ -1112,7 +1115,12 @@ export function MakerWorkspacePage() {
               </Button>
             ) : (
               <Button
-                onClick={() => setShowStart(true)}
+                onClick={() => {
+                  setWalletPassword("");
+                  setTorPassword("");
+                  setStartError(undefined);
+                  setShowStart(true);
+                }}
                 disabled={transitioning}
               >
                 <Play size={13} />
@@ -1171,7 +1179,11 @@ export function MakerWorkspacePage() {
                 <Button variant="secondary" onClick={() => setShowStart(false)}>
                   Cancel
                 </Button>
-                <Button onClick={() => void start()} loading={actionLoading}>
+                <Button
+                  onClick={() => void start()}
+                  loading={actionLoading}
+                  disabled={status.walletEncrypted === true && !walletPassword}
+                >
                   Start maker
                 </Button>
               </>
@@ -1181,16 +1193,28 @@ export function MakerWorkspacePage() {
               Passwords stay in memory for this process and are never written to
               disk.
             </p>
-            <PasswordField
-              label="Wallet password (if encrypted)"
-              value={walletPassword}
-              onChange={(e) => setWalletPassword(e.target.value)}
-            />
+            {status.walletEncrypted !== false && (
+              <PasswordField
+                label={
+                  status.walletEncrypted
+                    ? "Wallet password"
+                    : "Wallet password (if encrypted)"
+                }
+                autoComplete="current-password"
+                value={walletPassword}
+                onChange={(e) => setWalletPassword(e.target.value)}
+                error={startError}
+                onKeyDown={(e) => e.key === "Enter" && void start()}
+              />
+            )}
             <PasswordField
               label="Tor control password (if required)"
               value={torPassword}
               onChange={(e) => setTorPassword(e.target.value)}
             />
+            {startError && status.walletEncrypted === false && (
+              <p className="mt-2 text-[12px] text-danger">{startError}</p>
+            )}
           </Modal>
         )}
       </div>

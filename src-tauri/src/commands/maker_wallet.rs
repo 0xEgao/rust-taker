@@ -3,20 +3,18 @@
 //! `commands::taker_wallet`'s operations, selected from `state.makers` by ID.
 //! The maker's wallet is the same
 //! `coinswap::wallet::Wallet` type the taker uses, so the DTOs
-//! (`BalancesDto`, `UtxoEntry`, `NewAddress`, `SendResult`, `Outpoint`) are
+//! (`BalancesDto`, `UtxoEntry`, `NewAddress`) are
 //! shared, not duplicated.
 
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use coinswap::bitcoin::{OutPoint, Txid};
 use coinswap::wallet::{AddressType, Wallet};
 
-use crate::error::{AppError, ErrorCode};
+use crate::commands::chain_backend;
+use crate::error::AppError;
 use crate::state::AppState;
 use crate::types::{
-    AddressTypeDto, BalancesDto, FidelityBondDto, NewAddress, Outpoint, SendResult, TxSummary,
-    UtxoEntry,
+    AddressTypeDto, BalancesDto, FidelityBondDto, NewAddress, Outpoint, TxSummary, UtxoEntry,
 };
 
 /// Cloning the Arc (not the Wallet) keeps this independent of the maker
@@ -62,6 +60,11 @@ pub async fn list_maker_utxos(
     maker_id: String,
 ) -> Result<Vec<UtxoEntry>, AppError> {
     let wallet = get_maker_wallet_handle(&state, &maker_id)?;
+    let socks_port = state
+        .makers
+        .lock()?
+        .get(&maker_id)
+        .map(|maker| maker.settings.socks_port);
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<UtxoEntry>, AppError> {
         let utxos = wallet.read()?.list_all_utxo_spend_info();
         Ok(utxos
@@ -71,7 +74,7 @@ pub async fn list_maker_utxos(
                 vout: entry.vout,
                 amount_sats: entry.amount.to_sat(),
                 confirmations: entry.confirmations,
-                address: entry.address.map(|a| a.assume_checked().to_string()),
+                address: chain_backend::utxo_address(&entry, socks_port),
                 spendable: entry.spendable,
                 solvable: entry.solvable,
                 spend_type: spend_info.to_string(),
@@ -131,41 +134,6 @@ pub async fn get_maker_new_address(
         Ok(NewAddress {
             address,
             address_type: label.to_string(),
-        })
-    })
-    .await
-    .map_err(AppError::internal)?
-}
-
-/// `fee_rate` defaults to 2 sat/vB when omitted.
-#[tauri::command]
-pub async fn send_from_maker_wallet(
-    state: tauri::State<'_, AppState>,
-    maker_id: String,
-    address: String,
-    amount_sats: u64,
-    fee_rate: Option<f64>,
-    outpoints: Option<Vec<Outpoint>>,
-) -> Result<SendResult, AppError> {
-    let wallet = get_maker_wallet_handle(&state, &maker_id)?;
-    let outpoints = outpoints
-        .map(|list| {
-            list.into_iter()
-                .map(|o| -> Result<OutPoint, AppError> {
-                    let txid = Txid::from_str(&o.txid)
-                        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
-                    Ok(OutPoint::new(txid, o.vout))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-
-    tauri::async_runtime::spawn_blocking(move || -> Result<SendResult, AppError> {
-        let txid = wallet
-            .write()?
-            .send_to_address(amount_sats, address, fee_rate, outpoints)?;
-        Ok(SendResult {
-            txid: txid.to_string(),
         })
     })
     .await

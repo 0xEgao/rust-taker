@@ -381,6 +381,7 @@ export function SwapPage() {
     };
   }, [balances]);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
+  const [btcPriceCached, setBtcPriceCached] = useState(false);
   const [makers, setMakers] = useState<Maker[]>([]);
   const [fundingEstimate, setFundingEstimate] =
     useState<SwapFundingEstimate | null>(null);
@@ -426,8 +427,14 @@ export function SwapPage() {
     );
     // BTC/USD price is best-effort, same as Send — leave the USD unit disabled rather than toast.
     void getBtcPrice()
-      .then((p) => setBtcPrice(p.usd))
-      .catch(() => setBtcPrice(null));
+      .then((p) => {
+        setBtcPrice(p.usd);
+        setBtcPriceCached(p.cached);
+      })
+      .catch(() => {
+        setBtcPrice(null);
+        setBtcPriceCached(false);
+      });
 
     // Reconcile a swap already in flight (app restart mid-swap, or navigating back here).
     void getSwapProgress().then((progress) => {
@@ -637,7 +644,7 @@ export function SwapPage() {
         manualCoins && selectedOutpoints.length > 0
           ? selectedOutpoints
           : undefined;
-      void estimateSwapFunding(amountSats, outpoints)
+      void estimateSwapFunding(amountSats, protocol, outpoints)
         .then((estimate) => {
           if (cancelled) return;
           setFundingEstimate(estimate);
@@ -653,14 +660,14 @@ export function SwapPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [amountSats, manualCoins, selectedOutpoints, walletSyncStatus]);
+  }, [amountSats, protocol, manualCoins, selectedOutpoints, walletSyncStatus]);
 
   const feeSummary = useMemo(() => {
     const hasCompleteRoute =
       amountSats > 0 &&
       effectiveMakerCount > 0 &&
       estimateMakers.length === effectiveMakerCount;
-    const route = hasCompleteRoute
+    const makerFee = hasCompleteRoute
       ? estimateRouteMakerFees(
           estimateMakers.map((maker) => ({
             baseFee: maker.offer!.baseFee,
@@ -670,21 +677,32 @@ export function SwapPage() {
           amountSats,
         )
       : null;
-    const makerFee = route?.totalFeeSats ?? null;
+    const fundingFee = fundingEstimate?.feeSats ?? null;
     const routeMiningFee = fundingEstimate
       ? fundingEstimate.routeMiningFeePerMakerSats * effectiveMakerCount
       : null;
-    const networkFee =
-      fundingEstimate && routeMiningFee !== null
-        ? fundingEstimate.feeSats + routeMiningFee
+    const sweepFee = fundingEstimate?.sweepFeeSats ?? null;
+    // Everything the route takes out of the amount itself, as opposed to the funding fee,
+    // which the wallet pays on top of it — hence `amount - deductions` for the receive
+    // figure and `+ fundingFee` only for the total.
+    const routeDeductions =
+      makerFee !== null && routeMiningFee !== null && sweepFee !== null
+        ? makerFee + routeMiningFee + sweepFee
         : null;
     const totalFee =
-      makerFee !== null && networkFee !== null ? makerFee + networkFee : null;
-    const receiveAmount =
-      route && routeMiningFee !== null
-        ? Math.max(0, route.receiveAmountSats - routeMiningFee)
+      routeDeductions !== null && fundingFee !== null
+        ? routeDeductions + fundingFee
         : null;
-    return { makerFee, networkFee, totalFee, receiveAmount };
+    const receiveAmount =
+      routeDeductions !== null ? Math.max(0, amountSats - routeDeductions) : null;
+    return {
+      makerFee,
+      fundingFee,
+      routeMiningFee,
+      sweepFee,
+      totalFee,
+      receiveAmount,
+    };
   }, [estimateMakers, effectiveMakerCount, amountSats, fundingEstimate]);
 
   const warnings = useMemo(() => {
@@ -717,7 +735,7 @@ export function SwapPage() {
     if (manualMakers && selectedMakers.length < 2) {
       list.push("Pin at least two makers, or untick them all to auto-select.");
     } else if (effectiveMakerCount < 2) {
-      list.push("An OpenSwap route requires at least two makers.");
+      list.push("A Portal route requires at least two makers.");
     }
     if (compatibleMakers.length === 0) {
       list.push(`No compatible ${protocol} makers found in the offerbook.`);
@@ -745,6 +763,18 @@ export function SwapPage() {
     fundingEstimateStatus,
   ]);
 
+  // Null once the quote is ready: the numbers underneath already are the quote.
+  const quoteStatus =
+    walletSyncStatus !== "synced"
+      ? "Waiting for wallet sync"
+      : fundingEstimateStatus === "loading"
+        ? "Calculating wallet quote"
+        : fundingEstimateStatus === "error"
+          ? "Quote unavailable"
+          : fundingEstimate
+            ? null
+            : "";
+
   // Pinned makers already show up in the Makers section; a UTXO pick has no other home.
   const advancedSummary = manualCoins
     ? `${selectedOutpoints.length} UTXO${selectedOutpoints.length === 1 ? "" : "s"} selected`
@@ -756,9 +786,8 @@ export function SwapPage() {
     warnings.length === 0 &&
     !submitting;
 
-  // prepareSwap + startSwap in one action — the crate's negotiated SwapSummary is shown on the
-  // progress screen itself rather than gating on a separate confirm click (see also §3.2 of the
-  // design notes, which suggested a confirm step; kept as one action per direct product feedback).
+  // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
+  // dialog, bound to the authoritative prepared summary; there is no second renderer modal.
   async function handleStartSwap() {
     if (useWalletCacheStore.getState().syncStatus !== "synced") {
       pushToast(
@@ -790,7 +819,9 @@ export function SwapPage() {
       setPhase("running");
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      pushToast("error", err?.message ?? "Failed to start swap.");
+      if (err?.code !== "AUTHORIZATION_DENIED" && err?.code !== "USER_CANCELLED") {
+        pushToast("error", err?.message ?? "Failed to start swap.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1081,7 +1112,11 @@ export function SwapPage() {
                     label: "USD",
                     disabled: btcPrice === null,
                     title:
-                      btcPrice === null ? "BTC price unavailable" : undefined,
+                      btcPrice === null
+                        ? "BTC price unavailable"
+                        : btcPriceCached
+                          ? "Using the last saved BTC price because the live update failed"
+                          : undefined,
                   },
                 ]}
               />
@@ -1348,17 +1383,11 @@ export function SwapPage() {
               <h3 className="font-header text-[14px] font-bold text-foreground">
                 Swap Summary
               </h3>
-              <span className="rounded-pill border border-primary/35 bg-primary/[0.08] px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-primary">
-                {walletSyncStatus !== "synced"
-                  ? "Waiting for wallet sync"
-                  : fundingEstimateStatus === "loading"
-                    ? "Calculating wallet quote"
-                    : fundingEstimateStatus === "error"
-                      ? "Quote unavailable"
-                      : fundingEstimate
-                        ? "Live wallet quote"
-                        : "Enter an amount"}
-              </span>
+              {quoteStatus && (
+                <span className="rounded-pill border border-primary/35 bg-primary/[0.08] px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-primary">
+                  {quoteStatus}
+                </span>
+              )}
             </div>
 
             <div className="flex flex-col gap-1.5 text-[12px]">
@@ -1387,25 +1416,41 @@ export function SwapPage() {
                   {fundingEstimate ? `${fundingEstimate.vbytes} vB` : "—"}
                 </strong>
               </div>
+              <div className="flex items-center justify-between">
+                <span className="text-subtle">Funding tx fee</span>
+                <EstimatedSats
+                  sats={feeSummary.fundingFee}
+                  className="font-semibold text-foreground"
+                />
+              </div>
             </div>
 
+            {/* The three rows below the divider are what comes out of the amount, so they read
+                straight down into "You receive"; the funding fee sits above it with its own tx. */}
             <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-3 text-[12px]">
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Estimated maker fee</span>
+                <span className="text-subtle">Maker fees</span>
                 <EstimatedSats
                   sats={feeSummary.makerFee}
                   className="font-semibold text-foreground"
                 />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Network costs</span>
+                <span className="text-subtle">Route mining fees</span>
                 <EstimatedSats
-                  sats={feeSummary.networkFee}
+                  sats={feeSummary.routeMiningFee}
+                  className="font-semibold text-foreground"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-subtle">Claim tx fee</span>
+                <EstimatedSats
+                  sats={feeSummary.sweepFee}
                   className="font-semibold text-foreground"
                 />
               </div>
               <div className="flex items-center justify-between border-t border-line pt-1.5">
-                <span className="text-subtle">Total estimated fee</span>
+                <span className="text-subtle">Total cost</span>
                 <EstimatedSats
                   sats={feeSummary.totalFee}
                   className="font-bold text-primary"
