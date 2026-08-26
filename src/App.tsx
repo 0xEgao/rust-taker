@@ -67,9 +67,8 @@ function App() {
           <Route path="/maker/:makerId/setup" element={<MakerSetupPage />} />
           <Route path="/maker/:makerId/report/:swapId" element={<MakerSwapReportPage />} />
 
-          {/* Chain-backend and Tor config are global, and a maker-only session has to be able
-              to fix them — so this is outside RequireTaker, with the taker-only sections
-              hidden when no wallet is unlocked. */}
+          {/* Chain-backend and Tor config are global, so the page renders its taker-only
+              sections conditionally rather than assuming an unlocked wallet. */}
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 

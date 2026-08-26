@@ -138,19 +138,29 @@ pub(crate) fn resolve(
     socks_port: Option<u16>,
 ) -> Result<BackendConfig, AppError> {
     let config = load();
+    resolve_from(&config, wallet_name, socks_port)
+}
+
+/// Resolves a previously loaded config so callers can use the same snapshot for
+/// initialization and session bookkeeping.
+pub(crate) fn resolve_from(
+    config: &ChainBackendConfig,
+    wallet_name: &str,
+    socks_port: Option<u16>,
+) -> Result<BackendConfig, AppError> {
     match config.kind {
         ChainBackendKind::Electrum => Ok(BackendConfig::Electrum(electrum_config(
             &config.electrum,
             socks_port,
         ))),
         ChainBackendKind::CoreRpc => {
-            let node = config.node.ok_or_else(|| {
+            let node = config.node.as_ref().ok_or_else(|| {
                 AppError::new(
                     ErrorCode::InvalidInput,
                     "no Bitcoin node is configured — add one in Settings or switch back to Electrum",
                 )
             })?;
-            Ok(BackendConfig::CoreRpc(core_rpc_config(&node, wallet_name)))
+            Ok(BackendConfig::CoreRpc(core_rpc_config(node, wallet_name)))
         }
     }
 }
@@ -276,12 +286,7 @@ fn merge_preserved_password(mut config: ChainBackendConfig) -> ChainBackendConfi
     if let Some(node) = config.node.as_mut() {
         if node.password.is_empty() {
             if let Some(saved) = load().node {
-                if saved.host == node.host
-                    && saved.port == node.port
-                    && saved.username == node.username
-                {
-                    node.password = saved.password;
-                }
+                node.password = saved.password;
             }
         }
     }
@@ -291,6 +296,23 @@ fn merge_preserved_password(mut config: ChainBackendConfig) -> ChainBackendConfi
 #[tauri::command]
 pub fn get_chain_backend() -> ChainBackendView {
     to_view(load())
+}
+
+/// Whether the running taker is pinned to a route other than the saved one. Settings can
+/// only see the on-disk config, which says nothing about the session already holding a
+/// connection — so without this the reload prompt disappears on the next page visit.
+#[tauri::command]
+pub fn chain_backend_reload_pending(state: tauri::State<'_, crate::state::AppState>) -> bool {
+    let Ok(Some(active)) = state.active_chain_backend.read().as_deref().cloned() else {
+        return false;
+    };
+    let socks_port = state
+        .active_socks_port
+        .read()
+        .ok()
+        .and_then(|port| *port)
+        .unwrap_or(9050);
+    fingerprint(&active, socks_port) != fingerprint(&load(), socks_port)
 }
 
 #[tauri::command]
@@ -422,9 +444,9 @@ pub(crate) fn utxo_address(
         .map(|a| a.to_string())
 }
 
-/// `Wallet` keeps its network private, so it comes from the Electrum handshake. Probed once
-/// per process — switching backend means restarting the app, and retrying on every UTXO
-/// listing would stall the wallet page for the probe timeout while a server is unreachable.
+/// `Wallet` keeps its network private, so it comes from the Electrum handshake. Successful
+/// route-specific probes are cached; failures are retried on the next UTXO listing so a
+/// temporary Electrum outage does not leave addresses blank until process restart.
 fn electrum_network(socks_port: Option<u16>) -> Option<Network> {
     let config = load();
     if config.kind != ChainBackendKind::Electrum {
@@ -448,8 +470,10 @@ fn electrum_network(socks_port: Option<u16>) -> Option<Network> {
             None
         }
     };
-    if let Ok(mut cache) = ELECTRUM_NETWORK.lock() {
-        *cache = Some((route, network));
+    if network.is_some() {
+        if let Ok(mut cache) = ELECTRUM_NETWORK.lock() {
+            *cache = Some((route, network));
+        }
     }
     network
 }

@@ -1,9 +1,12 @@
+//! Filesystem helpers that enforce private ownership and permissions for wallet data.
+
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
 use crate::error::{AppError, ErrorCode};
 
+/// Creates or validates a real directory and restricts it to the current user on Unix.
 pub fn ensure_private_dir(path: &Path) -> Result<(), AppError> {
     if path.exists() {
         let metadata = fs::symlink_metadata(path)?;
@@ -24,6 +27,7 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Requires an existing, non-symlink directory owned by and accessible only to this user.
 pub fn require_private_dir(path: &Path) -> Result<(), AppError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -47,6 +51,7 @@ pub fn require_private_dir(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Atomically opens a regular target for truncating writes and enforces mode 0600 on Unix.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);

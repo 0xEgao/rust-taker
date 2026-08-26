@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 const READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The Tor tier selected by managed startup.
 pub enum TorSource {
     /// Something was already listening on both ports — nothing spawned.
     System,
@@ -30,6 +31,7 @@ pub enum TorSource {
 }
 
 impl TorSource {
+    /// Stable value serialized into setup status responses.
     pub fn as_str(self) -> &'static str {
         match self {
             TorSource::System => "system",
@@ -40,6 +42,7 @@ impl TorSource {
     }
 }
 
+/// Performs a bounded SOCKS5 greeting against a loopback port.
 pub fn socks5_responds(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(700)) else {
@@ -84,9 +87,11 @@ fn wait_until_ready(socks_port: u16, control_port: u16, timeout: Duration) -> bo
 }
 
 fn find_host_tor() -> Option<PathBuf> {
-    common_tor_paths()
-        .into_iter()
-        .map(PathBuf::from)
+    let executable = if cfg!(windows) { "tor.exe" } else { "tor" };
+    let search_path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&search_path)
+        .map(|directory| directory.join(executable))
+        .chain(common_tor_paths().into_iter().map(PathBuf::from))
         .find(|path| safe_tor_binary(path))
 }
 
@@ -139,6 +144,7 @@ fn managed_tor_dir() -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Reads and validates the managed Tor control cookie without following symlinks.
 pub fn managed_cookie() -> Result<Vec<u8>, String> {
     let path = cookie_path(&managed_tor_dir()?);
     let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
@@ -161,6 +167,17 @@ pub fn managed_cookie() -> Result<Vec<u8>, String> {
 
 fn write_torrc(tor_dir: &Path, socks_port: u16, control_port: u16) -> std::io::Result<PathBuf> {
     let data_dir = data_dir_path(tor_dir);
+    let cookie = cookie_path(tor_dir);
+    if [data_dir.as_path(), cookie.as_path()].iter().any(|path| {
+        path.to_string_lossy()
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+    }) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "managed Tor paths cannot contain CR or LF",
+        ));
+    }
     crate::security::fs::ensure_private_dir(tor_dir)
         .map_err(|e| std::io::Error::other(e.message))?;
     crate::security::fs::ensure_private_dir(&data_dir)
@@ -169,7 +186,7 @@ fn write_torrc(tor_dir: &Path, socks_port: u16, control_port: u16) -> std::io::R
         .to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
-    let quoted_cookie = cookie_path(tor_dir)
+    let quoted_cookie = cookie
         .to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");

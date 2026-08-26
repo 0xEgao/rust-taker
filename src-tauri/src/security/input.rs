@@ -1,10 +1,15 @@
+//! Boundary validation for values used in paths, secrets, and command configuration.
+
 use std::path::{Component, Path};
 
 use crate::error::{AppError, ErrorCode};
 
+/// Minimum character count accepted for a new wallet password.
 pub const MIN_PASSWORD_LENGTH: usize = 8;
+/// Maximum UTF-8 byte length accepted for one filesystem leaf name.
 pub const MAX_LEAF_NAME_BYTES: usize = 128;
 
+/// Validates a nonblank password against the application length floor.
 pub fn validate_password(password: &str, label: &str) -> Result<(), AppError> {
     if password.trim().is_empty() {
         return Err(AppError::new(
@@ -21,6 +26,7 @@ pub fn validate_password(password: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Validates one portable filesystem leaf, rejecting traversal and reserved device names.
 pub fn validate_leaf_name(value: &str, label: &str) -> Result<(), AppError> {
     let path = Path::new(value);
     let invalid_component = path.components().count() != 1
@@ -50,6 +56,7 @@ pub fn validate_leaf_name(value: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Rejects control characters that could inject commands into Tor's control protocol.
 pub fn validate_tor_control_secret(secret: &str) -> Result<(), AppError> {
     if secret.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
         return Err(AppError::new(

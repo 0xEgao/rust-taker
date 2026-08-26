@@ -53,6 +53,11 @@ export function getChainBackend(): Promise<ChainBackendConfig> {
   return invoke("get_chain_backend");
 }
 
+/** True when the running taker still holds a route the saved config no longer describes. */
+export function chainBackendReloadPending(): Promise<boolean> {
+  return invoke("chain_backend_reload_pending");
+}
+
 export function setChainBackend(config: ChainBackendConfig): Promise<void> {
   return invoke("set_chain_backend", { config });
 }

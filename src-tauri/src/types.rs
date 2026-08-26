@@ -48,6 +48,7 @@ pub struct ChainBackendConfig {
     pub node: Option<NodeBackendDto>,
 }
 
+/// Saved Core RPC settings with the secret replaced by a configured/not-configured flag.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeBackendViewDto {
@@ -58,6 +59,7 @@ pub struct NodeBackendViewDto {
     pub zmq_port: u16,
 }
 
+/// Secret-safe chain backend configuration returned to the settings UI.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainBackendView {
@@ -100,7 +102,10 @@ pub struct VersionInfo {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorStatus {
+    /// True only when both the SOCKS greeting and control-port handshake succeeded.
     pub reachable: bool,
+    /// Result of the independent SOCKS5 greeting, even if the control port later fails.
+    pub socks_reachable: bool,
     pub authenticated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_progress: Option<u8>,
@@ -152,6 +157,7 @@ pub struct WalletInfo {
     pub data_dir: String,
 }
 
+/// Opaque one-shot restore selection returned by the Rust-owned file dialog.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreSelectionView {
@@ -287,6 +293,7 @@ pub struct PriceEstimate {
     /// True when the live price service failed and Portal returned the last
     /// successfully saved quote instead.
     pub cached: bool,
+    /// Unix timestamp in seconds for the live quote or persisted fallback.
     pub fetched_at: u64,
 }
 
@@ -371,6 +378,7 @@ pub struct SwapFundingEstimateDto {
     pub vbytes: u64,
     pub fee_sats: u64,
     pub route_mining_fee_per_maker_sats: u64,
+    /// Fee for the final incoming-contract claim; not a full swap fee total.
     pub sweep_fee_sats: u64,
 }
 
@@ -393,6 +401,7 @@ pub struct SwapSummaryDto {
     pub protocol: String,
     pub send_amount_sats: u64,
     pub makers: Vec<MakerFeeInfoDto>,
+    /// Estimated maker fees plus route mining fees and the final sweep fee.
     pub total_estimated_fee_sats: u64,
     pub estimated_receive_amount_sats: u64,
 }

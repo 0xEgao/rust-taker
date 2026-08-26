@@ -1,8 +1,11 @@
+//! Main-window authorization and process-wide serialization for sensitive operations.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::{AppError, ErrorCode};
 
+/// Restricts sensitive commands to the application's primary webview.
 pub fn ensure_main_window(window: &tauri::WebviewWindow) -> Result<(), AppError> {
     if window.label() != "main" {
         return Err(AppError::new(
@@ -14,6 +17,7 @@ pub fn ensure_main_window(window: &tauri::WebviewWindow) -> Result<(), AppError>
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Audit label for operations that must not overlap approval dialogs or secret handling.
 pub enum SensitiveOperation {
     SendTakerFunds,
     StartSwap,
@@ -21,11 +25,13 @@ pub enum SensitiveOperation {
     RestorePrivateKey,
 }
 
+/// RAII lock that releases the process-wide sensitive-operation flag on drop.
 pub struct SensitiveOperationGuard {
     active: Arc<AtomicBool>,
 }
 
 impl SensitiveOperationGuard {
+    /// Acquires exclusive permission to run one sensitive operation.
     pub fn acquire(
         active: &Arc<AtomicBool>,
         _operation: SensitiveOperation,

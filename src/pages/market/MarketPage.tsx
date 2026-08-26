@@ -96,7 +96,7 @@ function TooltipButton({
   children: React.ReactNode;
 }) {
   return (
-    <Tooltip content={tooltip}>
+    <Tooltip content={tooltip} align="right">
       <button
         type="button"
         onClick={onClick}

@@ -150,7 +150,7 @@ function SendPanel() {
       await load();
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      if (err?.code !== "AUTHORIZATION_DENIED" && err?.code !== "USER_CANCELLED") {
+      if (err?.code !== "USER_CANCELLED") {
         pushToast("error", err?.message ?? "Send failed.");
       }
     } finally {

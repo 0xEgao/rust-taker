@@ -105,7 +105,9 @@ pub struct ActiveSwap {
 }
 
 pub struct PendingFileSelection {
+    /// Canonical local path chosen by the Rust-owned file dialog.
     pub path: PathBuf,
+    /// Used to expire bearer-like selection IDs before a restore consumes them.
     pub created_at: Instant,
 }
 

@@ -162,33 +162,35 @@ function TopNav({
         )}
       </nav>
 
-      {/* Refresh is taker-only (Wallet is the only page that registers a handler), but the
-          chain-backend and Tor settings are shared, so the maker side keeps its own way in. */}
+      {/* Wallet is the only page that registers a refresh handler, so both of these are
+          taker-only — a maker's own configuration lives in its workspace instead. */}
       <div className="flex items-center justify-self-end gap-2">
         {!makerMode && (
-          <IconButton
-            onClick={() => onRefresh?.()}
-            disabled={!onRefresh}
-            label="Refresh"
-            className={justRefreshed ? "text-success" : ""}
-            icon={justRefreshed ? (
-              <Check size={16} strokeWidth={2} />
-            ) : (
-              <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
-            )}
-          />
+          <>
+            <IconButton
+              onClick={() => onRefresh?.()}
+              disabled={!onRefresh}
+              label="Refresh"
+              className={justRefreshed ? "text-success" : ""}
+              icon={justRefreshed ? (
+                <Check size={16} strokeWidth={2} />
+              ) : (
+                <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
+              )}
+            />
+            <NavLink
+              to="/settings"
+              title="Settings"
+              className={({ isActive }) =>
+                `flex h-9 w-9 items-center justify-center rounded-control border border-line bg-surface-raised shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] outline-none transition-colors duration-200 focus-visible:shadow-ring active:translate-y-px ${
+                  isActive ? "text-primary" : "text-muted hover:text-foreground"
+                }`
+              }
+            >
+              <Settings size={16} strokeWidth={1.8} />
+            </NavLink>
+          </>
         )}
-        <NavLink
-          to="/settings"
-          title="Settings"
-          className={({ isActive }) =>
-            `flex h-9 w-9 items-center justify-center rounded-control border border-line bg-surface-raised shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] outline-none transition-colors duration-200 focus-visible:shadow-ring active:translate-y-px ${
-              isActive ? "text-primary" : "text-muted hover:text-foreground"
-            }`
-          }
-        >
-          <Settings size={16} strokeWidth={1.8} />
-        </NavLink>
       </div>
     </header>
   );

@@ -2,7 +2,7 @@
 //! All blocking I/O runs via `spawn_blocking` — never on the async runtime.
 //! Wallet lifecycle (init/restore/backup) lives in `commands::taker_wallet`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -109,8 +109,9 @@ fn run_tor_handshake(
 ) -> TorStatus {
     let source_kind = source;
     let source = Some(source_kind.as_str().to_string());
-    let unreachable = |err: String| TorStatus {
+    let unreachable = |socks_reachable: bool, err: String| TorStatus {
         reachable: false,
+        socks_reachable,
         authenticated: false,
         bootstrap_progress: None,
         error: Some(err),
@@ -118,37 +119,41 @@ fn run_tor_handshake(
     };
 
     if !crate::tor::socks5_responds(socks_port) {
-        return unreachable("configured SOCKS port did not complete a SOCKS5 greeting".into());
+        return unreachable(
+            false,
+            "configured SOCKS port did not complete a SOCKS5 greeting".into(),
+        );
     }
 
     let addr = match format!("127.0.0.1:{control_port}").to_socket_addrs() {
         Ok(mut addrs) => match addrs.next() {
             Some(a) => a,
-            None => return unreachable("could not resolve control port address".into()),
+            None => return unreachable(true, "could not resolve control port address".into()),
         },
-        Err(e) => return unreachable(e.to_string()),
+        Err(e) => return unreachable(true, e.to_string()),
     };
 
     let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
         Ok(s) => s,
-        Err(e) => return unreachable(e.to_string()),
+        Err(e) => return unreachable(true, e.to_string()),
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
     let mut reader = match stream.try_clone() {
         Ok(s) => BufReader::new(s),
-        Err(e) => return unreachable(e.to_string()),
+        Err(e) => return unreachable(true, e.to_string()),
     };
 
     if stream.write_all(b"PROTOCOLINFO 1\r\n").is_err() {
-        return unreachable("failed to send PROTOCOLINFO".into());
+        return unreachable(true, "failed to send PROTOCOLINFO".into());
     }
     let mut protocol_lines = Vec::new();
     for _ in 0..32 {
         let mut line = String::new();
-        if reader.read_line(&mut line).is_err() || line.len() > 8192 {
-            return unreachable("invalid Tor PROTOCOLINFO response".into());
+        let read = (&mut reader).take(8193).read_line(&mut line);
+        if !matches!(read, Ok(1..=8192)) || !line.ends_with('\n') {
+            return unreachable(true, "invalid Tor PROTOCOLINFO response".into());
         }
         let done = line.starts_with("250 OK");
         protocol_lines.push(line);
@@ -162,7 +167,7 @@ fn run_tor_handshake(
             .last()
             .is_some_and(|line| line.starts_with("250 OK"))
     {
-        return unreachable("control port did not identify itself as Tor".into());
+        return unreachable(true, "control port did not identify itself as Tor".into());
     }
 
     let auth_bytes = if matches!(
@@ -171,7 +176,7 @@ fn run_tor_handshake(
     ) {
         match crate::tor::managed_cookie() {
             Ok(cookie) => cookie,
-            Err(e) => return unreachable(format!("managed Tor cookie unavailable: {e}")),
+            Err(e) => return unreachable(true, format!("managed Tor cookie unavailable: {e}")),
         }
     } else {
         password.as_bytes().to_vec()
@@ -186,12 +191,13 @@ fn run_tor_handshake(
         format!("AUTHENTICATE {encoded}\r\n")
     };
     if stream.write_all(command.as_bytes()).is_err() {
-        return unreachable("failed to send AUTHENTICATE".into());
+        return unreachable(true, "failed to send AUTHENTICATE".into());
     }
     let mut resp = String::new();
     if reader.read_line(&mut resp).is_err() || !resp.starts_with("250") {
         return TorStatus {
             reachable: true,
+            socks_reachable: true,
             authenticated: false,
             bootstrap_progress: None,
             error: Some("Tor control-port authentication failed".into()),
@@ -205,6 +211,7 @@ fn run_tor_handshake(
     {
         return TorStatus {
             reachable: true,
+            socks_reachable: true,
             authenticated: true,
             bootstrap_progress: None,
             error: None,
@@ -221,6 +228,7 @@ fn run_tor_handshake(
 
     TorStatus {
         reachable: true,
+        socks_reachable: true,
         authenticated: true,
         bootstrap_progress,
         error: None,

@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { checkBackend, checkTor, chooseRestoreBackup, getChainBackend, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
-import type { ChainBackendKind, InitResult } from "../../api/types";
+import type { ChainBackendKind, InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
@@ -90,7 +90,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   const [createName, setCreateName] = useState(randomWalletName());
   const [createPassword, setCreatePassword] = useState("");
   const [createConfirm, setCreateConfirm] = useState("");
-  const [restoreSelection, setRestoreSelection] = useState<{ selectionId: string; displayName: string } | null>(null);
+  const [restoreSelection, setRestoreSelection] = useState<RestoreSelection | null>(null);
   const [restoreName, setRestoreName] = useState(randomWalletName());
   const [restorePassword, setRestorePassword] = useState("");
 
@@ -286,7 +286,12 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   function cancelFailure() {
     setFailure(null);
-    setViewMode(pendingWallet?.mode === "create" ? "create" : "unlock");
+    // A failure raised before any attempt (backup picker) has no pending wallet, and the
+    // current view is already the one that can correct it.
+    if (!pendingWallet) return;
+    setViewMode(
+      pendingWallet.mode === "create" ? "create" : pendingWallet.mode === "restore" ? "restore" : "unlock",
+    );
   }
 
   const firstRun = wallets?.length === 0;

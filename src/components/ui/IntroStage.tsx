@@ -78,8 +78,12 @@ export function IntroStage({
   const [stage, setStage] = useState(instant ? 4 : 0);
   const reduceMotion = useReducedMotion() ?? false;
   // Held in a ref so an inline callback re-created on every render can't restart the sequence.
+  // Written in an effect, not during render: a concurrent render React throws away must not
+  // leave the live timers pointing at that render's callback.
   const onDoneRef = useRef(onDone);
-  onDoneRef.current = onDone;
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
 
   useEffect(() => {
     if (reduceMotion || instant) {

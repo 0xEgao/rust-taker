@@ -24,9 +24,10 @@ interface Steps {
 const IDLE: Steps = { tor: "idle", ports: "idle", create: "idle" };
 
 /**
- * Shown instead of the dashboard when no makers are registered: a name, and everything else
- * defaulted. Ports come from the same pre-flight the full form uses, and the economics from
- * `MAKER_DEFAULTS`, all of which a maker's Settings tab can change afterwards.
+ * Shown instead of the dashboard when no makers are registered: a name and a wallet password,
+ * with everything else defaulted. Ports come from the same pre-flight the full form uses, and
+ * the economics from `MAKER_DEFAULTS`, all of which a maker's Settings tab can change
+ * afterwards.
  */
 export function MakerIntro({ onImported }: { onImported: () => void }) {
   const navigate = useNavigate();

@@ -72,8 +72,13 @@ fn load_cached_btc_price() -> Result<Option<CachedBtcPrice>, AppError> {
     {
         return Ok(None);
     }
-    let cached: CachedBtcPrice =
-        serde_json::from_slice(&std::fs::read(path)?).map_err(AppError::internal)?;
+    let cached: CachedBtcPrice = match serde_json::from_slice(&std::fs::read(path)?) {
+        Ok(cached) => cached,
+        Err(error) => {
+            log::warn!("ignoring invalid BTC price cache: {error}");
+            return Ok(None);
+        }
+    };
     if !valid_usd_price(cached.usd) {
         return Ok(None);
     }
@@ -204,10 +209,15 @@ pub async fn init_taker(
         ConnectionTypeDto::Clearnet => ConnectionType::Clearnet,
     };
 
+    let chain_config = chain_backend::load();
     let init_cfg = TakerInitConfig {
         data_dir: Some(data_dir.clone()),
         wallet_name: config.wallet_name.clone(),
-        backend: chain_backend::resolve(&config.wallet_name, config.socks_port)?,
+        backend: chain_backend::resolve_from(
+            &chain_config,
+            &config.wallet_name,
+            config.socks_port,
+        )?,
         control_port: config.control_port,
         tor_auth_password: config.tor_auth_password,
         socks_port: config.socks_port.unwrap_or(9050),
@@ -237,7 +247,7 @@ pub async fn init_taker(
     *state.wallet.write()? = Some(taker.get_wallet().clone());
     *state.offer_sync.write()? = Some(taker.offer_sync_client());
     *state.data_dir.write()? = Some(data_dir.clone());
-    *state.active_chain_backend.write()? = Some(chain_backend::load());
+    *state.active_chain_backend.write()? = Some(chain_config);
     *state.active_socks_port.write()? = Some(config.socks_port.unwrap_or(9050));
     *state.taker.lock()? = Some(taker);
 
@@ -263,7 +273,15 @@ pub fn shutdown(state: &AppState) -> Result<(), AppError> {
     // Released before the handles below, so a sync already inside the crate's retry loop
     // unwinds instead of holding a blocking thread against a backend that is going away.
     state.sync_cancel.store(true, Ordering::Relaxed);
-    let mut taker = crate::state::try_lock_taker(&state.taker)?;
+    let mut taker = match crate::state::try_lock_taker(&state.taker) {
+        Ok(taker) => taker,
+        Err(error) => {
+            // The live taker still owns this flag. Re-arm it when shutdown could not
+            // acquire the handle, otherwise every later sync is cancelled immediately.
+            state.sync_cancel.store(false, Ordering::Relaxed);
+            return Err(error);
+        }
+    };
     taker.take();
     drop(taker);
     *state.wallet.write()? = None;
@@ -370,6 +388,23 @@ pub async fn restore_wallet(
         &state.sensitive_operation_active,
         SensitiveOperation::RestorePrivateKey,
     )?;
+    let dir = resolve_data_dir(&data_dir)?;
+    if data_dir.is_some() {
+        crate::security::fs::require_private_dir(&dir)?;
+    } else {
+        crate::security::fs::ensure_private_dir(&dir)?;
+    }
+    crate::security::fs::ensure_private_dir(&dir.join("wallets"))?;
+    let restored_path = wallet_path(&dir, &wallet_name);
+
+    // Do not consume a one-shot file selection for an error the user can fix by
+    // choosing a different wallet name and submitting the same restore again.
+    if restored_path.exists() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("a wallet named '{wallet_name}' already exists — pick another name"),
+        ));
+    }
     let selection = state
         .pending_file_selections
         .lock()?
@@ -386,26 +421,8 @@ pub async fn restore_wallet(
             "restore file selection expired; choose the file again",
         ));
     }
-    let dir = resolve_data_dir(&data_dir)?;
-    if data_dir.is_some() {
-        crate::security::fs::require_private_dir(&dir)?;
-    } else {
-        crate::security::fs::ensure_private_dir(&dir)?;
-    }
-    crate::security::fs::ensure_private_dir(&dir.join("wallets"))?;
-    let restored_path = wallet_path(&dir, &wallet_name);
     let backend = chain_backend::resolve(&wallet_name, socks_port)?;
     let backup_path = selection.path;
-
-    // `Wallet::restore` refuses to overwrite an existing file and only logs the
-    // refusal, which would leave the post-restore `exists()` check below passing
-    // on the *old* wallet and reporting a restore that never happened.
-    if restored_path.exists() {
-        return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            format!("a wallet named '{wallet_name}' already exists — pick another name"),
-        ));
-    }
 
     tauri::async_runtime::spawn_blocking(move || {
         coinswap::wallet::ffi::restore_wallet_gui_app(
@@ -464,6 +481,9 @@ pub async fn backup_wallet(
             "backup destination is not a local filesystem path",
         )
     })?;
+    // The coinswap helper always replaces the selected extension with `.json`.
+    // Validate and pre-create that actual target so its first write is private too.
+    let destination = destination.with_extension("json");
     if destination.exists()
         && std::fs::symlink_metadata(&destination)?
             .file_type()
@@ -480,6 +500,7 @@ pub async fn backup_wallet(
         .and_then(|name| name.to_str())
         .unwrap_or("wallet backup")
         .to_string();
+    crate::security::fs::write_private(&destination, &[])?;
 
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
         wallet
@@ -802,15 +823,13 @@ pub async fn send_to_address(
     .await
     .map_err(AppError::internal)?;
     if !approved {
-        return Err(AppError::authorization_denied(
-            "Bitcoin send was not approved",
-        ));
+        return Err(AppError::user_cancelled("Bitcoin send was not approved"));
     }
     if state.data_dir.read()?.as_ref() != session_data_dir.as_ref()
         || wallet.read()?.get_name() != wallet_name
     {
         return Err(AppError::new(
-            ErrorCode::AuthorizationDenied,
+            ErrorCode::WalletSessionChanged,
             "wallet session changed while the send was awaiting approval",
         ));
     }

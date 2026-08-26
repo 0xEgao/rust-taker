@@ -788,9 +788,13 @@ export function IconButton({
 
 export function Tooltip({
   content,
+  align = "center",
   children,
 }: {
   content: ReactNode;
+  /** `right` anchors the panel's right edge to the trigger so triggers near a
+   *  clipping container's right edge don't have half the tooltip cut off. */
+  align?: "center" | "right";
   children: ReactNode;
 }) {
   return (
@@ -798,7 +802,7 @@ export function Tooltip({
       {children}
       <span
         role="tooltip"
-        className="pointer-events-none absolute left-1/2 top-[calc(100%+9px)] z-20 w-max max-w-[260px] -translate-x-1/2 translate-y-1.5 rounded-card border border-line-strong bg-bg px-2.5 py-2 text-left text-[11.5px] font-medium normal-case leading-snug tracking-normal text-foreground opacity-0 shadow-lg transition-[opacity,transform] group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100"
+        className={`pointer-events-none absolute top-[calc(100%+9px)] z-20 w-max max-w-[260px] translate-y-1.5 rounded-card border border-line-strong bg-bg px-2.5 py-2 text-left text-[11.5px] font-medium normal-case leading-snug tracking-normal text-foreground opacity-0 shadow-lg transition-[opacity,transform] group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100 ${align === "right" ? "right-0" : "left-1/2 -translate-x-1/2"}`}
       >
         {content}
       </span>

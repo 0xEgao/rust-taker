@@ -7,9 +7,13 @@ use coinswap::wallet::WalletError;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Serializable error envelope used by every Tauri command.
 pub struct AppError {
+    /// Stable code for frontend control flow.
     pub code: ErrorCode,
+    /// Human-readable failure detail safe to show in the UI.
     pub message: String,
+    /// Optional structured context for errors such as insufficient funds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
@@ -17,6 +21,7 @@ pub struct AppError {
 #[allow(dead_code)] // full app-wide error surface; some variants not wired up yet
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// Stable machine-readable failures sent across IPC; messages remain user-facing detail.
 pub enum ErrorCode {
     // setup / preflight
     RpcUnreachable,
@@ -42,6 +47,8 @@ pub enum ErrorCode {
     ReportNotFound,
     UserCancelled,
     AuthorizationDenied,
+    /// The wallet changed while a confirmation dialog was open.
+    WalletSessionChanged,
     SensitiveOperationInProgress,
     InsecureDataDirectory,
     InvalidFileSelection,
@@ -53,6 +60,7 @@ pub enum ErrorCode {
 }
 
 impl AppError {
+    /// Builds an error with no structured details.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -61,10 +69,12 @@ impl AppError {
         }
     }
 
+    /// Converts an unexpected debug error into the generic internal category.
     pub fn internal(e: impl std::fmt::Debug) -> Self {
         Self::new(ErrorCode::Internal, format!("{e:?}"))
     }
 
+    /// Reports that a command requires an initialized taker session.
     pub fn not_initialized() -> Self {
         Self::new(ErrorCode::NotInitialized, "taker is not initialized")
     }
@@ -92,10 +102,12 @@ impl AppError {
         )
     }
 
+    /// Reports an explicit user cancellation that callers may dismiss silently.
     pub fn user_cancelled(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::UserCancelled, message)
     }
 
+    /// Reports a denied operation that was not an ordinary user cancellation.
     pub fn authorization_denied(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::AuthorizationDenied, message)
     }

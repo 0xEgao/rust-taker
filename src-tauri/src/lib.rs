@@ -27,6 +27,7 @@ pub fn run() {
             chain_backend::get_chain_backend,
             chain_backend::set_chain_backend,
             chain_backend::reset_chain_backend,
+            chain_backend::chain_backend_reload_pending,
             chain_backend::check_backend,
             // taker wallet lifecycle
             taker_wallet::is_wallet_encrypted,

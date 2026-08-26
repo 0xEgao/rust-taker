@@ -552,7 +552,33 @@ pub async fn start_maker(
             return Err(AppError::new(ErrorCode::InvalidInput, message));
         }
     }
+    // The crate creates the wallet when the file is absent, so a registration whose wallet
+    // was moved or deleted is a *creation* path — and Portal never creates one unencrypted.
+    // Imported dashboard makers keep starting passwordless while their wallet still exists.
     let config = settings.clone().into_init(wallet_password);
+    if !wallet_path(&resolve_maker_data_dir(&config)?, &config.wallet_name).exists() {
+        let password = config.wallet_password.as_deref().unwrap_or_default();
+        if let Err(error) = validate_password(password, "maker wallet password") {
+            let message = format!(
+                "{} — the wallet file for '{maker_id}' is missing, so starting it would create a \
+                 new one",
+                error.message
+            );
+            if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
+                entry.phase = MakerPhase::Failed {
+                    message: message.clone(),
+                };
+            }
+            emit_phase(
+                &app,
+                &maker_id,
+                MakerPhase::Failed {
+                    message: message.clone(),
+                },
+            );
+            return Err(AppError::new(ErrorCode::InvalidInput, message));
+        }
+    }
     if let Err(error) = validate_maker_config(&config) {
         if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
             entry.phase = MakerPhase::Failed {
