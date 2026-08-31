@@ -1,10 +1,5 @@
 // Mirrors src-tauri/src/types.rs (camelCase, sats as numbers).
 
-export interface PortStatus {
-  reachable: boolean;
-  error?: string;
-}
-
 export type ChainBackendKind = "electrum" | "coreRpc";
 
 export interface ElectrumBackend {
@@ -26,7 +21,7 @@ export interface NodeBackend {
 export interface ChainBackendConfig {
   kind: ChainBackendKind;
   electrum: ElectrumBackend;
-  /** Null until the user adds their own node. */
+  /** Prefilled with the standard local-node values so the connection gate can show them. */
   node: NodeBackend | null;
 }
 
@@ -54,8 +49,15 @@ export interface TorStatus {
   authenticated: boolean;
   bootstrapProgress?: number;
   error?: string;
-  /** Which tier `ensure_tor` used: "system" | "host_binary" | "embedded" | "none". */
-  source?: string;
+  /** Loopback ports Portal's own Tor was started on; freshly chosen each run. */
+  socksPort?: number;
+  controlPort?: number;
+}
+
+/** Work a quit would interrupt rather than finish. Payload of `app://quit-blocked`. */
+export interface QuitBlockers {
+  swapRunning: boolean;
+  runningMakers: string[];
 }
 
 export type ConnectionType = "tor" | "clearnet";
@@ -63,9 +65,6 @@ export type ConnectionType = "tor" | "clearnet";
 export interface InitConfig {
   walletName: string;
   walletPassword?: string;
-  controlPort?: number;
-  socksPort?: number;
-  torAuthPassword?: string;
   connectionType: ConnectionType;
   dataDir?: string;
 }
@@ -262,7 +261,6 @@ export interface MakerSettings {
 
 export interface MakerInitConfig extends MakerSettings {
   walletPassword: string;
-  torAuthPassword?: string;
 }
 
 export interface SuggestedMakerPorts {

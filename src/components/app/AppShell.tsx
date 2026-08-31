@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, CheckCircle2, RefreshCw, Server, Settings, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, RefreshCw, ScrollText, Server, X, XCircle } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -163,7 +163,7 @@ function TopNav({
       </nav>
 
       {/* Wallet is the only page that registers a refresh handler, so both of these are
-          taker-only — a maker's own configuration lives in its workspace instead. */}
+          taker-only — a maker reads its own log from its workspace instead. */}
       <div className="flex items-center justify-self-end gap-2">
         {!makerMode && (
           <>
@@ -179,15 +179,15 @@ function TopNav({
               )}
             />
             <NavLink
-              to="/settings"
-              title="Settings"
+              to="/logs"
+              title="Logs"
               className={({ isActive }) =>
                 `flex h-9 w-9 items-center justify-center rounded-control border border-line bg-surface-raised shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] outline-none transition-colors duration-200 focus-visible:shadow-ring active:translate-y-px ${
                   isActive ? "text-primary" : "text-muted hover:text-foreground"
                 }`
               }
             >
-              <Settings size={16} strokeWidth={1.8} />
+              <ScrollText size={16} strokeWidth={1.8} />
             </NavLink>
           </>
         )}
@@ -215,16 +215,22 @@ function ToastStack() {
           className={`raised pointer-events-auto absolute right-0 flex w-[420px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-card border px-4 py-3.5 ${
             t.kind === "error"
               ? "border-danger/32 bg-danger/[0.18] text-foreground"
-              : "border-success/32 bg-success/[0.14] text-foreground"
+              : t.kind === "warning"
+                ? "border-warning/35 bg-warning/[0.14] text-foreground"
+                : "border-success/32 bg-success/[0.14] text-foreground"
           }`}
         >
           {t.kind === "error" ? (
             <XCircle size={20} strokeWidth={2} className="mt-0.5 flex-none text-danger" />
+          ) : t.kind === "warning" ? (
+            <AlertTriangle size={20} strokeWidth={2} className="mt-0.5 flex-none text-warning" />
           ) : (
             <CheckCircle2 size={20} strokeWidth={2} className="mt-0.5 flex-none text-success" />
           )}
           <div className="min-w-0">
-            <strong className="block">{t.kind === "error" ? "Error" : "Success"}</strong>
+            <strong className="block">
+              {t.kind === "error" ? "Error" : t.kind === "warning" ? "Heads up" : "Success"}
+            </strong>
             <span className="mt-0.5 block break-words text-[13px] text-muted">{t.message}</span>
           </div>
           <button type="button" aria-label="Dismiss notification" onClick={() => dismiss(t.id)} className="ml-2 flex-none rounded-sm text-subtle outline-none hover:text-foreground focus-visible:shadow-ring active:translate-y-px">

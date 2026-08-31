@@ -22,6 +22,7 @@ type FeeKey = "low" | "mid" | "high" | "custom";
 
 function SendPanel() {
   const pushToast = useToastStore((s) => s.push);
+  const pushFailure = useToastStore((s) => s.pushFailure);
   const walletSyncStatus = useWalletCacheStore((s) => s.syncStatus);
   const walletSyncError = useWalletCacheStore((s) => s.syncError);
   const [balances, setBalances] = useState<Balances | null>(null);
@@ -48,7 +49,7 @@ function SendPanel() {
   }, []);
 
   useEffect(() => {
-    void load().catch((e) => pushToast("error", (e as { message?: string })?.message ?? "Failed to load wallet data."));
+    void load().catch((e) => pushFailure(e, "Failed to load wallet data."));
     // BTC/USD price is best-effort — sats/BTC still work fine without it, so its own failure
     // shouldn't toast an error, just leave the USD option disabled.
     void getBtcPrice()

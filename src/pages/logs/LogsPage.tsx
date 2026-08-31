@@ -33,7 +33,7 @@ export function LogsPage() {
     <div className="flex h-full flex-col overflow-hidden px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center justify-between gap-3 pb-4">
         <div className="flex items-center gap-3">
-          <BackButton to="/settings" label="Back to Settings" />
+          <BackButton to="/" label="Back to Wallet" />
           <div>
             <h1 className="font-header text-[26px] font-bold text-foreground">Logs</h1>
             <p className="mt-1 text-[13.5px] text-muted">

@@ -10,7 +10,6 @@ use coinswap::taker::offers::OfferSyncClient;
 use coinswap::taker::Taker;
 use coinswap::wallet::Wallet;
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use crate::error::AppError;
 use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto, SwapSummaryDto};
@@ -76,8 +75,6 @@ pub struct AppState {
     pub sensitive_operation_active: Arc<AtomicBool>,
     /// Rust-owned local file choices. The renderer receives only a random ID.
     pub pending_file_selections: Mutex<HashMap<Uuid, PendingFileSelection>>,
-    /// Optional external-Tor credential. Never serialized or returned over IPC.
-    pub tor_auth_secret: Mutex<Option<Zeroizing<String>>>,
     /// Aborts an in-flight `Wallet::sync_and_save`. The crate's `sync_no_fail` retries a failing
     /// backend forever and only exits on success or this flag, so without it an Electrum outage
     /// pins a blocking thread for the rest of the process's life.
@@ -86,10 +83,6 @@ pub struct AppState {
     /// on the public OfferSyncClient.
     pub is_offerbook_syncing: AtomicBool,
     pub last_offerbook_sync_ts: AtomicU64,
-    /// A host `tor` process we spawned via `tor::ensure_tor`, if any — killed on app exit since
-    /// nothing else owns it. `None` when Tor was already running, embedded, or unavailable.
-    pub managed_tor: Mutex<Option<std::process::Child>>,
-
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,

@@ -275,7 +275,7 @@ pub async fn prepare_swap(
         .read()?
         .clone()
         .ok_or_else(AppError::not_initialized)?;
-    let active_socks_port = state.active_socks_port.read()?.unwrap_or(9050);
+    let active_socks_port = *state.active_socks_port.read()?;
     *state.active_swap.lock()? = Some(ActiveSwap {
         swap_id: summary.swap_id,
         phase: SwapLifecycle::Prepared,
@@ -344,7 +344,7 @@ pub async fn start_swap(
             .read()?
             .clone()
             .ok_or_else(AppError::not_initialized)?;
-        let socks_port = state.active_socks_port.read()?.unwrap_or(9050);
+        let socks_port = *state.active_socks_port.read()?;
         crate::commands::chain_backend::route_description(&config, socks_port)
     };
     let maker_list = prepared

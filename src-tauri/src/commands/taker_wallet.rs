@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::commands::chain_backend;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
-use crate::security::input::{validate_leaf_name, validate_password, validate_tor_control_secret};
+use crate::security::input::{validate_leaf_name, validate_password};
 use crate::security::operation::{ensure_main_window, SensitiveOperation, SensitiveOperationGuard};
 use crate::state::AppState;
 use crate::state::PendingFileSelection;
@@ -166,27 +166,11 @@ pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
 #[tauri::command]
 pub async fn init_taker(
     state: tauri::State<'_, AppState>,
-    mut config: InitConfig,
+    config: InitConfig,
 ) -> Result<InitResult, AppError> {
     validate_leaf_name(&config.wallet_name, "walletName")?;
-    if let Some(password) = config.tor_auth_password.as_deref() {
-        validate_tor_control_secret(password)?;
-        if !password.is_empty() {
-            *state.tor_auth_secret.lock()? = Some(zeroize::Zeroizing::new(password.to_string()));
-        }
-    }
-    if config
-        .tor_auth_password
-        .as_deref()
-        .unwrap_or_default()
-        .is_empty()
-    {
-        config.tor_auth_password = state
-            .tor_auth_secret
-            .lock()?
-            .as_ref()
-            .map(|secret| secret.to_string());
-    }
+    let tor = crate::tor::ensure_tor()
+        .map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
     {
         let guard = crate::state::try_lock_taker(&state.taker)?;
         if guard.is_some() {
@@ -216,11 +200,11 @@ pub async fn init_taker(
         backend: chain_backend::resolve_from(
             &chain_config,
             &config.wallet_name,
-            config.socks_port,
+            Some(tor.socks_port),
         )?,
-        control_port: config.control_port,
-        tor_auth_password: config.tor_auth_password,
-        socks_port: config.socks_port.unwrap_or(9050),
+        control_port: Some(tor.control_port),
+        tor_auth_password: Some(tor.control_password),
+        socks_port: tor.socks_port,
         password: config.wallet_password,
         connection_type,
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
@@ -248,7 +232,7 @@ pub async fn init_taker(
     *state.offer_sync.write()? = Some(taker.offer_sync_client());
     *state.data_dir.write()? = Some(data_dir.clone());
     *state.active_chain_backend.write()? = Some(chain_config);
-    *state.active_socks_port.write()? = Some(config.socks_port.unwrap_or(9050));
+    *state.active_socks_port.write()? = Some(tor.socks_port);
     *state.taker.lock()? = Some(taker);
 
     Ok(InitResult {
@@ -289,7 +273,6 @@ pub fn shutdown(state: &AppState) -> Result<(), AppError> {
     *state.data_dir.write()? = None;
     *state.active_chain_backend.write()? = None;
     *state.active_socks_port.write()? = None;
-    *state.tor_auth_secret.lock()? = None;
     state.pending_file_selections.lock()?.clear();
     *state.active_swap.lock()? = None;
     Ok(())

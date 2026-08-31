@@ -1,6 +1,5 @@
 import { checkBackend, getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../api/commands";
 import { useWalletCacheStore } from "../store/wallet-cache";
-import { loadConnectivityDefaults } from "./connectivity";
 
 let hydrateInFlight: Promise<void> | null = null;
 let refreshInFlight: Promise<void> | null = null;
@@ -30,7 +29,7 @@ export function refreshWalletCache(): Promise<void> {
       // Avoid entering coinswap's retry-forever sync while the endpoint is already known
       // to be unreachable — that loop only exits on success or app shutdown. Probes the
       // saved backend over the same route the sync itself takes.
-      const reachability = await checkBackend(undefined, loadConnectivityDefaults().torSocksPort);
+      const reachability = await checkBackend();
       if (!reachability.reachable) {
         throw new Error(reachability.error ?? "The chain backend is unreachable.");
       }

@@ -20,7 +20,6 @@ import type {
   NewAddress,
   OfferBookView,
   Outpoint,
-  PortStatus,
   PriceEstimate,
   ProtocolVersion,
   RecoveryStatus,
@@ -42,46 +41,30 @@ import type {
   WalletInfo,
 } from "./types";
 
-export function checkCoreZmq(
-  host: string,
-  port: number,
-): Promise<PortStatus> {
-  return invoke("check_core_zmq", { host, port });
-}
-
 export function getChainBackend(): Promise<ChainBackendConfig> {
   return invoke("get_chain_backend");
-}
-
-/** True when the running taker still holds a route the saved config no longer describes. */
-export function chainBackendReloadPending(): Promise<boolean> {
-  return invoke("chain_backend_reload_pending");
 }
 
 export function setChainBackend(config: ChainBackendConfig): Promise<void> {
   return invoke("set_chain_backend", { config });
 }
 
-/** Clears the saved selection and returns the defaults it fell back to. */
-export function resetChainBackend(): Promise<ChainBackendConfig> {
-  return invoke("reset_chain_backend");
-}
-
 /**
- * Probes a chain backend. Pass `config` to test unsaved edits; omit it to probe
- * whichever backend is currently saved. `socksPort` only matters for a Tor-routed
- * Electrum server.
+ * Probes a chain backend with a real chain query. Pass `config` to test unsaved edits;
+ * omit it to probe whichever backend this session is using.
  */
-export function checkBackend(config?: ChainBackendConfig, socksPort?: number): Promise<BackendStatus> {
-  return invoke("check_backend", { config: config ?? null, socksPort });
+export function checkBackend(config?: ChainBackendConfig): Promise<BackendStatus> {
+  return invoke("check_backend", { config: config ?? null });
 }
 
-export function checkTor(
-  socksPort: number,
-  controlPort: number,
-  torAuthPassword: string,
-): Promise<TorStatus> {
-  return invoke("check_tor", { socksPort, controlPort, torAuthPassword });
+/** Starts Portal's own Tor if it isn't up yet; the result carries the ports it landed on. */
+export function checkTor(): Promise<TorStatus> {
+  return invoke("check_tor");
+}
+
+/** Confirms a quit the user was warned about; the process exits once teardown finishes. */
+export function quitApp(): Promise<void> {
+  return invoke("quit_app");
 }
 
 export function getVersionInfo(): Promise<VersionInfo> {
@@ -245,12 +228,8 @@ export function updateMakerSettings(makerId: string, settings: MakerSettings): P
   return invoke("update_maker_settings", { makerId, settings });
 }
 
-export function startMaker(
-  makerId: string,
-  walletPassword?: string,
-  torAuthPassword?: string,
-): Promise<void> {
-  return invoke("start_maker", { makerId, walletPassword, torAuthPassword });
+export function startMaker(makerId: string, walletPassword?: string): Promise<void> {
+  return invoke("start_maker", { makerId, walletPassword });
 }
 
 export function stopMaker(makerId: string): Promise<void> {
@@ -269,18 +248,13 @@ export function clearMakerSettings(makerId: string): Promise<void> {
   return invoke("clear_maker_settings", { makerId });
 }
 
-export function getSuggestedMakerPorts(socksPort: number, controlPort: number): Promise<SuggestedMakerPorts> {
-  return invoke("get_suggested_maker_ports", { socksPort, controlPort });
+export function getSuggestedMakerPorts(): Promise<SuggestedMakerPorts> {
+  return invoke("get_suggested_maker_ports");
 }
 
 /** Verifies a maker's listener ports are bindable and unclaimed. Empty result means both are fine. */
-export function checkMakerPorts(
-  networkPort: number,
-  rpcPort: number,
-  socksPort: number,
-  controlPort: number,
-): Promise<MakerPortCheck> {
-  return invoke("check_maker_ports", { networkPort, rpcPort, socksPort, controlPort });
+export function checkMakerPorts(networkPort: number, rpcPort: number): Promise<MakerPortCheck> {
+  return invoke("check_maker_ports", { networkPort, rpcPort });
 }
 
 export function getMakerBalances(makerId: string): Promise<Balances> {

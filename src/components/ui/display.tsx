@@ -1,9 +1,11 @@
 import {
   ArrowLeft,
   Check,
+  CheckCircle2,
   ChevronDown,
   Copy,
   ExternalLink,
+  XCircle,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion } from "framer-motion";
@@ -89,6 +91,38 @@ export function SettingsSection({
       )}
       <div className={bodyClassName}>{children}</div>
     </Card>
+  );
+}
+
+/** One verdict from a connectivity probe. */
+export interface TestRow {
+  label: string;
+  ok: boolean;
+  message: string;
+}
+
+export function TestResultRows({ rows }: { rows: TestRow[] }) {
+  return (
+    <div className="mt-3 flex flex-col gap-1.5">
+      {rows.map((r) => (
+        <div
+          key={r.label}
+          className="flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3 py-2 text-[12px]"
+        >
+          <span
+            className={`flex items-center gap-1.5 font-medium ${r.ok ? "text-success" : "text-danger"}`}
+          >
+            {r.ok ? (
+              <CheckCircle2 size={13} strokeWidth={2} />
+            ) : (
+              <XCircle size={13} strokeWidth={2} />
+            )}
+            {r.label}
+          </span>
+          <span className="truncate text-subtle">{r.message}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -296,39 +330,50 @@ export function LogViewer({
   lines,
   emptyMessage = "No log lines yet.",
   className = "min-h-0 flex-1",
+  newestFirst = false,
 }: {
   lines: LogLine[];
   emptyMessage?: string;
   className?: string;
+  /** Newest line at the top, following upward instead of down. */
+  newestFirst?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Not "first render": `lines` is usually still empty then (fetch is async), which would
   // consume the flag before there's anything to scroll to.
-  const hasSnappedToBottom = useRef(false);
+  const hasSnapped = useRef(false);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || lines.length === 0) return;
-    if (!hasSnappedToBottom.current) {
-      hasSnappedToBottom.current = true;
-      el.scrollTop = el.scrollHeight;
+    if (!hasSnapped.current) {
+      hasSnapped.current = true;
+      el.scrollTop = newestFirst ? 0 : el.scrollHeight;
+      return;
+    }
+    // Only follow when the reader is already at the growing edge, so scrolling back through
+    // history isn't yanked away on the next poll.
+    if (newestFirst) {
+      if (el.scrollTop < 80) el.scrollTop = 0;
       return;
     }
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (distanceFromBottom < 80) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+  }, [lines, newestFirst]);
+
+  const ordered = newestFirst ? [...lines].reverse() : lines;
 
   return (
     <div ref={scrollRef} className={`overflow-y-auto px-4.5 py-3 ${className}`}>
-      {lines.length === 0 ? (
+      {ordered.length === 0 ? (
         <p className="py-6 text-center text-[13px] text-subtle">
           {emptyMessage}
         </p>
       ) : (
         <div className="flex flex-col gap-0.5">
-          {lines.map((l, i) => (
+          {ordered.map((l, i) => (
             <div
-              key={`${l.line}:${lines.slice(0, i).filter((row) => row.line === l.line).length}`}
+              key={`${l.line}:${ordered.slice(0, i).filter((row) => row.line === l.line).length}`}
               className={`rounded-sm px-1 py-0.5 whitespace-pre-wrap break-all font-mono text-[11px] transition-colors hover:bg-[var(--color-hover)] ${LOG_LEVEL_TONE[logLevel(l.line)]}`}
             >
               {l.line}

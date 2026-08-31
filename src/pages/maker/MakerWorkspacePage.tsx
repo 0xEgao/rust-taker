@@ -975,7 +975,6 @@ export function MakerWorkspacePage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [showStart, setShowStart] = useState(false);
   const [walletPassword, setWalletPassword] = useState("");
-  const [torPassword, setTorPassword] = useState("");
   const [startError, setStartError] = useState<string | undefined>();
   const [copied, setCopied] = useState(false);
   const load = useCallback(async () => {
@@ -1015,14 +1014,9 @@ export function MakerWorkspacePage() {
     setActionLoading(true);
     setStartError(undefined);
     try {
-      await startMaker(
-        id,
-        walletPassword || undefined,
-        torPassword || undefined,
-      );
+      await startMaker(id, walletPassword || undefined);
       setShowStart(false);
       setWalletPassword("");
-      setTorPassword("");
       await load();
     } catch (e) {
       setStartError(
@@ -1117,7 +1111,6 @@ export function MakerWorkspacePage() {
               <Button
                 onClick={() => {
                   setWalletPassword("");
-                  setTorPassword("");
                   setStartError(undefined);
                   setShowStart(true);
                 }}
@@ -1207,11 +1200,6 @@ export function MakerWorkspacePage() {
                 onKeyDown={(e) => e.key === "Enter" && void start()}
               />
             )}
-            <PasswordField
-              label="Tor control password (if required)"
-              value={torPassword}
-              onChange={(e) => setTorPassword(e.target.value)}
-            />
             {startError && status.walletEncrypted === false && (
               <p className="mt-2 text-[12px] text-danger">{startError}</p>
             )}

@@ -18,7 +18,7 @@ use crate::commands::chain_backend;
 use crate::commands::maker_settings;
 use crate::commands::taker_wallet::wallet_path;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
-use crate::security::input::{validate_leaf_name, validate_password, validate_tor_control_secret};
+use crate::security::input::{validate_leaf_name, validate_password};
 use crate::state::{try_lock_makers, AppState, MakerHandle, MakerRuntime};
 use crate::types::{
     MakerInitConfig, MakerPhase, MakerPhaseEvent, MakerSettingsDto, MakerStatusDto, WalletInfo,
@@ -61,8 +61,6 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
     let ports = [
         ("networkPort", config.network_port),
         ("rpcPort", config.rpc_port),
-        ("socksPort", config.socks_port),
-        ("controlPort", config.control_port),
     ];
     for (name, port) in ports {
         if port == 0 {
@@ -107,7 +105,8 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
 }
 
 fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> Result<MakerServerConfig, AppError> {
-    let backend = chain_backend::resolve(&config.wallet_name, Some(config.socks_port))?;
+    let tor = crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
+    let backend = chain_backend::resolve(&config.wallet_name, Some(tor.socks_port))?;
     Ok(MakerServerConfig {
         data_dir,
         network_port: config.network_port,
@@ -121,9 +120,9 @@ fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> Result<MakerServe
         fidelity_timelock: config.fidelity_timelock,
         backend,
         wallet_name: config.wallet_name,
-        control_port: config.control_port,
-        socks_port: config.socks_port,
-        tor_auth_password: config.tor_auth_password.unwrap_or_default(),
+        control_port: tor.control_port,
+        socks_port: tor.socks_port,
+        tor_auth_password: tor.control_password,
         password: config.wallet_password,
         ..MakerServerConfig::default()
     })
@@ -260,26 +259,6 @@ pub async fn init_maker(
         )
     })?;
     validate_password(password, "maker wallet password")?;
-    if let Some(secret) = config.tor_auth_password.as_deref() {
-        validate_tor_control_secret(secret)?;
-        if !secret.is_empty() {
-            *app.state::<AppState>().tor_auth_secret.lock()? =
-                Some(zeroize::Zeroizing::new(secret.to_string()));
-        }
-    }
-    if config
-        .tor_auth_password
-        .as_deref()
-        .unwrap_or_default()
-        .is_empty()
-    {
-        config.tor_auth_password = app
-            .state::<AppState>()
-            .tor_auth_secret
-            .lock()?
-            .as_ref()
-            .map(|secret| secret.to_string());
-    }
     let maker_id = config.maker_id.clone();
     let data_dir = resolve_maker_data_dir(&config)?;
     if config.data_dir.is_some() && data_dir.exists() {
@@ -387,7 +366,7 @@ pub async fn init_maker(
 pub fn update_maker_settings(
     state: tauri::State<'_, AppState>,
     maker_id: String,
-    mut settings: MakerSettingsDto,
+    settings: MakerSettingsDto,
 ) -> Result<MakerSettingsDto, AppError> {
     let existing =
         maker_settings::load(&maker_id)?.ok_or_else(|| AppError::maker_not_found(&maker_id))?;
@@ -404,8 +383,6 @@ pub fn update_maker_settings(
         ));
     }
 
-    // Credentials are process-only and must never enter the settings file.
-    settings.tor_auth_password = None;
     validate_maker_config(&settings.clone().into_init(None))?;
     ensure_unique_settings_update(&settings)?;
 
@@ -429,9 +406,7 @@ pub fn update_maker_settings(
     maker_settings::write_runtime_config(&settings)?;
     maker_settings::save(&settings)?;
     if let Some(entry) = makers.get_mut(&maker_id) {
-        let tor_auth_password = entry.settings.tor_auth_password.take();
         entry.settings = settings.clone();
-        entry.settings.tor_auth_password = tor_auth_password;
         entry.runtime = None;
     }
     drop(makers);
@@ -461,24 +436,8 @@ pub async fn start_maker(
     app: tauri::AppHandle,
     maker_id: String,
     wallet_password: Option<String>,
-    tor_auth_password: Option<String>,
 ) -> Result<(), AppError> {
     let state = app.state::<AppState>();
-    if let Some(secret) = tor_auth_password.as_deref() {
-        validate_tor_control_secret(secret)?;
-        if !secret.is_empty() {
-            *state.tor_auth_secret.lock()? = Some(zeroize::Zeroizing::new(secret.to_string()));
-        }
-    }
-    let tor_auth_password = if tor_auth_password.as_deref().unwrap_or_default().is_empty() {
-        state
-            .tor_auth_secret
-            .lock()?
-            .as_ref()
-            .map(|secret| secret.to_string())
-    } else {
-        tor_auth_password
-    };
     // Reload before every start so config.toml remains the source of truth even
     // when it was edited outside this process between maker runs.
     let persisted_settings =
@@ -504,12 +463,7 @@ pub async fn start_maker(
             }
             _ => {}
         }
-        let stored_tor_auth_password = entry.settings.tor_auth_password.take();
         entry.settings = persisted_settings;
-        entry.settings.tor_auth_password = stored_tor_auth_password;
-        if tor_auth_password.is_some() {
-            entry.settings.tor_auth_password = tor_auth_password;
-        }
         entry.phase = MakerPhase::Initializing;
         // A MakerServer owns one-shot watcher/thread-pool services. Never reuse
         // it after a stop or failed run.

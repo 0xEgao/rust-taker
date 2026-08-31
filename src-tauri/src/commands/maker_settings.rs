@@ -216,7 +216,6 @@ fn load_dashboard_registrations(
                 rpc_port: settings.rpc_port,
                 socks_port: settings.socks_port,
                 control_port: settings.control_port,
-                tor_auth_password: None,
                 min_swap_amount: settings.min_swap_amount,
                 fidelity_amount: settings.fidelity_amount,
                 fidelity_timelock: settings.fidelity_timelock,
@@ -332,15 +331,12 @@ fn find_available_port(start: u16, reserved: &[u16]) -> Option<u16> {
 }
 
 #[tauri::command]
-pub fn get_suggested_maker_ports(
-    socks_port: u16,
-    control_port: u16,
-) -> Result<SuggestedMakerPortsDto, AppError> {
+pub fn get_suggested_maker_ports() -> Result<SuggestedMakerPortsDto, AppError> {
     const DEFAULT_NETWORK_PORT: u16 = 6102;
     const DEFAULT_RPC_PORT: u16 = 6103;
 
     let registered = load_all()?;
-    let mut reserved = vec![socks_port, control_port];
+    let mut reserved = tor_ports().to_vec();
     reserved.extend(
         registered
             .values()
@@ -364,6 +360,12 @@ pub fn get_suggested_maker_ports(
 /// Deliberately not `setup::check_port`: that connects and reports success when something
 /// is *already listening*, the inverse of what a port we intend to bind needs — wiring it
 /// in here would approve exactly the ports that are taken.
+/// Portal's own Tor, so a maker never suggests or accepts a port Tor already holds. Both
+/// zero before Tor starts, which no maker port can collide with.
+fn tor_ports() -> [u16; 2] {
+    crate::tor::runtime().map_or([0, 0], |tor| [tor.socks_port, tor.control_port])
+}
+
 fn port_conflict(
     port: u16,
     socks_port: u16,
@@ -391,9 +393,8 @@ fn port_conflict(
 pub fn check_maker_ports(
     network_port: u16,
     rpc_port: u16,
-    socks_port: u16,
-    control_port: u16,
 ) -> Result<MakerPortCheckDto, AppError> {
+    let [socks_port, control_port] = tor_ports();
     let mut taken = HashMap::new();
     for (id, settings) in load_all()? {
         taken.insert(settings.network_port, id.clone());
@@ -424,7 +425,6 @@ mod tests {
             rpc_port: 6103,
             socks_port: 9050,
             control_port: 9051,
-            tor_auth_password: Some("secret".to_string()),
             min_swap_amount: 10_000,
             fidelity_amount: 10_000,
             fidelity_timelock: 15_000,
@@ -503,16 +503,6 @@ mod tests {
     }
 
     #[test]
-    fn persisted_registration_omits_tor_password() {
-        let mut makers = HashMap::new();
-        makers.insert("maker-one".to_string(), settings());
-        let value = serde_json::to_value(StoredMakers { makers }).unwrap();
-        assert!(value["makers"]["maker-one"]
-            .get("torAuthPassword")
-            .is_none());
-    }
-
-    #[test]
     fn port_conflict_names_tor_and_other_makers() {
         let mut taken = HashMap::new();
         taken.insert(6102, "maker-one".to_string());
@@ -544,7 +534,7 @@ mod tests {
         let free = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = free.local_addr().unwrap().port();
         drop(free);
-        let result = check_maker_ports(port, port, 9050, 9051).unwrap();
+        let result = check_maker_ports(port, port).unwrap();
         assert!(result.network_port.is_none());
         assert!(result
             .rpc_port
@@ -588,7 +578,6 @@ mod tests {
         assert_eq!(zoro.wallet_name, "Zoro");
         assert_eq!(zoro.network_port, 6104);
         assert_eq!(zoro.min_swap_amount, 20_000);
-        assert!(zoro.tor_auth_password.is_none());
     }
 
     #[test]
