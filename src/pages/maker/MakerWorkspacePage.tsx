@@ -19,6 +19,7 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import {
+  checkTor,
   clearMakerSettings,
   getMakerBalances,
   getMakerInfo,
@@ -569,12 +570,12 @@ function LogsPanel({ makerId }: { makerId: string }) {
   );
 }
 
+// Tor's ports are Portal's to choose, not the maker's: `build_config` overrides whatever a
+// registration carries with the live runtime's pair. They are shown below as status only.
 const EDITABLE_SETTING_KEYS = [
   "networkPort",
   "rpcPort",
   "requiredConfirms",
-  "socksPort",
-  "controlPort",
   "minSwapAmount",
   "baseFee",
   "amountRelativeFeePct",
@@ -602,8 +603,6 @@ function parseSettingsForm(
     "networkPort",
     "rpcPort",
     "requiredConfirms",
-    "socksPort",
-    "controlPort",
     "minSwapAmount",
     "baseFee",
     "fidelityAmount",
@@ -619,16 +618,11 @@ function parseSettingsForm(
   if (integers.some((key) => !Number.isSafeInteger(values[key]))) {
     return "Ports, amounts, confirmations, and timelocks must be whole numbers.";
   }
-  const ports = [
-    values.networkPort,
-    values.rpcPort,
-    values.socksPort,
-    values.controlPort,
-  ];
+  const ports = [values.networkPort, values.rpcPort];
   if (ports.some((port) => port < 1 || port > 65_535))
     return "Ports must be between 1 and 65535.";
   if (new Set(ports).size !== ports.length)
-    return "Network, RPC, SOCKS, and control ports must be different.";
+    return "Network and RPC ports must be different.";
   if (values.minSwapAmount < 10_000)
     return "Minimum swap amount must be at least 10,000 sats.";
   if (values.fidelityAmount < 1)
@@ -659,10 +653,20 @@ function SettingsPanel({
   const [form, setForm] = useState<SettingsForm>(() =>
     settingsToForm(settings),
   );
+  const [torPorts, setTorPorts] = useState<{ socksPort: number; controlPort: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmSave, setConfirmSave] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   useEffect(() => setForm(settingsToForm(settings)), [makerId]);
+  useEffect(() => {
+    void checkTor()
+      .then((status) => {
+        if (status.socksPort !== undefined && status.controlPort !== undefined) {
+          setTorPorts({ socksPort: status.socksPort, controlPort: status.controlPort });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const parsed = parseSettingsForm(settings, form);
   const error = typeof parsed === "string" ? parsed : null;
@@ -786,8 +790,17 @@ function SettingsPanel({
         >
           <div className="col-span-2 max-[620px]:col-span-1">
             <SummaryGroup title="Tor ports">
-              {row("socksPort", "SOCKS port")}
-              {row("controlPort", "Control port")}
+              <SummaryRow
+                label="SOCKS port"
+                value={torPorts ? String(torPorts.socksPort) : "…"}
+                readOnly
+                hint="Chosen by Portal's own Tor each launch"
+              />
+              <SummaryRow
+                label="Control port"
+                value={torPorts ? String(torPorts.controlPort) : "…"}
+                readOnly
+              />
             </SummaryGroup>
           </div>
         </SettingsSection>
@@ -975,7 +988,6 @@ export function MakerWorkspacePage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [showStart, setShowStart] = useState(false);
   const [walletPassword, setWalletPassword] = useState("");
-  const [torPassword, setTorPassword] = useState("");
   const [startError, setStartError] = useState<string | undefined>();
   const [copied, setCopied] = useState(false);
   const load = useCallback(async () => {
@@ -1015,14 +1027,9 @@ export function MakerWorkspacePage() {
     setActionLoading(true);
     setStartError(undefined);
     try {
-      await startMaker(
-        id,
-        walletPassword || undefined,
-        torPassword || undefined,
-      );
+      await startMaker(id, walletPassword || undefined);
       setShowStart(false);
       setWalletPassword("");
-      setTorPassword("");
       await load();
     } catch (e) {
       setStartError(
@@ -1117,7 +1124,6 @@ export function MakerWorkspacePage() {
               <Button
                 onClick={() => {
                   setWalletPassword("");
-                  setTorPassword("");
                   setStartError(undefined);
                   setShowStart(true);
                 }}
@@ -1207,11 +1213,6 @@ export function MakerWorkspacePage() {
                 onKeyDown={(e) => e.key === "Enter" && void start()}
               />
             )}
-            <PasswordField
-              label="Tor control password (if required)"
-              value={torPassword}
-              onChange={(e) => setTorPassword(e.target.value)}
-            />
             {startError && status.walletEncrypted === false && (
               <p className="mt-2 text-[12px] text-danger">{startError}</p>
             )}

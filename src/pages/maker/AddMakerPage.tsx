@@ -5,7 +5,6 @@ import { checkBackend, checkMakerPorts, checkTor, getSuggestedMakerPorts, initMa
 import type { MakerInitConfig, MakerPortCheck } from "../../api/types";
 import { Card, Disclosure } from "../../components/ui/display";
 import { Button, LinkButton, PasswordField, SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
-import { loadConnectivityDefaults } from "../../lib/connectivity";
 import { validateNewPassword } from "../../lib/password-policy";
 import { useToastStore } from "../../store/toast";
 import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
@@ -13,12 +12,10 @@ import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
 // Long enough that editing a port digit-by-digit doesn't fire a check per keystroke.
 const CHECK_DEBOUNCE_MS = 400;
 
-const tor = loadConnectivityDefaults();
-
 /** Every value shown as a summary row. Strings so an in-progress edit is representable. */
 const INITIAL_VALUES = {
-  socksPort: String(tor.torSocksPort),
-  controlPort: String(tor.torControlPort),
+  socksPort: "",
+  controlPort: "",
   networkPort: "",
   rpcPort: "",
   minSwapAmount: String(MAKER_DEFAULTS.minSwapAmount),
@@ -57,7 +54,6 @@ export function AddMakerPage() {
   const [dataDir, setDataDir] = useState("");
   const [walletPassword, setWalletPassword] = useState("");
   const [walletPasswordConfirm, setWalletPasswordConfirm] = useState("");
-  const [torAuthPassword, setTorAuthPassword] = useState(tor.torAuthPassword);
   const [values, setValues] = useState<Values>(INITIAL_VALUES);
 
   const [torError, setTorError] = useState<string | null>(null);
@@ -67,7 +63,6 @@ export function AddMakerPage() {
 
   // Bumped on every edit so a slow in-flight check can't paint a verdict for a value the
   // user has already changed.
-  const torRun = useRef(0);
   const portRun = useRef(0);
 
   const numbers = useMemo(
@@ -80,7 +75,7 @@ export function AddMakerPage() {
   const walletPasswordError = validateNewPassword(walletPassword, walletPasswordConfirm);
 
   useEffect(() => {
-    void getSuggestedMakerPorts(tor.torSocksPort, tor.torControlPort)
+    void getSuggestedMakerPorts()
       .then((ports) => setValues((v) => ({ ...v, networkPort: String(ports.networkPort), rpcPort: String(ports.rpcPort) })))
       .catch((e) => setPortErrors({ networkPort: (e as { message?: string })?.message ?? "Could not find free ports." }));
     void checkBackend()
@@ -88,35 +83,24 @@ export function AddMakerPage() {
       .catch(() => setChain(null));
   }, []);
 
-  // Tor was already proven working to unlock the taker, so a failure here almost always means
-  // a port on this page was just edited to something wrong — hence the wording below.
+  // Confirms Portal's own Tor is still up and picks up the ports it landed on, which the
+  // cached defaults can only be stale about after a restart.
   useEffect(() => {
-    const { socksPort, controlPort } = numbers;
-    if (!Number.isInteger(socksPort) || !Number.isInteger(controlPort) || socksPort <= 0 || controlPort <= 0) return;
-    const run = ++torRun.current;
-    const timer = setTimeout(() => {
-      void checkTor(socksPort, controlPort, torAuthPassword)
-        .then((status) => {
-          if (run !== torRun.current) return;
-          setTorError(
-            status.reachable && status.authenticated
-              ? null
-              : (status.error ?? `Tor control port ${controlPort} is not reachable. Check the port or fix it in Settings.`),
-          );
-        })
-        .catch((e) => {
-          if (run === torRun.current) setTorError((e as { message?: string })?.message ?? "Tor is unreachable.");
-        });
-    }, CHECK_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [numbers.socksPort, numbers.controlPort, torAuthPassword]);
+    void checkTor()
+      .then((status) => {
+        setTorError(status.reachable && status.authenticated ? null : (status.error ?? "Tor is unreachable."));
+        if (status.socksPort === undefined || status.controlPort === undefined) return;
+        setValues((v) => ({ ...v, socksPort: String(status.socksPort), controlPort: String(status.controlPort) }));
+      })
+      .catch((e) => setTorError((e as { message?: string })?.message ?? "Tor is unreachable."));
+  }, []);
 
   useEffect(() => {
-    const { networkPort, rpcPort, socksPort, controlPort } = numbers;
+    const { networkPort, rpcPort } = numbers;
     if (![networkPort, rpcPort].every((p) => Number.isInteger(p) && p > 0)) return;
     const run = ++portRun.current;
     const timer = setTimeout(() => {
-      void checkMakerPorts(networkPort, rpcPort, socksPort, controlPort)
+      void checkMakerPorts(networkPort, rpcPort)
         .then((result) => {
           if (run === portRun.current) setPortErrors(result);
         })
@@ -135,7 +119,6 @@ export function AddMakerPage() {
       walletName: walletName.trim() || trimmedId,
       dataDir: dataDir.trim() || undefined,
       walletPassword,
-      torAuthPassword: torAuthPassword || undefined,
       networkPort: numbers.networkPort,
       rpcPort: numbers.rpcPort,
       socksPort: numbers.socksPort,
@@ -148,7 +131,7 @@ export function AddMakerPage() {
       fidelityAmount: numbers.fidelityAmount,
       fidelityTimelock: numbers.fidelityTimelock,
     };
-  }, [trimmedId, malformedId, walletName, dataDir, walletPassword, walletPasswordError, torAuthPassword, numbers]);
+  }, [trimmedId, malformedId, walletName, dataDir, walletPassword, walletPasswordError, numbers]);
 
   const blocked = torError !== null || portErrors.networkPort !== undefined || portErrors.rpcPort !== undefined;
 
@@ -239,15 +222,8 @@ export function AddMakerPage() {
           {group(
             "Tor",
             <>
-              <SummaryRow label="SOCKS port" value={values.socksPort} onCommit={set("socksPort")} />
-              <SummaryRow label="Control port" value={values.controlPort} onCommit={set("controlPort")} />
-              <PasswordField
-                label="Control port auth password"
-                placeholder="Optional"
-                autoComplete="current-password"
-                value={torAuthPassword}
-                onChange={(e) => setTorAuthPassword(e.target.value)}
-              />
+              <SummaryRow label="SOCKS port" value={values.socksPort} readOnly hint="Portal runs its own Tor" />
+              <SummaryRow label="Control port" value={values.controlPort} readOnly />
             </>,
             torError,
           )}

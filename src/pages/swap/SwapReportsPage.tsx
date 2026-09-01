@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { listSwapReports } from "../../api/commands";
 import type { SwapReportSummary, SwapStatus } from "../../api/types";
-import { isAppError } from "../../api/types";
 import { BackButton, Card, SatsAmount, StatStrip, StatusChip } from "../../components/ui/display";
 import { SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import {
@@ -32,7 +31,7 @@ const STATUS_TONE: Record<SwapStatus, "success" | "warning" | "danger"> = {
 };
 
 export function SwapReportsPage() {
-  const pushToast = useToastStore((s) => s.push);
+  const pushFailure = useToastStore((s) => s.pushFailure);
   const [reports, setReports] = useState<SwapReportSummary[] | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortField, setSortField] = useState<SortField>("time");
@@ -48,7 +47,7 @@ export function SwapReportsPage() {
       .then(setReports)
       .catch((e) => {
         setReports([]);
-        pushToast("error", isAppError(e) ? e.message : "Failed to load swap reports.");
+        pushFailure(e, "Failed to load swap reports.");
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

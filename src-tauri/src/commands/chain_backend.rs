@@ -1,13 +1,14 @@
 //! Which chain data source the wallet talks to: the bundled Electrum server or a
 //! Bitcoin Core node the user added themselves.
 //!
-//! Persisted on the Rust side rather than in the frontend's localStorage because
-//! four unrelated call sites need it — taker init, wallet restore, maker server
-//! construction, and the connectivity probe — and only the first of those gets a
-//! config object from the UI.
+//! Held on the Rust side rather than in the frontend because four unrelated call sites need
+//! it — taker init, wallet restore, maker server construction, and the connectivity probe —
+//! and only the first of those gets a config object from the UI.
+//!
+//! Nothing here is written to disk. Every launch starts from the constants below and the
+//! connection gate; an edit lives for the session only, so a node's RPC password is never at
+//! rest. `remove_legacy_config` deletes the file earlier versions did persist.
 
-use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -24,17 +25,24 @@ use crate::types::{
     NodeBackendDto, NodeBackendViewDto,
 };
 
-/// Our signet Electrum server, used until the user points somewhere else.
-const DEFAULT_ELECTRUM_URL: &str = "tcp://170.75.166.88:50001";
+/// Prefilled every launch. The user can point elsewhere on the connection gate, but that
+/// choice is deliberately not remembered.
+const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.citadelfoss.xyz:50002";
+const DEFAULT_NODE_HOST: &str = "127.0.0.1";
+const DEFAULT_NODE_RPC_PORT: u16 = 38332;
+const DEFAULT_NODE_ZMQ_PORT: u16 = 28332;
+const DEFAULT_NODE_USERNAME: &str = "user";
+const DEFAULT_NODE_PASSWORD: &str = "password";
 
 /// One bounded attempt is enough for a probe. The backend's own defaults (a 120s proxied
 /// read timeout plus `max_retries` reconnects) would stall the UI for minutes before verdict.
 const PROBE_TIMEOUT_SECS: u8 = 15;
 
-const FILE_NAME: &str = "backend.json";
+/// Written by versions that persisted the backend, including a node's RPC password.
+const LEGACY_FILE_NAME: &str = "backend.json";
 
-/// Serializes read-modify-write against the config file, same as `maker_settings`.
-static BACKEND_IO: Mutex<()> = Mutex::new(());
+/// This session's backend. `None` until first read, then seeded from the defaults.
+static SESSION: Mutex<Option<ChainBackendConfig>> = Mutex::new(None);
 
 /// Cached by complete endpoint/route fingerprint, never by process first-use.
 static ELECTRUM_NETWORK: Mutex<Option<(String, Option<Network>)>> = Mutex::new(None);
@@ -47,54 +55,39 @@ impl Default for ChainBackendConfig {
                 url: DEFAULT_ELECTRUM_URL.to_string(),
                 use_tor: false,
             },
-            node: None,
+            // Prefilled rather than `None` so the gate can show the standard node fields
+            // without the UI having to carry its own copy of the defaults.
+            node: Some(NodeBackendDto {
+                host: DEFAULT_NODE_HOST.to_string(),
+                port: DEFAULT_NODE_RPC_PORT,
+                username: DEFAULT_NODE_USERNAME.to_string(),
+                password: DEFAULT_NODE_PASSWORD.to_string(),
+                zmq_port: DEFAULT_NODE_ZMQ_PORT,
+            }),
         }
     }
 }
 
-fn config_path() -> Result<PathBuf, AppError> {
-    Ok(get_taker_dir()?.join(FILE_NAME))
+/// Deletes the config earlier versions wrote. Called once at startup: ceasing to write it
+/// would otherwise leave a plaintext RPC password on disk forever.
+pub fn remove_legacy_config() {
+    let Ok(dir) = get_taker_dir() else { return };
+    let path = dir.join(LEGACY_FILE_NAME);
+    match std::fs::remove_file(&path) {
+        Ok(()) => log::info!("removed persisted backend config at {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("could not remove {}: {e}", path.display()),
+    }
 }
 
-/// Missing or unreadable file falls back to the defaults — a corrupt one must not
-/// lock the user out of their wallet, and Settings rewrites it on the next save.
+/// This session's backend, seeded from the code defaults on first read.
 pub(crate) fn load() -> ChainBackendConfig {
-    let Ok(path) = config_path() else {
-        return ChainBackendConfig::default();
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            log::warn!("could not parse {}: {e}; using defaults", path.display());
-            ChainBackendConfig::default()
-        }),
-        Err(_) => ChainBackendConfig::default(),
-    }
+    let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    session.get_or_insert_with(ChainBackendConfig::default).clone()
 }
 
-/// Written 0600 via a temp file + rename: it holds the node's RPC password, and a
-/// half-written config would fall back to the bundled Electrum server on next start.
-fn save(config: &ChainBackendConfig) -> Result<(), AppError> {
-    let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        crate::security::fs::ensure_private_dir(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    let _ = std::fs::remove_file(&tmp);
-
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut file = opts.open(&tmp)?;
-    let body = serde_json::to_string_pretty(config).map_err(AppError::internal)?;
-    file.write_all(body.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+fn store(config: ChainBackendConfig) {
+    *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(config);
 }
 
 /// The crate cannot resolve an onion host without a proxy, so Tor is not optional there
@@ -112,10 +105,12 @@ fn electrum_needs_tor(dto: &ElectrumBackendDto) -> bool {
 }
 
 fn electrum_config(dto: &ElectrumBackendDto, socks_port: Option<u16>) -> ElectrumConfig {
+    let socks_port = live_socks_port(socks_port);
     ElectrumConfig {
         url: dto.url.clone(),
         socks5: electrum_needs_tor(dto)
-            .then(|| format!("127.0.0.1:{}", socks_port.unwrap_or(9050))),
+            .then(|| socks_port.map(|port| format!("127.0.0.1:{port}")))
+            .flatten(),
         timeout: None,
         poll_interval_secs: None,
         max_retries: 3,
@@ -207,13 +202,19 @@ fn validate(config: &ChainBackendConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-pub(crate) fn fingerprint(config: &ChainBackendConfig, socks_port: u16) -> String {
+/// Falls back to the port Portal's own Tor is running on, for probes that happen before the
+/// taker has pinned a route. `None` only before Tor starts, when no Tor route can work anyway.
+fn live_socks_port(pinned: Option<u16>) -> Option<u16> {
+    pinned.or_else(|| crate::tor::runtime().map(|tor| tor.socks_port))
+}
+
+pub(crate) fn fingerprint(config: &ChainBackendConfig, socks_port: Option<u16>) -> String {
     match config.kind {
         ChainBackendKind::Electrum => format!(
-            "electrum|{}|{}|{}",
+            "electrum|{}|{}|{:?}",
             config.electrum.url,
             electrum_needs_tor(&config.electrum),
-            socks_port
+            live_socks_port(socks_port)
         ),
         ChainBackendKind::CoreRpc => config.node.as_ref().map_or_else(
             || "core|missing".to_string(),
@@ -223,11 +224,12 @@ pub(crate) fn fingerprint(config: &ChainBackendConfig, socks_port: u16) -> Strin
 }
 
 /// Human-readable route disclosure without returning credentials to the renderer.
-pub(crate) fn route_description(config: &ChainBackendConfig, socks_port: u16) -> String {
+pub(crate) fn route_description(config: &ChainBackendConfig, socks_port: Option<u16>) -> String {
     match config.kind {
         ChainBackendKind::Electrum if electrum_needs_tor(&config.electrum) => format!(
-            "Electrum {} through Tor SOCKS 127.0.0.1:{socks_port}",
-            config.electrum.url
+            "Electrum {} through Tor SOCKS 127.0.0.1:{}",
+            config.electrum.url,
+            live_socks_port(socks_port).unwrap_or_default()
         ),
         ChainBackendKind::Electrum => {
             format!("Electrum {} directly (without Tor)", config.electrum.url)
@@ -245,10 +247,10 @@ pub(crate) async fn preflight_active(state: &crate::state::AppState) -> Result<S
         .read()?
         .clone()
         .ok_or_else(AppError::not_initialized)?;
-    let socks_port = state.active_socks_port.read()?.unwrap_or(9050);
+    let socks_port = *state.active_socks_port.read()?;
     let route_fingerprint = fingerprint(&config, socks_port);
     let status = tauri::async_runtime::spawn_blocking(move || match config.kind {
-        ChainBackendKind::Electrum => probe_electrum(&config.electrum, Some(socks_port)),
+        ChainBackendKind::Electrum => probe_electrum(&config.electrum, socks_port),
         ChainBackendKind::CoreRpc => config
             .node
             .as_ref()
@@ -298,46 +300,15 @@ pub fn get_chain_backend() -> ChainBackendView {
     to_view(load())
 }
 
-/// Whether the running taker is pinned to a route other than the saved one. Settings can
-/// only see the on-disk config, which says nothing about the session already holding a
-/// connection — so without this the reload prompt disappears on the next page visit.
-#[tauri::command]
-pub fn chain_backend_reload_pending(state: tauri::State<'_, crate::state::AppState>) -> bool {
-    let Ok(Some(active)) = state.active_chain_backend.read().as_deref().cloned() else {
-        return false;
-    };
-    let socks_port = state
-        .active_socks_port
-        .read()
-        .ok()
-        .and_then(|port| *port)
-        .unwrap_or(9050);
-    fingerprint(&active, socks_port) != fingerprint(&load(), socks_port)
-}
-
+/// Adopts a backend for this session.
 #[tauri::command]
 pub fn set_chain_backend(config: ChainBackendConfig) -> Result<(), AppError> {
     let config = merge_preserved_password(config);
     validate(&config)?;
-    let _guard = BACKEND_IO.lock()?;
-    save(&config)
+    store(config);
+    Ok(())
 }
 
-/// Drops the saved config and hands back the defaults, so the bundled Electrum URL
-/// stays defined in exactly one place instead of being mirrored in the UI.
-#[tauri::command]
-pub fn reset_chain_backend() -> Result<ChainBackendView, AppError> {
-    let _guard = BACKEND_IO.lock()?;
-    match std::fs::remove_file(config_path()?) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
-    Ok(to_view(ChainBackendConfig::default()))
-}
-
-/// Probe a backend. `config` overrides the saved one so Settings can test unsaved
-/// edits; `None` probes whatever is currently active.
 #[tauri::command]
 pub async fn check_backend(
     config: Option<ChainBackendConfig>,
@@ -452,7 +423,7 @@ fn electrum_network(socks_port: Option<u16>) -> Option<Network> {
     if config.kind != ChainBackendKind::Electrum {
         return None;
     }
-    let route = fingerprint(&config, socks_port.unwrap_or(9050));
+    let route = fingerprint(&config, socks_port);
     if let Ok(cache) = ELECTRUM_NETWORK.lock() {
         if let Some((cached_route, network)) = cache.as_ref() {
             if cached_route == &route {
@@ -510,3 +481,6 @@ mod tests {
         assert!(validate(&config).is_err());
     }
 }
+
+
+

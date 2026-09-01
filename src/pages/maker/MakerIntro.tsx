@@ -4,7 +4,6 @@ import { checkTor, getSuggestedMakerPorts, initMaker } from "../../api/commands"
 import { Card } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
-import { loadConnectivityDefaults } from "../../lib/connectivity";
 import { validateNewPassword } from "../../lib/password-policy";
 import { withMinDelay } from "../../lib/timing";
 import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
@@ -44,24 +43,30 @@ export function MakerIntro({ onImported }: { onImported: () => void }) {
 
   async function create() {
     if (!trimmed || malformed || passwordError) return;
-    const { torSocksPort, torControlPort, torAuthPassword } = loadConnectivityDefaults();
     setStage("creating");
     setError(null);
     setSteps({ ...IDLE, tor: "running" });
 
+    // Sent straight back to init_maker, which overrides them from Portal's own Tor anyway;
+    // the maker settings still carry the pair until that sweep lands.
+    let torPorts = { socksPort: 0, controlPort: 0 };
     try {
       await withMinDelay(
         (async () => {
-          const status = await checkTor(torSocksPort, torControlPort, torAuthPassword);
+          const status = await checkTor();
           if (!(status.reachable && status.authenticated)) {
             throw new Error(status.error ?? "Tor control port unreachable.");
           }
+          torPorts = { socksPort: status.socksPort ?? 0, controlPort: status.controlPort ?? 0 };
         })(),
         MIN_STEP_MS,
       );
       setSteps((s) => ({ ...s, tor: "passed", ports: "running" }));
 
-      const ports = await withMinDelay(getSuggestedMakerPorts(torSocksPort, torControlPort), MIN_STEP_MS);
+      const ports = await withMinDelay(
+        getSuggestedMakerPorts(),
+        MIN_STEP_MS,
+      );
       setSteps((s) => ({ ...s, ports: "passed", create: "running" }));
 
       await withMinDelay(
@@ -71,9 +76,7 @@ export function MakerIntro({ onImported }: { onImported: () => void }) {
           // something else to invent and then keep straight.
           walletName: trimmed,
           walletPassword: password,
-          socksPort: torSocksPort,
-          controlPort: torControlPort,
-          torAuthPassword: torAuthPassword || undefined,
+          ...torPorts,
           networkPort: ports.networkPort,
           rpcPort: ports.rpcPort,
           ...MAKER_DEFAULTS,

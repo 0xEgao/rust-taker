@@ -3,20 +3,15 @@ import { dirname } from "@tauri-apps/api/path";
 import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { checkBackend, checkTor, chooseRestoreBackup, getChainBackend, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { chooseRestoreBackup, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
-import type { ChainBackendKind, InitResult, RestoreSelection } from "../../api/types";
+import type { InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { IntroStage } from "../../components/ui/IntroStage";
-import { wait, withMinDelay } from "../../lib/timing";
+import { withMinDelay } from "../../lib/timing";
 import { walletIdentity } from "../../lib/wallet-identity";
-import {
-  loadConnectivityDefaults,
-  saveConnectivityDefaults,
-  type ConnectivityConfig,
-} from "../../lib/connectivity";
 import {
   getDefaultDataDir,
   getDefaultWalletsDir,
@@ -30,16 +25,11 @@ interface SelectWalletStepProps {
 }
 
 type ViewMode = "grid" | "unlock" | "create" | "restore" | "checking";
-type CheckStage = "backend" | "tor" | "wallet";
-
 interface CheckFailure {
-  stage: CheckStage;
   message: string;
 }
 
 interface Steps {
-  backend: CheckState;
-  tor: CheckState;
   verify: CheckState;
   init: CheckState;
 }
@@ -47,7 +37,7 @@ interface Steps {
 // The same curve IntroStage enters on, so the grid inherits the stage's motion signature.
 const RISE = [0.16, 1, 0.3, 1] as const;
 
-const IDLE_STEPS: Steps = { backend: "idle", tor: "idle", verify: "idle", init: "idle" };
+const IDLE_STEPS: Steps = { verify: "idle", init: "idle" };
 
 function randomWalletName() {
   return `taker-wallet-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -94,19 +84,13 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   const [restoreName, setRestoreName] = useState(randomWalletName());
   const [restorePassword, setRestorePassword] = useState("");
 
-  const [connectivity, setConnectivity] = useState<ConnectivityConfig>(loadConnectivityDefaults);
   const [steps, setSteps] = useState<Steps>(IDLE_STEPS);
   const [failure, setFailure] = useState<CheckFailure | null>(null);
   const [pendingWallet, setPendingWallet] = useState<WalletChoice | null>(null);
   const [retryPassword, setRetryPassword] = useState("");
-  const [backendKind, setBackendKind] = useState<ChainBackendKind>("electrum");
-  const backendLabel = backendKind === "coreRpc" ? "your Bitcoin node" : "the Electrum server";
 
   useEffect(() => {
     refreshWallets(dataDir);
-    void getChainBackend()
-      .then((c) => setBackendKind(c.kind))
-      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -162,7 +146,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       setViewMode("restore");
     } catch (e) {
       if ((e as { code?: string })?.code !== "USER_CANCELLED") {
-        setFailure({ stage: "wallet", message: (e as { message?: string })?.message ?? "Could not select the backup." });
+        setFailure({ message: (e as { message?: string })?.message ?? "Could not select the backup." });
       }
     }
   }
@@ -197,66 +181,24 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setPendingWallet(wallet);
     setFailure(null);
     setViewMode("checking");
-    setSteps({ tor: "running", backend: "idle", verify: "idle", init: "idle" });
-
-    // Tor first: the taker's own connection type is Tor, and a Tor-routed chain backend
-    // would otherwise surface a dead proxy as a misleading "backend unreachable".
-    try {
-      await withMinDelay(
-        (async () => {
-          const status = await checkTor(connectivity.torSocksPort, connectivity.torControlPort, connectivity.torAuthPassword);
-          if (!(status.reachable && status.authenticated)) {
-            throw new Error(status.error ?? "Tor control port unreachable.");
-          }
-        })(),
-        MIN_STEP_MS,
-      );
-    } catch (e) {
-      setSteps((s) => ({ ...s, tor: "failed" }));
-      setFailure({ stage: "tor", message: (e as { message?: string })?.message ?? "Could not reach Tor." });
-      return;
-    }
-    setSteps((s) => ({ ...s, tor: "passed", backend: "running" }));
-
-    try {
-      await withMinDelay(
-        (async () => {
-          const status = await checkBackend(undefined, connectivity.torSocksPort);
-          if (!status.reachable) {
-            throw new Error(status.error ?? `Could not reach ${backendLabel}.`);
-          }
-        })(),
-        MIN_STEP_MS,
-      );
-    } catch (e) {
-      setSteps((s) => ({ ...s, backend: "failed" }));
-      setFailure({ stage: "backend", message: (e as { message?: string })?.message ?? `Could not reach ${backendLabel}.` });
-      return;
-    }
-    setSteps((s) => ({ ...s, backend: "passed", verify: "running" }));
-    await wait(MIN_STEP_MS);
-    setSteps((s) => ({ ...s, verify: "passed", init: "running" }));
+    setSteps({ verify: "running", init: "idle" });
 
     try {
       const result = await withMinDelay(
         (async () => {
           if (wallet.mode === "restore") {
-            await restoreWallet(wallet.walletName, connectivity.torSocksPort, wallet.selectionId, wallet.password, dataDir);
+            await restoreWallet(wallet.walletName, undefined, wallet.selectionId, wallet.password, dataDir);
           }
           return initTaker({
             walletName: wallet.walletName,
             walletPassword: wallet.password,
-            controlPort: connectivity.torControlPort,
-            socksPort: connectivity.torSocksPort,
-            torAuthPassword: connectivity.torAuthPassword,
             connectionType: "tor",
             dataDir,
           });
         })(),
         MIN_STEP_MS,
       );
-      setSteps((s) => ({ ...s, init: "passed" }));
-      saveConnectivityDefaults(connectivity);
+      setSteps({ verify: "passed", init: "passed" });
       // Kick off a real offerbook sync now, in the background, so the Market page has fresh
       // maker data by the time the user looks at it — not just whatever offerbook.json had from
       // the last session. Not awaited: this can take 30-60s+ and shouldn't block navigation.
@@ -266,22 +208,25 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       onSuccess(result, wallet.mode === "restore");
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      setSteps((s) => ({ ...s, verify: "failed", init: "failed" }));
+      // `init_taker` is what checks the password, so a wrong one failed verification and
+      // never reached initialization; anything else means the password was accepted.
+      const wrongPassword = err?.code === "WALLET_WRONG_PASSWORD";
+      setSteps({
+        verify: wrongPassword ? "failed" : "passed",
+        init: wrongPassword ? "idle" : "failed",
+      });
       setFailure({
-        stage: "wallet",
         message:
-          err?.code === "WALLET_WRONG_PASSWORD" ? "Incorrect password. Try again." : (err?.message ?? "Something went wrong."),
+          wrongPassword ? "Incorrect password. Try again." : (err?.message ?? "Something went wrong."),
       });
     }
   }
 
   function retry() {
     if (!pendingWallet) return;
-    if (failure?.stage === "wallet") {
-      runChecks({ ...pendingWallet, password: retryPassword });
-    } else {
-      runChecks(pendingWallet);
-    }
+    // Only an actual entry replaces the password: a create or restore that failed for some
+    // other reason must keep the one it was given rather than retry with an empty field.
+    runChecks(retryPassword ? { ...pendingWallet, password: retryPassword } : pendingWallet);
   }
 
   function cancelFailure() {
@@ -364,8 +309,6 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   const checklist = (
     <Checklist
       steps={[
-        { label: "Checking Tor", state: steps.tor },
-        { label: `Checking ${backendLabel}`, state: steps.backend },
         { label: "Verifying wallet password", state: steps.verify },
         { label: "Initializing taker", state: steps.init },
       ]}
@@ -374,13 +317,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   const failureModal = failure && (
     <Modal
-      title={
-        failure.stage === "backend"
-          ? `Can't reach ${backendLabel}`
-          : failure.stage === "tor"
-            ? "Can't reach Tor"
-            : "Couldn't unlock wallet"
-      }
+      title="Couldn't unlock wallet"
       onClose={cancelFailure}
       footer={
         <>
@@ -393,37 +330,14 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     >
       <p className="text-[12.5px] text-danger">{failure.message}</p>
 
-      {failure.stage === "tor" && (
-        <>
-          <TextField
-            label="SOCKS port"
-            value={connectivity.torSocksPort}
-            onChange={(e) => setConnectivity((c) => ({ ...c, torSocksPort: Number(e.target.value) }))}
-          />
-          <TextField
-            label="Control port"
-            value={connectivity.torControlPort}
-            onChange={(e) => setConnectivity((c) => ({ ...c, torControlPort: Number(e.target.value) }))}
-          />
-          <PasswordField
-            label="Control port auth password (optional)"
-            value={connectivity.torAuthPassword}
-            onChange={(e) => setConnectivity((c) => ({ ...c, torAuthPassword: e.target.value }))}
-            onKeyDown={onEnter(retry)}
-          />
-        </>
-      )}
-
-      {failure.stage === "wallet" && (
-        <PasswordField
-          label="Password"
-          value={retryPassword}
-          onChange={(e) => setRetryPassword(e.target.value)}
-          onKeyDown={onEnter(retry)}
-          placeholder="Enter wallet password"
-          autoFocus
-        />
-      )}
+      <PasswordField
+        label="Password"
+        value={retryPassword}
+        onChange={(e) => setRetryPassword(e.target.value)}
+        onKeyDown={onEnter(retry)}
+        placeholder="Enter wallet password"
+        autoFocus
+      />
     </Modal>
   );
 

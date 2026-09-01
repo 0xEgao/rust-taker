@@ -1,45 +1,168 @@
-//! Managed-Tor fallback, ported from `taker-app/tor-manager/src/main.rs` — folded in-process
-//! instead of a separate spawned sidecar binary, since this app has no daemon/subprocess split
-//! elsewhere (see CLAUDE.md's "embedded in-process, not a daemon" note).
-//!
-//! `ensure_tor` tries, in order: an already-running Tor (system service, Tor Browser, ...) →
-//! a `tor` binary found on PATH/common install paths, spawned with a generated torrc → an
-//! embedded Tor compiled in via `libtor` (only when built with `--features embedded-tor`).
-//! Callers run this before their own control-port handshake, so that handshake succeeds because
-//! something is now listening — it does not replace that handshake's auth/bootstrap reporting.
+//! Portal's own Tor, never a host one: the app must not depend on someone else's config or
+//! disturb it. One instance serves the whole process — `tor_main` cannot run twice, and a
+//! single Tor carries every maker's onion service anyway.
 
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const READINESS_TIMEOUT: Duration = Duration::from_secs(45);
+use std::io::{BufRead, BufReader, Read, Write};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// The Tor tier selected by managed startup.
-pub enum TorSource {
-    /// Something was already listening on both ports — nothing spawned.
-    System,
-    /// A `tor` binary found on the host was spawned; `ensure_tor` returns its `Child`.
-    HostBinary,
-    /// Compiled-in Tor started on a background thread — no child process to track.
-    Embedded,
-    /// Nothing reachable and no fallback succeeded (or `COINSWAP_DISABLE_MANAGED_TOR=1`).
-    None,
+use coinswap::bitcoin::secp256k1::rand::RngCore;
+
+const READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+/// `SIGNAL HALT` exits immediately by design, so this only bounds a Tor that has stopped
+/// answering its own control port — not the graceful maker and taker teardown before it.
+const HALT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ports and control credential of the Tor this process started.
+#[derive(Debug, Clone)]
+pub struct TorRuntime {
+    pub socks_port: u16,
+    pub control_port: u16,
+    /// Plaintext control-port password. The coinswap crate authenticates with
+    /// `AUTHENTICATE "<password>"`, so cookie auth would lock the maker out of `ADD_ONION`.
+    pub control_password: String,
 }
 
-impl TorSource {
-    /// Stable value serialized into setup status responses.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TorSource::System => "system",
-            TorSource::HostBinary => "host_binary",
-            TorSource::Embedded => "embedded",
-            TorSource::None => "none",
+/// Populated the moment Tor is launched, before it is known to be ready, so a retry waits on
+/// the instance already starting instead of spawning a second one on a second pair of ports.
+static RUNTIME: Mutex<Option<TorRuntime>> = Mutex::new(None);
+
+/// Starts Portal's Tor if it isn't running yet and returns the ports to bind to.
+pub fn ensure_tor() -> Result<TorRuntime, String> {
+    // The lock is released before the readiness wait: `runtime()` is a status read that the
+    // UI makes while Tor is still bootstrapping, and holding it across the wait would block
+    // every such caller for the best part of a minute.
+    let runtime = {
+        let mut slot = RUNTIME.lock().map_err(|e| e.to_string())?;
+        match slot.as_ref() {
+            Some(runtime) => runtime.clone(),
+            None => {
+                let (socks_port, control_port) = free_port_pair().map_err(|e| e.to_string())?;
+                let control_password = hex_upper(&random_bytes::<16>());
+                let hashed = hashed_control_password(&control_password, &random_bytes::<8>());
+                start_embedded_tor(&tor_dir()?, socks_port, control_port, &hashed)?;
+                let runtime = TorRuntime {
+                    socks_port,
+                    control_port,
+                    control_password,
+                };
+                *slot = Some(runtime.clone());
+                runtime
+            }
         }
+    };
+
+    if wait_until_ready(runtime.socks_port, runtime.control_port) {
+        return Ok(runtime);
     }
+    // Otherwise the cached runtime would be handed to every later call, which would wait on
+    // the same dead ports forever — the gate and every maker would stay down until restart.
+    // Halting clears the slot, so the next attempt starts over on a fresh pair.
+    shutdown();
+    Err("Portal's Tor did not open its SOCKS and control ports".to_string())
+}
+
+/// Halts Portal's Tor through its own control port. The last thing stopped on quit: the
+/// makers and the taker both route through it, so it has to outlive them.
+pub fn shutdown() {
+    let Some(tor) = runtime() else {
+        return;
+    };
+    // SIGNAL HALT rather than letting the thread die with the process, so Tor runs its own
+    // cleanup and writes back the cached consensus the next launch starts from.
+    if let Err(e) = signal_halt(&tor) {
+        log::warn!("could not halt Portal's Tor cleanly: {e}");
+    }
+    let deadline = Instant::now() + HALT_TIMEOUT;
+    while Instant::now() < deadline && control_responds_as_tor(tor.control_port) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if let Ok(mut slot) = RUNTIME.lock() {
+        *slot = None;
+    }
+}
+
+fn signal_halt(tor: &TorRuntime) -> std::io::Result<()> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], tor.control_port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+
+    stream.write_all(format!("AUTHENTICATE \"{}\"\r\n", tor.control_password).as_bytes())?;
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    if !line.starts_with("250") {
+        return Err(std::io::Error::other("control-port authentication failed"));
+    }
+
+    stream.write_all(b"SIGNAL HALT\r\n")?;
+    line.clear();
+    reader.read_line(&mut line)?;
+    Ok(())
+}
+
+/// The ports Tor is on, once started. `None` before the first `ensure_tor`.
+pub fn runtime() -> Option<TorRuntime> {
+    RUNTIME.lock().ok()?.clone()
+}
+
+/// Shared by the taker and every maker, but kept under the taker data dir so the layout
+/// stays inside the directories the coinswap crate already owns.
+fn tor_dir() -> Result<PathBuf, String> {
+    coinswap::utill::get_taker_dir()
+        .map(|dir| dir.join("tor-manager"))
+        .map_err(|e| e.to_string())
+}
+
+/// Picks a free loopback port pair. Holding both listeners until each port is known stops the
+/// OS handing out the same one twice, but they are released for Tor to bind — nothing reserves
+/// them in between, so a failed bind is recovered by retrying with a fresh pair.
+fn free_port_pair() -> std::io::Result<(u16, u16)> {
+    let socks = TcpListener::bind(("127.0.0.1", 0))?;
+    let control = TcpListener::bind(("127.0.0.1", 0))?;
+    Ok((socks.local_addr()?.port(), control.local_addr()?.port()))
+}
+
+fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut buffer = [0u8; N];
+    coinswap::bitcoin::secp256k1::rand::thread_rng().fill_bytes(&mut buffer);
+    buffer
+}
+
+fn hex_upper(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+}
+
+/// Tor's `HashedControlPassword` value: RFC2440 iterated-and-salted S2K over SHA1, rendered
+/// as `16:<salt><indicator><digest>`. `tor --hash-password` produces this; libtor exposes no
+/// equivalent, so it has to be computed here.
+fn hashed_control_password(password: &str, salt: &[u8; 8]) -> String {
+    use coinswap::bitcoin::hashes::{sha1, Hash, HashEngine};
+
+    // Tor's own default indicator; expands to (16 + (c & 15)) << ((c >> 4) + 6) = 65536 bytes.
+    const INDICATOR: u8 = 0x60;
+    let count = (16 + usize::from(INDICATOR & 0x0f)) << ((INDICATOR >> 4) + 6);
+
+    let mut secret = salt.to_vec();
+    secret.extend_from_slice(password.as_bytes());
+    let mut engine = sha1::Hash::engine();
+    let mut remaining = count;
+    while remaining > 0 {
+        let chunk = remaining.min(secret.len());
+        engine.input(&secret[..chunk]);
+        remaining -= chunk;
+    }
+    let digest = sha1::Hash::from_engine(engine);
+
+    format!(
+        "16:{}{INDICATOR:02X}{}",
+        hex_upper(salt),
+        hex_upper(digest.as_byte_array())
+    )
 }
 
 /// Performs a bounded SOCKS5 greeting against a loopback port.
@@ -71,14 +194,10 @@ fn control_responds_as_tor(port: u16) -> bool {
     BufReader::new(stream).read_line(&mut line).is_ok() && line.starts_with("250-PROTOCOLINFO")
 }
 
-fn ports_are_tor(socks_port: u16, control_port: u16) -> bool {
-    socks5_responds(socks_port) && control_responds_as_tor(control_port)
-}
-
-fn wait_until_ready(socks_port: u16, control_port: u16, timeout: Duration) -> bool {
+fn wait_until_ready(socks_port: u16, control_port: u16) -> bool {
     let start = Instant::now();
-    while start.elapsed() < timeout {
-        if ports_are_tor(socks_port, control_port) {
+    while start.elapsed() < READINESS_TIMEOUT {
+        if socks5_responds(socks_port) && control_responds_as_tor(control_port) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -86,222 +205,68 @@ fn wait_until_ready(socks_port: u16, control_port: u16, timeout: Duration) -> bo
     false
 }
 
-fn find_host_tor() -> Option<PathBuf> {
-    let executable = if cfg!(windows) { "tor.exe" } else { "tor" };
-    let search_path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&search_path)
-        .map(|directory| directory.join(executable))
-        .chain(common_tor_paths().into_iter().map(PathBuf::from))
-        .find(|path| safe_tor_binary(path))
-}
-
-fn safe_tor_binary(path: &Path) -> bool {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return false;
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o022 != 0 {
-            return false;
-        }
-    }
-    true
-}
-
-fn common_tor_paths() -> Vec<&'static str> {
-    if cfg!(target_os = "macos") {
-        vec![
-            "/opt/homebrew/bin/tor",
-            "/usr/local/bin/tor",
-            "/usr/bin/tor",
-            "/opt/local/bin/tor",
-        ]
-    } else if cfg!(windows) {
-        vec![
-            r"C:\Program Files\Tor\tor.exe",
-            r"C:\Program Files (x86)\Tor\tor.exe",
-        ]
-    } else {
-        vec!["/usr/bin/tor", "/usr/local/bin/tor", "/bin/tor"]
-    }
-}
-
-fn data_dir_path(tor_dir: &Path) -> PathBuf {
-    tor_dir.join("data")
-}
-
-fn cookie_path(tor_dir: &Path) -> PathBuf {
-    data_dir_path(tor_dir).join("control_auth_cookie")
-}
-
-fn managed_tor_dir() -> Result<PathBuf, String> {
-    coinswap::utill::get_taker_dir()
-        .map(|dir| dir.join("tor-manager"))
-        .map_err(|e| e.to_string())
-}
-
-/// Reads and validates the managed Tor control cookie without following symlinks.
-pub fn managed_cookie() -> Result<Vec<u8>, String> {
-    let path = cookie_path(&managed_tor_dir()?);
-    let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("control cookie is not a regular file".to_string());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("control cookie is accessible by another local account".to_string());
-        }
-    }
-    let bytes = fs::read(path).map_err(|e| e.to_string())?;
-    if bytes.len() != 32 {
-        return Err("control cookie has an invalid length".to_string());
-    }
-    Ok(bytes)
-}
-
-fn write_torrc(tor_dir: &Path, socks_port: u16, control_port: u16) -> std::io::Result<PathBuf> {
-    let data_dir = data_dir_path(tor_dir);
-    let cookie = cookie_path(tor_dir);
-    if [data_dir.as_path(), cookie.as_path()].iter().any(|path| {
-        path.to_string_lossy()
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n'))
-    }) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "managed Tor paths cannot contain CR or LF",
-        ));
-    }
-    crate::security::fs::ensure_private_dir(tor_dir)
-        .map_err(|e| std::io::Error::other(e.message))?;
-    crate::security::fs::ensure_private_dir(&data_dir)
-        .map_err(|e| std::io::Error::other(e.message))?;
-    let quoted = data_dir
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    let quoted_cookie = cookie
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    let torrc = format!(
-        "SocksPort 127.0.0.1:{socks_port}\nControlPort 127.0.0.1:{control_port}\nCookieAuthentication 1\nCookieAuthFile \"{quoted_cookie}\"\nCookieAuthFileGroupReadable 0\nDataDirectory \"{quoted}\"\n"
-    );
-    let path = tor_dir.join("torrc");
-    crate::security::fs::write_private(&path, torrc.as_bytes())
-        .map_err(|e| std::io::Error::other(e.message))?;
-    Ok(path)
-}
-
-fn start_host_tor(
+#[cfg(feature = "embedded-tor")]
+fn start_embedded_tor(
     tor_dir: &Path,
-    tor_bin: &Path,
     socks_port: u16,
     control_port: u16,
-) -> std::io::Result<Child> {
-    let torrc = write_torrc(tor_dir, socks_port, control_port)?;
-    let child = Command::new(tor_bin)
-        .arg("-f")
-        .arg(torrc)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    if wait_until_ready(socks_port, control_port, READINESS_TIMEOUT) {
-        Ok(child)
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "tor did not open SOCKS/control ports in time",
-        ))
-    }
-}
+    hashed_password: &str,
+) -> Result<(), String> {
+    use libtor::{Tor, TorFlag};
 
-#[cfg(feature = "embedded-tor")]
-fn start_embedded_tor(tor_dir: &Path, socks_port: u16, control_port: u16) -> Result<(), String> {
-    use libtor::{Tor, TorBool, TorFlag};
-
-    let data_dir = data_dir_path(tor_dir);
+    let data_dir = tor_dir.join("data");
     crate::security::fs::ensure_private_dir(tor_dir).map_err(|e| e.message)?;
     crate::security::fs::ensure_private_dir(&data_dir).map_err(|e| e.message)?;
-    let cookie = cookie_path(tor_dir);
 
-    let mut tor = Tor::new();
-    tor.flag(TorFlag::DataDirectory(
-        data_dir.to_string_lossy().to_string(),
-    ))
-    .flag(TorFlag::SocksPort(socks_port))
-    .flag(TorFlag::ControlPort(control_port))
-    .flag(TorFlag::CookieAuthentication(TorBool::from(true)))
-    .flag(TorFlag::CookieAuthFile(
-        cookie.to_string_lossy().to_string(),
-    ))
-    .flag(TorFlag::CookieAuthFileGroupReadable(TorBool::from(false)))
-    .flag(TorFlag::Hush());
+    let handle = Tor::new()
+        .flag(TorFlag::DataDirectory(
+            data_dir.to_string_lossy().to_string(),
+        ))
+        .flag(TorFlag::SocksPort(socks_port))
+        .flag(TorFlag::ControlPort(control_port))
+        .flag(TorFlag::HashedControlPassword(hashed_password.to_string()))
+        .flag(TorFlag::LogTo(
+            libtor::LogLevel::Notice,
+            libtor::LogDestination::File(tor_dir.join("tor.log").to_string_lossy().to_string()),
+        ))
+        .start_background();
 
-    let handle = tor.start_background();
-    if wait_until_ready(socks_port, control_port, READINESS_TIMEOUT) {
-        std::thread::spawn(move || match handle.join() {
-            Ok(Ok(code)) => log::info!("embedded tor exited with code {code}"),
-            Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
-            Err(_) => log::warn!("embedded tor thread panicked"),
-        });
-        Ok(())
-    } else {
-        Err("embedded tor did not open SOCKS/control ports in time".to_string())
-    }
+    std::thread::spawn(move || match handle.join() {
+        Ok(Ok(code)) => log::info!("embedded tor exited with code {code}"),
+        Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
+        Err(_) => log::warn!("embedded tor thread panicked"),
+    });
+    Ok(())
 }
 
 #[cfg(not(feature = "embedded-tor"))]
-fn start_embedded_tor(_tor_dir: &Path, _socks_port: u16, _control_port: u16) -> Result<(), String> {
+fn start_embedded_tor(
+    _tor_dir: &Path,
+    _socks_port: u16,
+    _control_port: u16,
+    _hashed_password: &str,
+) -> Result<(), String> {
     Err("embedded Tor support was not compiled in (build with --features embedded-tor)".to_string())
 }
 
-/// Ensures something is listening on `socks_port`/`control_port`, falling back through
-/// system → host binary → embedded. Returns the source used and, for `HostBinary`, the spawned
-/// `Child` so the caller can keep it alive and kill it on app exit.
-pub fn ensure_tor(socks_port: u16, control_port: u16) -> (TorSource, Option<Child>) {
-    if std::env::var("COINSWAP_DISABLE_MANAGED_TOR").as_deref() == Ok("1") {
-        return (TorSource::None, None);
-    }
-    if ports_are_tor(socks_port, control_port) {
-        return (TorSource::System, None);
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let tor_dir = match coinswap::utill::get_taker_dir() {
-        Ok(dir) => dir.join("tor-manager"),
-        Err(e) => {
-            log::warn!("could not resolve taker data dir: {e}");
-            return (TorSource::None, None);
-        }
-    };
-    if let Err(e) = crate::security::fs::ensure_private_dir(&tor_dir) {
-        log::warn!(
-            "could not create tor-manager config dir {}: {e:?}",
-            tor_dir.display()
+    /// Vector produced by `tor --hash-password portal`, with its random salt pinned.
+    #[test]
+    fn hashed_password_matches_tor_s2k() {
+        let salt = [0x37, 0x98, 0x19, 0x45, 0xF4, 0xFF, 0x1F, 0x4E];
+        assert_eq!(
+            hashed_control_password("portal", &salt),
+            "16:37981945F4FF1F4E6076B831F1411EAF1F6A2255EE8B4E1CBE55EE4E2B"
         );
     }
 
-    if let Some(tor_bin) = find_host_tor() {
-        match start_host_tor(&tor_dir, &tor_bin, socks_port, control_port) {
-            Ok(child) => return (TorSource::HostBinary, Some(child)),
-            Err(e) => log::warn!("host tor at {} failed to start: {e}", tor_bin.display()),
-        }
-    } else {
-        log::info!("no host tor binary found on PATH or common install locations");
-    }
-
-    match start_embedded_tor(&tor_dir, socks_port, control_port) {
-        Ok(()) => (TorSource::Embedded, None),
-        Err(e) => {
-            log::warn!("embedded tor failed to start: {e}");
-            (TorSource::None, None)
-        }
+    #[test]
+    fn port_pair_is_distinct() {
+        let (socks, control) = free_port_pair().unwrap();
+        assert_ne!(socks, control);
     }
 }
+

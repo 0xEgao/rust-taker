@@ -7,53 +7,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::error::AppError;
-use crate::security::input::validate_tor_control_secret;
-use crate::state::AppState;
-use crate::types::{PortStatus, TorStatus, VersionInfo};
-
-/// Purpose-specific Core ZMQ reachability check. Portal only supports a local
-/// endpoint; remote users must expose it through a trusted local tunnel.
-#[tauri::command]
-pub async fn check_core_zmq(host: String, port: u16) -> Result<PortStatus, AppError> {
-    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
-        return Ok(PortStatus {
-            reachable: false,
-            error: Some("Use a trusted local tunnel for remote Bitcoin Core ZMQ".to_string()),
-        });
-    }
-    let timeout = Duration::from_secs(3);
-    tauri::async_runtime::spawn_blocking(move || {
-        let addr = match (host.as_str(), port).to_socket_addrs() {
-            Ok(mut addrs) => match addrs.next() {
-                Some(a) => a,
-                None => {
-                    return PortStatus {
-                        reachable: false,
-                        error: Some(format!("could not resolve {host}:{port}")),
-                    }
-                }
-            },
-            Err(e) => {
-                return PortStatus {
-                    reachable: false,
-                    error: Some(e.to_string()),
-                }
-            }
-        };
-        match TcpStream::connect_timeout(&addr, timeout) {
-            Ok(_) => PortStatus {
-                reachable: true,
-                error: None,
-            },
-            Err(e) => PortStatus {
-                reachable: false,
-                error: Some(e.to_string()),
-            },
-        }
-    })
-    .await
-    .map_err(AppError::internal)
-}
+use crate::types::{TorStatus, VersionInfo};
 
 #[tauri::command]
 pub fn get_version_info(app: tauri::AppHandle) -> VersionInfo {
@@ -63,59 +17,36 @@ pub fn get_version_info(app: tauri::AppHandle) -> VersionInfo {
     }
 }
 
-/// Ensures Tor is actually running (system → host binary → embedded fallback, see `crate::tor`)
-/// before mirroring coinswap's own control-port handshake. Bootstrap < 100% is informational
-/// only, not a failure.
+/// Starts Portal's own Tor if it isn't up yet, then mirrors coinswap's control-port
+/// handshake against it. Bootstrap < 100% is informational only, not a failure.
 #[tauri::command]
-pub async fn check_tor(
-    state: tauri::State<'_, AppState>,
-    socks_port: u16,
-    control_port: u16,
-    tor_auth_password: String,
-) -> Result<TorStatus, AppError> {
-    validate_tor_control_secret(&tor_auth_password)?;
-    let password = if tor_auth_password.is_empty() {
-        state
-            .tor_auth_secret
-            .lock()?
-            .as_ref()
-            .map(|secret| secret.to_string())
-            .unwrap_or_default()
-    } else {
-        *state.tor_auth_secret.lock()? = Some(zeroize::Zeroizing::new(tor_auth_password.clone()));
-        tor_auth_password
-    };
-    let (status, child) = tauri::async_runtime::spawn_blocking(move || {
-        let (source, child) = crate::tor::ensure_tor(socks_port, control_port);
-        (
-            run_tor_handshake(socks_port, control_port, &password, source),
-            child,
-        )
+pub async fn check_tor() -> Result<TorStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(|| match crate::tor::ensure_tor() {
+        Ok(runtime) => run_tor_handshake(&runtime),
+        Err(error) => TorStatus {
+            reachable: false,
+            socks_reachable: false,
+            authenticated: false,
+            bootstrap_progress: None,
+            error: Some(error),
+            socks_port: None,
+            control_port: None,
+        },
     })
     .await
-    .map_err(AppError::internal)?;
-
-    if let Some(child) = child {
-        *state.managed_tor.lock()? = Some(child);
-    }
-    Ok(status)
+    .map_err(AppError::internal)
 }
 
-fn run_tor_handshake(
-    socks_port: u16,
-    control_port: u16,
-    password: &str,
-    source: crate::tor::TorSource,
-) -> TorStatus {
-    let source_kind = source;
-    let source = Some(source_kind.as_str().to_string());
+fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
+    let (socks_port, control_port) = (tor.socks_port, tor.control_port);
     let unreachable = |socks_reachable: bool, err: String| TorStatus {
         reachable: false,
         socks_reachable,
         authenticated: false,
         bootstrap_progress: None,
         error: Some(err),
-        source: source.clone(),
+        socks_port: Some(socks_port),
+        control_port: Some(control_port),
     };
 
     if !crate::tor::socks5_responds(socks_port) {
@@ -170,26 +101,9 @@ fn run_tor_handshake(
         return unreachable(true, "control port did not identify itself as Tor".into());
     }
 
-    let auth_bytes = if matches!(
-        source_kind,
-        crate::tor::TorSource::HostBinary | crate::tor::TorSource::Embedded
-    ) {
-        match crate::tor::managed_cookie() {
-            Ok(cookie) => cookie,
-            Err(e) => return unreachable(true, format!("managed Tor cookie unavailable: {e}")),
-        }
-    } else {
-        password.as_bytes().to_vec()
-    };
-    let command = if auth_bytes.is_empty() {
-        "AUTHENTICATE\r\n".to_string()
-    } else {
-        let encoded = auth_bytes
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect::<String>();
-        format!("AUTHENTICATE {encoded}\r\n")
-    };
+    // Same quoted form the crate uses, so a failure here means the maker's ADD_ONION
+    // would fail the same way rather than passing this check and breaking later.
+    let command = format!("AUTHENTICATE \"{}\"\r\n", tor.control_password);
     if stream.write_all(command.as_bytes()).is_err() {
         return unreachable(true, "failed to send AUTHENTICATE".into());
     }
@@ -201,7 +115,8 @@ fn run_tor_handshake(
             authenticated: false,
             bootstrap_progress: None,
             error: Some("Tor control-port authentication failed".into()),
-            source,
+            socks_port: Some(socks_port),
+            control_port: Some(control_port),
         };
     }
 
@@ -215,7 +130,8 @@ fn run_tor_handshake(
             authenticated: true,
             bootstrap_progress: None,
             error: None,
-            source,
+            socks_port: Some(socks_port),
+            control_port: Some(control_port),
         };
     }
     resp.clear();
@@ -232,6 +148,8 @@ fn run_tor_handshake(
         authenticated: true,
         bootstrap_progress,
         error: None,
-        source,
+        socks_port: Some(socks_port),
+        control_port: Some(control_port),
     }
 }
+

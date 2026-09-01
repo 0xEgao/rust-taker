@@ -56,16 +56,6 @@ pub fn validate_leaf_name(value: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Rejects control characters that could inject commands into Tor's control protocol.
-pub fn validate_tor_control_secret(secret: &str) -> Result<(), AppError> {
-    if secret.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
-        return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "Tor authentication password cannot contain CR, LF, or NUL",
-        ));
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -93,11 +83,5 @@ mod tests {
     fn passwords_are_not_trimmed_but_effectively_empty_is_rejected() {
         assert!(validate_password("        ", "password").is_err());
         assert!(validate_password(" pass word ", "password").is_ok());
-    }
-
-    #[test]
-    fn tor_control_injection_is_rejected() {
-        assert!(validate_tor_control_secret("password\r\nSIGNAL HALT").is_err());
-        assert!(validate_tor_control_secret("quotes-are-handled-elsewhere").is_ok());
     }
 }

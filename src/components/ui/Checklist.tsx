@@ -70,7 +70,7 @@ export function Checklist({ steps }: { steps: { label: string; state: CheckState
     <div className="flex flex-col">
       {steps.map(({ label, state }, i) => (
         <motion.div
-          key={label}
+          key={i}
           initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? 0 : 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: i * 0.07, ease: EASE }}

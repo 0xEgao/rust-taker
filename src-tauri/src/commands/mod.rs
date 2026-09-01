@@ -6,6 +6,7 @@ pub mod maker_settings;
 pub mod maker_wallet;
 pub mod market;
 pub mod setup;
+pub mod shutdown;
 pub mod taker_reports;
 pub mod taker_swap;
 pub mod taker_wallet;

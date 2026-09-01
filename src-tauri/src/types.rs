@@ -1,13 +1,6 @@
 //! Serde DTOs crossing the IPC boundary. Mirrored by `src/api/types.ts`.
 //! Conventions: camelCase field names, amounts in sats as u64.
 
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PortStatus {
-    pub reachable: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
 
 /// Which chain data source the wallet is built against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -111,9 +104,19 @@ pub struct TorStatus {
     pub bootstrap_progress: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// "system" | "host_binary" | "embedded" | "none" — which tier `tor::ensure_tor` used.
+    /// Loopback ports Portal's own Tor was started on; freshly chosen each run.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
+    pub socks_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_port: Option<u16>,
+}
+
+/// Work a quit would interrupt rather than finish.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuitBlockers {
+    pub swap_running: bool,
+    pub running_makers: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -129,12 +132,6 @@ pub struct InitConfig {
     pub wallet_name: String,
     #[serde(default)]
     pub wallet_password: Option<String>,
-    #[serde(default)]
-    pub control_port: Option<u16>,
-    #[serde(default)]
-    pub socks_port: Option<u16>,
-    #[serde(default)]
-    pub tor_auth_password: Option<String>,
     pub connection_type: ConnectionTypeDto,
     #[serde(default)]
     pub data_dir: Option<String>,
@@ -535,8 +532,6 @@ pub struct MakerInitConfig {
     pub rpc_port: u16,
     pub socks_port: u16,
     pub control_port: u16,
-    #[serde(default)]
-    pub tor_auth_password: Option<String>,
     pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
@@ -559,10 +554,6 @@ pub struct MakerSettingsDto {
     pub rpc_port: u16,
     pub socks_port: u16,
     pub control_port: u16,
-    /// Process-only credential. Deserialized for IPC but never written into
-    /// persisted maker registrations.
-    #[serde(default, skip_serializing)]
-    pub tor_auth_password: Option<String>,
     pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
@@ -583,7 +574,6 @@ impl MakerSettingsDto {
             rpc_port: c.rpc_port,
             socks_port: c.socks_port,
             control_port: c.control_port,
-            tor_auth_password: c.tor_auth_password.clone(),
             min_swap_amount: c.min_swap_amount,
             fidelity_amount: c.fidelity_amount,
             fidelity_timelock: c.fidelity_timelock,
@@ -604,7 +594,6 @@ impl MakerSettingsDto {
             rpc_port: self.rpc_port,
             socks_port: self.socks_port,
             control_port: self.control_port,
-            tor_auth_password: self.tor_auth_password,
             min_swap_amount: self.min_swap_amount,
             fidelity_amount: self.fidelity_amount,
             fidelity_timelock: self.fidelity_timelock,

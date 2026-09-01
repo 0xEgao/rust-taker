@@ -307,6 +307,7 @@ export function MarketPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pushToast = useToastStore((s) => s.push);
+  const pushFailure = useToastStore((s) => s.pushFailure);
 
   const applyOfferBook = useCallback((view: { good: Maker[]; bad: Maker[]; unresponsive: Maker[] }) => {
     setGood(view.good);
@@ -343,12 +344,12 @@ export function MarketPage() {
           }, 2000);
         }
       } catch (e) {
-        pushToast("error", (e as { message?: string })?.message ?? "Failed to load makers.");
+        pushFailure(e, "Failed to load makers.");
       } finally {
         setLoading(false);
       }
     })();
-  }, [load, pushToast]);
+  }, [load, pushFailure]);
 
   // Separate from pollIntervalRef, which tracks a sync to completion and then stops. This one
   // runs for as long as the page is open. Failures are swallowed: get_offers takes the taker
@@ -369,13 +370,13 @@ export function MarketPage() {
       await load();
       setFooterTick((t) => t + 1);
     } catch (e) {
-      pushToast("error", (e as { message?: string })?.message ?? "Sync failed.");
+      pushFailure(e, "Sync failed.");
     } finally {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
       setRefreshing(false);
     }
-  }, [load, pushToast]);
+  }, [load, pushFailure]);
 
   useEffect(() => () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -442,7 +443,7 @@ export function MarketPage() {
         pushToast("error", "Maker did not respond with a usable fresh offer.");
       }
     } catch (e) {
-      pushToast("error", `Poll failed: ${(e as { message?: string })?.message ?? "unknown error"}`);
+      pushFailure(e, "Poll failed.");
     } finally {
       setPollingAddress(null);
     }
@@ -456,7 +457,7 @@ export function MarketPage() {
       await load();
       setRemoveTarget(null);
     } catch (e) {
-      pushToast("error", `Remove failed: ${(e as { message?: string })?.message ?? "unknown error"}`);
+      pushFailure(e, "Remove failed.");
     } finally {
       setRemoving(false);
     }

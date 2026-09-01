@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Card, ExternalLinkButton, SatsAmount, StatStrip } from "../../components/ui/display";
 import { LinkButton, SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
+import { WalletFooterCard } from "./WalletBackupCard";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 import {
@@ -389,6 +390,10 @@ export function WalletPage() {
             })}
           </div>
         </Card>
+      </section>
+
+      <section className="mt-4">
+        <WalletFooterCard />
       </section>
     </div>
   );

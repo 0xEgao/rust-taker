@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/app/AppShell";
+import { QuitShutdown } from "./components/app/QuitShutdown";
+import { ConnectPage } from "./pages/connect/ConnectPage";
 import { LaunchPage } from "./pages/launch/LaunchPage";
 import { LogsPage } from "./pages/logs/LogsPage";
 import { MakerPage } from "./pages/maker/MakerPage";
@@ -10,7 +12,6 @@ import { MakerSetupPage } from "./pages/maker/MakerSetupPage";
 import { MakerSwapReportPage } from "./pages/maker/MakerSwapReportPage";
 import { MarketPage } from "./pages/market/MarketPage";
 import { SendPage } from "./pages/send/SendPage";
-import { SettingsPage } from "./pages/settings/SettingsPage";
 import { SetupPage } from "./pages/setup/SetupPage";
 import { SwapPage } from "./pages/swap/SwapPage";
 import { SwapReportPage } from "./pages/swap/SwapReportPage";
@@ -43,36 +44,54 @@ function RequireTaker() {
   return <Outlet />;
 }
 
+/**
+ * Everything past the connection gate needs a backend that answers and a bootstrapped Tor,
+ * so `/connect` is the entry for both roles.
+ *
+ * Read straight from the store rather than asked of Rust: a round trip would leave this
+ * rendering nothing until it resolved, and any hiccup in that one call would bounce the user
+ * back to the gate they just completed. A reload replays the gate, which is cheap once Tor
+ * is already up.
+ */
+function RequireConnection() {
+  const connected = useSessionStore((s) => s.connected);
+  if (!connected) return <Navigate to="/connect" replace />;
+  return <Outlet />;
+}
+
 function App() {
   return (
     <HashRouter>
+      {/* Outside the routes: a quit can be requested from any page, including the ones
+          that render before a taker exists. */}
+      <QuitShutdown />
       <Routes>
-        <Route path="/launch" element={<LaunchPage />} />
-        <Route path="/setup" element={<SetupPage />} />
+        <Route path="/connect" element={<ConnectPage />} />
 
-        <Route element={<AppShell />}>
-          <Route element={<RequireTaker />}>
-            <Route path="/" element={<WalletPage />} />
-            <Route path="/market" element={<MarketPage />} />
-            <Route path="/send" element={<SendPage />} />
-            <Route path="/swap" element={<SwapPage />} />
-            <Route path="/swap/reports" element={<SwapReportsPage />} />
-            <Route path="/swap/reports/:swapId" element={<SwapReportPage />} />
-            <Route path="/logs" element={<LogsPage />} />
+        <Route element={<RequireConnection />}>
+          <Route path="/launch" element={<LaunchPage />} />
+          <Route path="/setup" element={<SetupPage />} />
+
+          <Route element={<AppShell />}>
+            <Route element={<RequireTaker />}>
+              <Route path="/" element={<WalletPage />} />
+              <Route path="/market" element={<MarketPage />} />
+              <Route path="/send" element={<SendPage />} />
+              <Route path="/swap" element={<SwapPage />} />
+              <Route path="/swap/reports" element={<SwapReportsPage />} />
+              <Route path="/swap/reports/:swapId" element={<SwapReportPage />} />
+              <Route path="/logs" element={<LogsPage />} />
+            </Route>
+
+            <Route path="/maker" element={<MakerPage />} />
+            <Route path="/maker/new" element={<AddMakerPage />} />
+            <Route path="/maker/:makerId" element={<MakerWorkspacePage />} />
+            <Route path="/maker/:makerId/setup" element={<MakerSetupPage />} />
+            <Route path="/maker/:makerId/report/:swapId" element={<MakerSwapReportPage />} />
           </Route>
-
-          <Route path="/maker" element={<MakerPage />} />
-          <Route path="/maker/new" element={<AddMakerPage />} />
-          <Route path="/maker/:makerId" element={<MakerWorkspacePage />} />
-          <Route path="/maker/:makerId/setup" element={<MakerSetupPage />} />
-          <Route path="/maker/:makerId/report/:swapId" element={<MakerSwapReportPage />} />
-
-          {/* Chain-backend and Tor config are global, so the page renders its taker-only
-              sections conditionally rather than assuming an unlocked wallet. */}
-          <Route path="/settings" element={<SettingsPage />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/launch" replace />} />
+        <Route path="*" element={<Navigate to="/connect" replace />} />
       </Routes>
     </HashRouter>
   );

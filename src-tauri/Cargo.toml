@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -21,7 +21,6 @@ serde_json = "1"
 dirs = "6"
 log = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
-zeroize = "1"
 libc = "0.2"
 minreq = { version = "2.12.0", features = ["https"] }
 # Decodes Tor's `tor/hostname` file in the maker's data dir — same format coinswap itself uses.
@@ -31,6 +30,7 @@ serde_cbor = "0.11.2"
 log4rs = "1.4.0"
 coinswap = { git = "https://github.com/citadel-tech/coinswap", branch = "master" }
 libtor = { version = "47.13", features = ["vendored-openssl"], optional = true }
+tauri-plugin-single-instance = "2"
 
 [features]
 # Keep the in-app Tor fallback enabled. Users with an external Tor continue to
