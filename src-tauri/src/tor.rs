@@ -1,9 +1,6 @@
-//! Portal's own Tor. The app always starts a compiled-in Tor on freshly chosen loopback
-//! ports and binds the taker and every maker to it — a Tor already running on the host is
-//! never reused, so the app never depends on someone else's config and never disturbs it.
-//!
-//! One instance serves the whole process: `tor_main` cannot be run twice, and one Tor can
-//! carry every maker's onion service anyway.
+//! Portal's own Tor, never a host one: the app must not depend on someone else's config or
+//! disturb it. One instance serves the whole process — `tor_main` cannot run twice, and a
+//! single Tor carries every maker's onion service anyway.
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -11,6 +8,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use std::io::{BufRead, BufReader, Read, Write};
+
+use coinswap::bitcoin::secp256k1::rand::RngCore;
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 /// `SIGNAL HALT` exits immediately by design, so this only bounds a Tor that has stopped
@@ -57,10 +56,13 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
     };
 
     if wait_until_ready(runtime.socks_port, runtime.control_port) {
-        Ok(runtime)
-    } else {
-        Err("Portal's Tor did not open its SOCKS and control ports".to_string())
+        return Ok(runtime);
     }
+    // Otherwise the cached runtime would be handed to every later call, which would wait on
+    // the same dead ports forever — the gate and every maker would stay down until restart.
+    // Halting clears the slot, so the next attempt starts over on a fresh pair.
+    shutdown();
+    Err("Portal's Tor did not open its SOCKS and control ports".to_string())
 }
 
 /// Halts Portal's Tor through its own control port. The last thing stopped on quit: the
@@ -116,8 +118,9 @@ fn tor_dir() -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Reserves a free loopback port pair. Both listeners are held until each port is known, so
-/// the OS cannot hand out the same port twice, then released for Tor to bind.
+/// Picks a free loopback port pair. Holding both listeners until each port is known stops the
+/// OS handing out the same one twice, but they are released for Tor to bind — nothing reserves
+/// them in between, so a failed bind is recovered by retrying with a fresh pair.
 fn free_port_pair() -> std::io::Result<(u16, u16)> {
     let socks = TcpListener::bind(("127.0.0.1", 0))?;
     let control = TcpListener::bind(("127.0.0.1", 0))?;
@@ -125,8 +128,6 @@ fn free_port_pair() -> std::io::Result<(u16, u16)> {
 }
 
 fn random_bytes<const N: usize>() -> [u8; N] {
-    use coinswap::bitcoin::secp256k1::rand::RngCore;
-
     let mut buffer = [0u8; N];
     coinswap::bitcoin::secp256k1::rand::thread_rng().fill_bytes(&mut buffer);
     buffer

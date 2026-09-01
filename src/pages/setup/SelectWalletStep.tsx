@@ -10,7 +10,7 @@ import { Card, Modal, WalletCard } from "../../components/ui/display";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { IntroStage } from "../../components/ui/IntroStage";
-import { wait, withMinDelay } from "../../lib/timing";
+import { withMinDelay } from "../../lib/timing";
 import { walletIdentity } from "../../lib/wallet-identity";
 import {
   getDefaultDataDir,
@@ -183,9 +183,6 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setViewMode("checking");
     setSteps({ verify: "running", init: "idle" });
 
-    await wait(MIN_STEP_MS);
-    setSteps((s) => ({ ...s, verify: "passed", init: "running" }));
-
     try {
       const result = await withMinDelay(
         (async () => {
@@ -201,7 +198,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
         })(),
         MIN_STEP_MS,
       );
-      setSteps((s) => ({ ...s, init: "passed" }));
+      setSteps({ verify: "passed", init: "passed" });
       // Kick off a real offerbook sync now, in the background, so the Market page has fresh
       // maker data by the time the user looks at it — not just whatever offerbook.json had from
       // the last session. Not awaited: this can take 30-60s+ and shouldn't block navigation.
@@ -211,17 +208,25 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       onSuccess(result, wallet.mode === "restore");
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      setSteps((s) => ({ ...s, verify: "failed", init: "failed" }));
+      // `init_taker` is what checks the password, so a wrong one failed verification and
+      // never reached initialization; anything else means the password was accepted.
+      const wrongPassword = err?.code === "WALLET_WRONG_PASSWORD";
+      setSteps({
+        verify: wrongPassword ? "failed" : "passed",
+        init: wrongPassword ? "idle" : "failed",
+      });
       setFailure({
         message:
-          err?.code === "WALLET_WRONG_PASSWORD" ? "Incorrect password. Try again." : (err?.message ?? "Something went wrong."),
+          wrongPassword ? "Incorrect password. Try again." : (err?.message ?? "Something went wrong."),
       });
     }
   }
 
   function retry() {
     if (!pendingWallet) return;
-    runChecks({ ...pendingWallet, password: retryPassword });
+    // Only an actual entry replaces the password: a create or restore that failed for some
+    // other reason must keep the one it was given rather than retry with an empty field.
+    runChecks(retryPassword ? { ...pendingWallet, password: retryPassword } : pendingWallet);
   }
 
   function cancelFailure() {

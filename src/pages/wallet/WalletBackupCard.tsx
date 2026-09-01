@@ -9,9 +9,8 @@ import { useToastStore } from "../../store/toast";
 const MIN_BACKUP_PASSWORD = 8;
 
 /**
- * The tail of the wallet page: the encrypted backup, plus the two things that outlived the
- * settings page. Chain setup now happens on the connection gate, so what is left here is
- * what a running wallet still needs — a backup, a look at where it is connected, and the log.
+ * Chain setup lives on the connection gate, so what a running wallet still needs is here:
+ * an encrypted backup, and where it is connected.
  */
 export function WalletFooterCard() {
   const pushToast = useToastStore((s) => s.push);

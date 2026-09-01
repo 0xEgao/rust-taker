@@ -43,7 +43,10 @@ export const useToastStore = create<ToastState>((set) => ({
     // Reaching a taker command mid-swap is the protocol working as designed, not a fault:
     // the swap holds the taker for its whole duration.
     const kind = appError?.code === "SWAP_IN_PROGRESS" ? "warning" : "error";
-    useToastStore.getState().push(kind, appError?.message ?? fallback);
+    // `isAppError` only proves `code` is there. Rendering a non-string `message` would throw
+    // inside the toast rather than report whatever actually went wrong.
+    const message = typeof appError?.message === "string" ? appError.message : fallback;
+    useToastStore.getState().push(kind, message);
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));

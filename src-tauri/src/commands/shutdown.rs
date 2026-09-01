@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::commands::{maker, taker_wallet};
 use crate::error::AppError;
 use crate::state::{AppState, SwapLifecycle};
-use crate::types::QuitBlockers;
+use crate::types::{MakerPhase, QuitBlockers};
 
 /// Latched by whichever path starts the teardown, so a second Quit while one is already
 /// running is ignored and `RunEvent::Exit` does not repeat the work.
@@ -25,13 +25,24 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
             )
         })
     });
+    // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
+    // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
+    // about a maker that finished long ago.
     let running_makers = state
         .makers
         .lock()
         .map(|makers| {
             makers
                 .values()
-                .filter(|entry| entry.runtime.is_some())
+                .filter(|entry| {
+                    matches!(
+                        entry.phase,
+                        MakerPhase::Initializing
+                            | MakerPhase::Starting
+                            | MakerPhase::Running
+                            | MakerPhase::Stopping
+                    )
+                })
                 .map(|entry| entry.settings.maker_id.clone())
                 .collect()
         })

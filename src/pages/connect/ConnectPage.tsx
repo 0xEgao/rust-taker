@@ -46,6 +46,8 @@ export function ConnectPage() {
 
   // Bootstrap runs once per launch; a re-mount must not start a second poll against it.
   const polling = useRef(false);
+  // Bumped by Retry to re-arm the poll after it gave up.
+  const [torAttempt, setTorAttempt] = useState(0);
 
   useEffect(() => {
     void getChainBackend()
@@ -63,27 +65,36 @@ export function ConnectPage() {
   useEffect(() => {
     if (polling.current) return;
     polling.current = true;
+    let cancelled = false;
     void (async () => {
       const deadline = Date.now() + TOR_BOOTSTRAP_TIMEOUT_MS;
       for (;;) {
+        if (cancelled) return;
         try {
           const status = await checkTor();
           if (!(status.reachable && status.authenticated)) {
             throw new Error(status.error ?? "Tor control port unreachable.");
           }
+          setTorError(null);
           setTorProgress(status.bootstrapProgress ?? 0);
           if (status.bootstrapProgress === 100) return;
           if (Date.now() > deadline) {
             throw new Error("Tor started but could not finish connecting to the network.");
           }
         } catch (e) {
+          // Giving up releases the guard so Retry can arm a fresh attempt; without that a
+          // single transient failure would leave Next disabled for the whole session.
           setTorError((e as { message?: string })?.message ?? "Tor could not be started.");
+          polling.current = false;
           return;
         }
         await wait(TOR_POLL_MS);
       }
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [torAttempt]);
 
   const torReady = torProgress === 100;
   const backendLabel = kind === "coreRpc" ? "Bitcoin Core" : "Electrum";
@@ -92,11 +103,11 @@ export function ConnectPage() {
     return { kind, electrum: { url: electrumUrl.trim(), useTor: false }, node };
   }
 
-  /** Resolves only when the backend answered a real chain query. */
-  async function probe(): Promise<boolean> {
+  /** Resolves only when `config` answered a real chain query. */
+  async function probe(config: ChainBackendConfig): Promise<boolean> {
     setTesting(true);
     try {
-      const status = await checkBackend(currentConfig());
+      const status = await checkBackend(config);
       setBackendRows([
         {
           label: backendLabel,
@@ -125,14 +136,16 @@ export function ConnectPage() {
   }
 
   async function next() {
-    // Re-probed rather than trusting an earlier pass, so an edit made after a successful
-    // test cannot slip through unverified.
-    if (!(await probe())) return;
+    // One snapshot for both calls: re-probed rather than trusting an earlier pass, and the
+    // config adopted below is the exact one that answered, even if the user edits a field
+    // while the probe is in flight.
+    const config = currentConfig();
+    if (!(await probe(config))) return;
     try {
       // Adopting the config is what marks the gate satisfied, so a failure here has to be
       // shown: navigating anyway would bounce straight back and read as the page reloading
       // itself for no reason.
-      await setChainBackend(currentConfig());
+      await setChainBackend(config);
     } catch (e) {
       setBackendRows([
         {
@@ -240,7 +253,7 @@ export function ConnectPage() {
             )}
 
             <div>
-              <Button size="sm" variant="secondary" loading={testing} onClick={() => void probe()}>
+              <Button size="sm" variant="secondary" loading={testing} onClick={() => void probe(currentConfig())}>
                 Test connection
               </Button>
               {backendRows && <TestResultRows rows={backendRows} />}
@@ -270,6 +283,21 @@ export function ConnectPage() {
                 },
               ]}
             />
+            {torError && (
+              <div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setTorError(null);
+                    setTorProgress(null);
+                    setTorAttempt((n) => n + 1);
+                  }}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
           </SettingsSection>
         </div>
 

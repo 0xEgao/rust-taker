@@ -6,9 +6,8 @@ import { Button } from "../ui/inputs";
 import { Modal } from "../ui/display";
 
 /**
- * Quit is deliberate and takes as long as the teardown takes — a maker closes by finishing
- * its in-flight connections and a full wallet sync. Both states here exist so that wait
- * reads as work in progress rather than as a hung window.
+ * Teardown is unbounded — a maker closes by finishing its connections and a full wallet sync.
+ * Both states exist so that wait reads as work rather than as a hung window.
  */
 export function QuitShutdown() {
   const [blockers, setBlockers] = useState<QuitBlockers | null>(null);
