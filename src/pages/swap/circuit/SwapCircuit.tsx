@@ -149,9 +149,20 @@ function CircuitEdge({
 
   return (
     <g
+      tabIndex={0}
+      role="button"
+      aria-label={`Contract leg ${edge.index + 1}: ${EDGE_STAGE_LABEL[view.stage]}`}
       onMouseEnter={() => onHover?.({ kind: "edge", index: edge.index })}
       onMouseLeave={() => onHover?.(null)}
+      onFocus={() => onHover?.({ kind: "edge", index: edge.index })}
+      onBlur={() => onHover?.(null)}
       onClick={() => onSelect?.({ kind: "edge", index: edge.index })}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect?.({ kind: "edge", index: edge.index });
+        }
+      }}
       style={{ pointerEvents: "stroke", cursor: "pointer" }}
     >
       {/* Invisible fat stroke so the thin arc is actually hoverable. */}

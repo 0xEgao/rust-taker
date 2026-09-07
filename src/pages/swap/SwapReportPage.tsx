@@ -59,9 +59,11 @@ function UtxoRow({ label, amountSats, accent, utxo }: {
           <span style={{ color: accent }} aria-hidden>■</span>
           {label}
         </span>
-        <span className="truncate font-mono text-[11.5px] text-muted">
-          {utxo ? `${truncateMiddle(utxo.txid, 10, 6)}:${utxo.vout}` : "outpoint not recorded"}
-        </span>
+        {utxo && (
+          <span className="truncate font-mono text-[11.5px] text-muted">
+            {truncateMiddle(utxo.txid, 10, 6)}:{utxo.vout}
+          </span>
+        )}
       </span>
       <span className="flex shrink-0 items-center gap-2">
         <SatsAmount sats={amountSats} className="font-mono text-[12px] text-foreground" />

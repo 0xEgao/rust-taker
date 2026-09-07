@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { formatTorEndpoint } from "../../../lib/market-format";
 import { ACT_LABEL, EDGE_STAGE_LABEL, type CircuitView } from "./useSwapCircuit";
 
@@ -7,17 +9,18 @@ import { ACT_LABEL, EDGE_STAGE_LABEL, type CircuitView } from "./useSwapCircuit"
  */
 export function Vitals({
   view,
-  elapsedSeconds,
+  elapsed,
   blockHeight,
 }: {
   view: CircuitView;
-  elapsedSeconds: number | null;
+  /** Owns its own tick, so the circuit doesn't re-render once a second. */
+  elapsed: ReactNode;
   blockHeight: number | null;
 }) {
   const total = view.routerCount + 1;
   return (
     <div className="grid grid-cols-2 gap-px overflow-hidden rounded-control border border-line bg-line sm:grid-cols-4">
-      <VitalCell label="Elapsed" value={elapsedSeconds === null ? "—" : clock(elapsedSeconds)} />
+      <VitalCell label="Elapsed" value={elapsed} />
       <VitalCell label="Confirmed" value={`${view.hopsConfirmed} of ${total} hops`} />
       <VitalCell label="Block" value={blockHeight === null ? "—" : blockHeight.toLocaleString()} />
       <VitalCell label="Stage" value={view.failed ? "Failed" : ACT_LABEL[view.act]} />
@@ -25,19 +28,13 @@ export function Vitals({
   );
 }
 
-function VitalCell({ label, value }: { label: string; value: string }) {
+function VitalCell({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex flex-col items-center gap-1 bg-surface px-3 py-2.5">
       <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-subtle">{label}</span>
       <span className="font-numeric text-[13px] text-foreground">{value}</span>
     </div>
   );
-}
-
-function clock(seconds: number) {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 /**

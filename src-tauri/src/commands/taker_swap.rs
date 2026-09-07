@@ -73,7 +73,7 @@ fn phase_label(phase: SwapLifecycle) -> &'static str {
 
 fn tracker_phase_label(phase: SwapPhase) -> &'static str {
     match phase {
-        SwapPhase::MakersDiscovered => "makers_discovered",
+        SwapPhase::MakersDiscovered => "routers_discovered",
         SwapPhase::Negotiated => "negotiated",
         SwapPhase::FundingCreated => "funding_created",
         SwapPhase::FundsBroadcast => "funds_broadcast",
@@ -259,6 +259,7 @@ pub async fn estimate_swap_funding(
             input_count: selected.len(),
             vbytes,
             fee_sats,
+            fee_rate_sats_per_vb: MIN_FEE_RATE,
             route_mining_fee_per_router_sats: estimate_funding_tx_fee_sats(),
             // Truncating, not rounded up: matches the crate's own
             // `Amount::from_sat((feerate * vsize as f64) as u64)`.

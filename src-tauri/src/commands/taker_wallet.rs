@@ -14,7 +14,7 @@ use coinswap::bitcoin::{Address, OutPoint, Txid};
 use coinswap::nostr_coinswap::NOSTR_RELAYS;
 use coinswap::taker::api::ConnectionType;
 use coinswap::taker::{Taker, TakerInitConfig};
-use coinswap::utill::{get_taker_dir, MIN_FEE_RATE};
+use coinswap::utill::get_taker_dir;
 use coinswap::wallet::{AddressType, Wallet};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use uuid::Uuid;
@@ -602,6 +602,9 @@ fn save_last_addresses(path: &Path, addrs: &LastAddresses) -> Result<(), AppErro
     crate::security::fs::write_private(path, json.as_bytes())
 }
 
+/// Recent transactions scanned to decide whether the last issued address has been paid.
+const USED_ADDRESS_LOOKBACK: usize = 50;
+
 /// Reuses the last address issued for this type until it actually receives a payment, matching
 /// the old app and standard HD-wallet gap-limit-safe behavior — repeat calls (page reload,
 /// clicking Generate again) shouldn't advance the derivation index for no reason.
@@ -624,9 +627,13 @@ pub async fn get_new_address(
         };
 
         if let Some(existing) = slot.clone() {
+            // Bounded window, not the whole history: over Electrum `list_transactions` is
+            // rebuilt from watched-script history and pulls each transaction's inputs, so an
+            // unbounded count made handing out an address cost a full history fetch. The
+            // address under test is the last one issued, so any payment to it is recent.
             let used = wallet
                 .read()?
-                .get_transactions(None, None)?
+                .get_transactions(Some(USED_ADDRESS_LOOKBACK), None)?
                 .into_iter()
                 .any(|tx| {
                     tx.detail
@@ -841,6 +848,10 @@ pub async fn sync_wallet(state: tauri::State<'_, AppState>) -> Result<(), AppErr
 
 /// Hits mempool.space over clearnet regardless of Tor setting.
 ///
+/// Mainnet rates even when the wallet is on signet — mempool.space has per-network
+/// endpoints, but a signet rate prices nothing, so the mainnet structure is what gets
+/// reported and the caller picks from it.
+///
 /// Deliberately not the crate's `FeeEstimator`: it averages mempool.space with
 /// Blockstream's `/fee-estimates`, which blends historical data and returns
 /// sub-1 sat/vB rates, dragging the mean below the 1 sat/vB relay minimum so the
@@ -860,13 +871,12 @@ pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
             ));
         }
         let body: serde_json::Value = response.json().map_err(AppError::internal)?;
-        // `minimumFee` is the node's own relay floor; clamping to it keeps a quiet
-        // mempool from producing a rate the network would reject.
-        let floor = read_fee(&body, "minimumFee").unwrap_or(MIN_FEE_RATE);
+        // Passed through unclamped: these are the three targets mempool.space quotes, and
+        // adjusting them would report a rate it never gave us.
         Ok(FeeEstimate {
-            high: read_fee(&body, "fastestFee")?.max(floor),
-            mid: read_fee(&body, "halfHourFee")?.max(floor),
-            low: read_fee(&body, "hourFee")?.max(floor),
+            high: read_fee(&body, "fastestFee")?,
+            mid: read_fee(&body, "halfHourFee")?,
+            low: read_fee(&body, "hourFee")?,
         })
     })
     .await
@@ -876,7 +886,9 @@ pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
 fn read_fee(body: &serde_json::Value, key: &str) -> Result<f64, AppError> {
     body.get(key)
         .and_then(serde_json::Value::as_f64)
-        .filter(|rate| rate.is_finite() && *rate > 0.0)
+        // Under the 1 sat/vB relay minimum the value is unusable rather than merely low, so
+        // it is rejected like a missing field instead of being rounded up into a fiction.
+        .filter(|rate| rate.is_finite() && *rate >= 1.0)
         .ok_or_else(|| {
             AppError::new(
                 ErrorCode::Internal,

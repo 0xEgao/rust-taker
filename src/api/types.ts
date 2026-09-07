@@ -341,6 +341,8 @@ export interface SwapFundingEstimate {
   inputCount: number;
   vbytes: number;
   feeSats: number;
+  /** Fixed by the protocol — the same rate funds the route and signs every contract. */
+  feeRateSatsPerVb: number;
   routeMiningFeePerRouterSats: number;
   /** Claiming the incoming contract at the end of the swap; depends on the protocol. */
   sweepFeeSats: number;

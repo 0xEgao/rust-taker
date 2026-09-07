@@ -272,7 +272,7 @@ export function useSwapCircuit(
         stage,
         tone,
         amountSats,
-        locktimeBlocks: summary?.routers[Math.min(index, routerCount - 1)]?.locktime,
+        locktimeBlocks: index === 0 ? undefined : summary?.routers[index - 1]?.locktime,
       };
     });
 

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use coinswap::bitcoin::{Address, OutPoint, Txid};
+use coinswap::bitcoin::{Address, Txid};
 use coinswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport};
 
 use crate::commands::chain_backend;
@@ -207,6 +207,13 @@ pub async fn get_incoming_swap_utxo(
         .read()?
         .clone()
         .ok_or_else(AppError::not_initialized)?;
+    // The session config can be re-pointed mid-session; this is the route the wallet is
+    // actually built against.
+    let active_backend = state
+        .active_chain_backend
+        .read()?
+        .clone()
+        .ok_or_else(AppError::not_initialized)?;
     let socks_port = *state.active_socks_port.read()?;
 
     tauri::async_runtime::spawn_blocking(move || -> Result<Option<SwapUtxoDto>, AppError> {
@@ -221,18 +228,18 @@ pub async fn get_incoming_swap_utxo(
                 )
             })?;
 
-        // The proof names the incoming contract outpoint exactly; the txid alone would leave
-        // the vout a guess.
-        let contract = match report.deniability_proof.as_ref() {
-            Some(p) => p.proven_outpoint(),
-            None => match report.incoming_contract_txid.as_deref() {
-                Some(txid) => OutPoint::new(
-                    Txid::from_str(txid)
-                        .map_err(|e| AppError::internal(format!("bad contract txid: {e}")))?,
-                    0,
-                ),
-                None => return Ok(None),
-            },
+        // The proof names the incoming contract outpoint exactly. Without one only the txid
+        // is known, and a Taproot contract output is not necessarily vout 0 — so the sweep is
+        // then matched on the whole transaction rather than on a guessed outpoint.
+        let contract = report
+            .deniability_proof
+            .as_ref()
+            .map(|p| p.proven_outpoint());
+        let contract_txid = match (contract, report.incoming_contract_txid.as_deref()) {
+            (Some(outpoint), _) => outpoint.txid,
+            (None, Some(txid)) => Txid::from_str(txid)
+                .map_err(|e| AppError::internal(format!("bad contract txid: {e}")))?,
+            (None, None) => return Ok(None),
         };
 
         // Carries the wallet's own `vout` so the receiving output is read, not guessed —
@@ -250,9 +257,12 @@ pub async fn get_incoming_swap_utxo(
             (w.get_name().to_string(), received)
         };
 
-        let backend =
-            AnyBlockchain::from_config(&chain_backend::resolve(&wallet_name, socks_port)?)
-                .map_err(|e| AppError::internal(format!("{e:?}")))?;
+        let backend = AnyBlockchain::from_config(&chain_backend::resolve_from(
+            &active_backend,
+            &wallet_name,
+            socks_port,
+        )?)
+        .map_err(|e| AppError::internal(format!("{e:?}")))?;
         // `Wallet` keeps its network private, so the backend is the only source for the
         // address encoding.
         let network = backend
@@ -264,7 +274,11 @@ pub async fn get_incoming_swap_utxo(
             let Ok(tx) = backend.get_raw_transaction(&txid, None) else {
                 continue;
             };
-            if !tx.input.iter().any(|i| i.previous_output == contract) {
+            let spends_contract = tx.input.iter().any(|i| match contract {
+                Some(outpoint) => i.previous_output == outpoint,
+                None => i.previous_output.txid == contract_txid,
+            });
+            if !spends_contract {
                 continue;
             }
             let Some(out) = tx.output.get(vout as usize) else {

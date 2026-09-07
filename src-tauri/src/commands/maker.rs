@@ -53,7 +53,7 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
     let invalid = |msg: String| AppError::new(ErrorCode::InvalidInput, msg);
     if !valid_id(config.router_id.trim()) {
         return Err(invalid(
-            "makerId must contain only letters, numbers, '-' or '_'".to_string(),
+            "routerId must contain only letters, numbers, '-' or '_'".to_string(),
         ));
     }
     validate_leaf_name(&config.wallet_name, "walletName")?;

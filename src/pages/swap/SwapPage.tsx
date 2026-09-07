@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   CheckCircle2,
   FileText,
+  Gauge,
   RefreshCw,
   ShieldAlert,
   XCircle,
@@ -60,6 +61,7 @@ import {
 import {
   classifySpendType,
   formatDuration,
+  formatFeeRate,
   formatUnitAmount,
   satsToUnitString,
   SATS_PER_BTC,
@@ -87,6 +89,8 @@ function EstimatedSats({
 }
 
 const ROUTER_COUNT_PRESETS = [2, 3, 4] as const;
+
+const FUNDING_RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
 
 function elapsedLabel(startedAt: number | null): string {
   if (!startedAt) return "0s";
@@ -136,8 +140,10 @@ export function SwapPage() {
   const [fundingEstimate, setFundingEstimate] =
     useState<SwapFundingEstimate | null>(null);
   const [fundingEstimateStatus, setFundingEstimateStatus] = useState<
-    "idle" | "loading" | "ready" | "error"
+    "idle" | "loading" | "retrying" | "ready" | "error"
   >("idle");
+  // Bumped by the summary's Retry to re-arm the quote with a fresh attempt budget.
+  const [fundingAttempt, setFundingAttempt] = useState(0);
 
   const [unit, setUnit] = useState<Unit>("sats");
   const [amountInput, setAmountInput] = useState("");
@@ -382,15 +388,21 @@ export function SwapPage() {
     return compatibleRouters.slice(0, Math.max(0, effectiveRouterCount));
   }, [compatibleRouters, manualRouters, selectedRouters, effectiveRouterCount]);
 
+  // Deliberately not gated on the wallet sync: `estimate_swap_funding` is a `coin_select`
+  // over the wallet's stored UTXOs with no network I/O, so it can quote before a sync lands.
+  // Sync still gates *starting* a swap — see `warnings` and `handleStartSwap`.
   useEffect(() => {
     let cancelled = false;
     setFundingEstimate(null);
-    setFundingEstimateStatus("idle");
-    if (amountSats <= 0 || walletSyncStatus !== "synced")
+    if (amountSats <= 0) {
+      setFundingEstimateStatus("idle");
       return () => {
         cancelled = true;
       };
-    const timer = setTimeout(() => {
+    }
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const run = () => {
       setFundingEstimateStatus("loading");
       const outpoints =
         manualCoins && selectedOutpoints.length > 0
@@ -405,14 +417,26 @@ export function SwapPage() {
         .catch(() => {
           if (cancelled) return;
           setFundingEstimate(null);
-          setFundingEstimateStatus("error");
+          // A quote most often fails because a long sync is holding the wallet lock, which
+          // clears on its own — so back off and try again rather than leaving the summary
+          // blank with no way forward. Manual Retry re-arms this budget.
+          const delay = FUNDING_RETRY_DELAYS_MS[attempt];
+          attempt += 1;
+          if (delay === undefined) {
+            setFundingEstimateStatus("error");
+            return;
+          }
+          setFundingEstimateStatus("retrying");
+          timer = setTimeout(run, delay);
         });
-    }, 150);
+    };
+    // Debounced so typing an amount doesn't quote every keystroke.
+    timer = setTimeout(run, 150);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [amountSats, protocol, manualCoins, selectedOutpoints, walletSyncStatus]);
+  }, [amountSats, protocol, manualCoins, selectedOutpoints, fundingAttempt]);
 
   const feeSummary = useMemo(() => {
     const hasCompleteRoute =
@@ -466,11 +490,6 @@ export function SwapPage() {
           : "Wait for the initial wallet sync before starting a swap.",
       );
     }
-    if (fundingEstimateStatus === "error") {
-      list.push(
-        "The wallet could not calculate a funding transaction for this amount and coin selection.",
-      );
-    }
     if (amountInput.length > 0 && amountSats <= 0)
       list.push("Enter a valid amount.");
     if (amountSats > 0 && liquidity && amountSats > liquidity.maxSwappable)
@@ -515,12 +534,13 @@ export function SwapPage() {
     fundingEstimateStatus,
   ]);
 
-  // Null once the quote is ready: the numbers underneath already are the quote.
+  // Null once the quote is ready: the numbers underneath already are the quote. Reports the
+  // quote's own state, not the sync's — the quote no longer waits on one.
   const quoteStatus =
-    walletSyncStatus !== "synced"
-      ? "Waiting for wallet sync"
-      : fundingEstimateStatus === "loading"
-        ? "Calculating wallet quote"
+    fundingEstimateStatus === "loading"
+      ? "Calculating wallet quote"
+      : fundingEstimateStatus === "retrying"
+        ? "Retrying quote"
         : fundingEstimateStatus === "error"
           ? "Quote unavailable"
           : fundingEstimate
@@ -654,7 +674,13 @@ export function SwapPage() {
                 <SwapCircuit view={circuit} />
                 <Vitals
                   view={circuit}
-                  elapsedSeconds={startedAt === null ? null : Date.now() / 1000 - startedAt}
+                  elapsed={
+                    startedAt === null ? (
+                      "—"
+                    ) : (
+                      <Elapsed startedAt={startedAt} active={phase === "running"} />
+                    )
+                  }
                   blockHeight={null}
                 />
                 <NowPanel view={circuit} />
@@ -670,24 +696,14 @@ export function SwapPage() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3 rounded-control border border-line-strong bg-surface-raised px-3.5 py-3 text-center">
-              <div>
-                <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                  Amount
-                </div>
-                <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
-                  {displaySendAmountSats !== undefined
-                    ? displaySendAmountSats.toLocaleString()
-                    : "—"}
-                </div>
+            <div className="rounded-control border border-line-strong bg-surface-raised px-3.5 py-3 text-center">
+              <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                Amount
               </div>
-              <div>
-                <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                  Elapsed
-                </div>
-                <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
-                  <Elapsed startedAt={startedAt} active={phase === "running"} />
-                </div>
+              <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
+                {displaySendAmountSats !== undefined
+                  ? displaySendAmountSats.toLocaleString()
+                  : "—"}
               </div>
             </div>
 
@@ -908,6 +924,29 @@ export function SwapPage() {
             </p>
           </div>
 
+          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
+            <div className="flex items-center justify-between gap-3 rounded-control border border-dashed border-line bg-surface px-3.5 py-3">
+              <span className="flex items-center gap-2.5">
+                <Gauge size={15} strokeWidth={1.9} className="text-subtle" />
+                <span className="text-[13px] text-muted">Network fee rate</span>
+              </span>
+              <span className="flex items-baseline gap-2.5">
+                <strong className="font-numeric text-[13.5px] text-foreground">
+                  {fundingEstimate
+                    ? `${formatFeeRate(fundingEstimate.feeRateSatsPerVb)} s/vB`
+                    : "—"}
+                </strong>
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-subtle">
+                  Fixed
+                </span>
+              </span>
+            </div>
+            <p className="text-[11.5px] text-subtle">
+              The protocol funds the route and signs every contract at this one rate, so a swap
+              can't be sped up by paying more.
+            </p>
+          </div>
+
           <div className="flex flex-col gap-2 border-t border-line pt-5">
             <Disclosure label="Advanced options" onOpenChange={setAdvancedOpen}>
               <div className="flex flex-col gap-5 pt-1">
@@ -1097,6 +1136,26 @@ export function SwapPage() {
                 </span>
               )}
             </div>
+
+            {fundingEstimateStatus === "error" && (
+              <div className="flex flex-col gap-2 rounded-control border border-warning/35 bg-warning/[0.06] px-3 py-2.5">
+                <p className="text-[11.5px] leading-4 text-warning">
+                  The wallet couldn't quote a funding transaction for this amount and coin
+                  selection, so the mining-fee rows are blank. Router fees come from the
+                  offerbook and are unaffected.
+                </p>
+                <div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setFundingAttempt((n) => n + 1)}
+                  >
+                    <RefreshCw size={13} strokeWidth={1.9} />
+                    Retry quote
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <div className="flex flex-col gap-1.5 text-[12px]">
               <div className="flex items-center justify-between">

@@ -373,6 +373,10 @@ pub struct SwapFundingEstimateDto {
     pub input_count: usize,
     pub vbytes: u64,
     pub fee_sats: u64,
+    /// The crate's `MIN_FEE_RATE`, which both protocols hand to `create_funding_txes` and use
+    /// as the contract feerate. Reported because it is fixed: `SwapParams` has no field for it,
+    /// so a swap cannot be sped up or slowed down by paying more.
+    pub fee_rate_sats_per_vb: f64,
     pub route_mining_fee_per_router_sats: u64,
     /// Fee for the final incoming-contract claim; not a full swap fee total.
     pub sweep_fee_sats: u64,
@@ -463,7 +467,7 @@ pub struct RouterProgressDto {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapTrackerDto {
-    /// "makers_discovered" | "negotiated" | "funding_created" | "funds_broadcast" |
+    /// "routers_discovered" | "negotiated" | "funding_created" | "funds_broadcast" |
     /// "contracts_exchanged" | "finalizing" | "privkeys_forwarded" | "completed" | "failed"
     pub phase: String,
     // send_amount_sats/router_count let the frontend rebuild its progress screen after remounting

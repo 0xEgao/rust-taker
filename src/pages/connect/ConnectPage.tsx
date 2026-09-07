@@ -43,8 +43,18 @@ export function ConnectPage() {
 
   const [torProgress, setTorProgress] = useState<number | null>(null);
   const [torError, setTorError] = useState<string | null>(null);
-  const [backendRows, setBackendRows] = useState<TestRow[] | null>(null);
-  const [testing, setTesting] = useState(false);
+  // Null means nothing has been checked for the config on screen — which is what puts the
+  // Test button back. Starts pending because the arrival probe below is already on its way,
+  // and a button that appears for one frame and then vanishes reads as a glitch.
+  const [backendRow, setBackendRow] = useState<TestRow | null>({
+    label: "Electrum",
+    state: "pending",
+    message: "Checking…",
+  });
+  const [advancing, setAdvancing] = useState(false);
+  // The config a probe last passed against, as a snapshot: comparing it to the current one
+  // tells Next whether a fresh probe would learn anything, without tracking which field changed.
+  const [verified, setVerified] = useState<string | null>(null);
 
   // Bumped by Retry to re-arm the poll after it gave up.
   const [torAttempt, setTorAttempt] = useState(0);
@@ -57,16 +67,25 @@ export function ConnectPage() {
         // The view deliberately omits the password, so it has to be reinstated before this
         // object can be sent back as a config. Empty means "keep the session's own", which
         // is what `merge_preserved_password` fills in on the Rust side.
-        setNode(config.node && { ...config.node, password: "" });
+        const node = config.node && { ...config.node, password: "" };
+        setNode(node);
+        // Probed on arrival because Tor takes a minute or more to bootstrap and this takes a
+        // second: by the time Next unlocks the answer is already in, so pressing it doesn't
+        // re-run a check the user has been looking at the result of.
+        return probe({
+          kind: config.kind,
+          electrum: { url: config.electrum.url.trim(), useTor: false },
+          node,
+        });
       })
-      .catch(() => {});
+      // Without a config there is nothing to probe, so hand the user the button instead of
+      // leaving the row pending forever.
+      .catch(() => setBackendRow(null));
   }, []);
 
-  // No re-entrancy guard here on purpose. A `useRef` latch looks right but deadlocks under
-  // StrictMode's double-invoke: the first run sets it, the immediate cleanup cancels that run,
-  // and the second run sees the latch already set and never starts — so nothing ever polls and
-  // the panel sits on whatever percentage the one completed probe returned. Cancelling via the
-  // closure flag is enough, since the effect only re-runs when `torAttempt` changes.
+  // No re-entrancy latch: a `useRef` guard survives StrictMode's double-invoke while the run
+  // it guarded does not, so the second run finds it set and never polls. The closure flag is
+  // enough, since the effect only re-runs when `torAttempt` changes.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -78,6 +97,7 @@ export function ConnectPage() {
         if (cancelled) return;
         try {
           const status = await checkTor();
+          if (cancelled) return;
           if (!(status.reachable && status.authenticated)) {
             throw new Error(status.error ?? "Tor control port unreachable.");
           }
@@ -89,6 +109,7 @@ export function ConnectPage() {
             throw new Error("Tor started but could not finish connecting to the network.");
           }
         } catch (e) {
+          if (cancelled) return;
           consecutiveFailures += 1;
           const givingUp =
             consecutiveFailures >= TOR_MAX_CONSECUTIVE_FAILURES || Date.now() > deadline;
@@ -108,7 +129,6 @@ export function ConnectPage() {
   }, [torAttempt]);
 
   const torReady = torProgress === 100;
-  const backendLabel = kind === "coreRpc" ? "Bitcoin Core" : "Electrum";
 
   function currentConfig(): ChainBackendConfig {
     return { kind, electrum: { url: electrumUrl.trim(), useTor: false }, node };
@@ -116,64 +136,71 @@ export function ConnectPage() {
 
   /** Resolves only when `config` answered a real chain query. */
   async function probe(config: ChainBackendConfig): Promise<boolean> {
-    setTesting(true);
+    // From the config under test, not from render state: the arrival probe runs before the
+    // prefill has been committed to it.
+    const label = config.kind === "coreRpc" ? "Bitcoin Core" : "Electrum";
+    setBackendRow({ label, state: "pending", message: "Checking…" });
     try {
       const status = await checkBackend(config);
-      setBackendRows([
-        {
-          label: backendLabel,
-          ok: status.reachable,
-          message: status.reachable
-            ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · block ${status.blocks.toLocaleString()}` : ""}`
-            : (status.error ?? "No answer."),
-        },
-      ]);
+      setBackendRow({
+        label,
+        state: status.reachable ? "ok" : "failed",
+        message: status.reachable
+          ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · block ${status.blocks.toLocaleString()}` : ""}`
+          : (status.error ?? "No answer."),
+      });
+      setVerified(status.reachable ? JSON.stringify(config) : null);
       return status.reachable;
     } catch (e) {
-      setBackendRows([
-        {
-          label: backendLabel,
-          ok: false,
-          // Falls through to the raw value: a rejection with no `message` is a plumbing
-          // fault, and reporting it as an unreachable server sends the user hunting the
-          // wrong thing.
-          message: (e as { message?: string })?.message ?? String(e),
-        },
-      ]);
+      setBackendRow({
+        label,
+        state: "failed",
+        // Falls through to the raw value: a rejection with no `message` is a plumbing
+        // fault, and reporting it as an unreachable server sends the user hunting the
+        // wrong thing.
+        message: (e as { message?: string })?.message ?? String(e),
+      });
+      setVerified(null);
       return false;
-    } finally {
-      setTesting(false);
     }
   }
 
   async function next() {
-    // One snapshot for both calls: re-probed rather than trusting an earlier pass, and the
-    // config adopted below is the exact one that answered, even if the user edits a field
-    // while the probe is in flight.
+    // One snapshot throughout: the config adopted below is the exact one that answered, even
+    // if the user edits a field while a probe is in flight.
     const config = currentConfig();
-    if (!(await probe(config))) return;
+    setAdvancing(true);
     try {
+      // A pass already stands for this exact config — the green row on screen is that answer,
+      // so probing again would only make Next slower than the check it repeats.
+      if (JSON.stringify(config) !== verified && !(await probe(config))) return;
       // Adopting the config is what marks the gate satisfied, so a failure here has to be
       // shown: navigating anyway would bounce straight back and read as the page reloading
       // itself for no reason.
       await setChainBackend(config);
+      setConnected();
+      navigate("/launch", { replace: true });
     } catch (e) {
-      setBackendRows([
-        {
-          label: backendLabel,
-          ok: false,
-          message: (e as { message?: string })?.message ?? String(e),
-        },
-      ]);
-      return;
+      setBackendRow({
+        label: config.kind === "coreRpc" ? "Bitcoin Core" : "Electrum",
+        state: "failed",
+        message: (e as { message?: string })?.message ?? String(e),
+      });
+    } finally {
+      setAdvancing(false);
     }
-    setConnected();
-    navigate("/launch", { replace: true });
+  }
+
+  // An edit retires the standing pass and the result reporting it, which is what brings the
+  // Test button back: nothing on screen describes the config the user now has.
+  function invalidate() {
+    setBackendRow(null);
+    setVerified(null);
   }
 
   function editNode(patch: Partial<NodeBackend>) {
     setNode((n) => (n ? { ...n, ...patch } : n));
-    setBackendRows(null);
+    invalidate();
   }
 
   return (
@@ -199,7 +226,7 @@ export function ConnectPage() {
                 value={kind}
                 onChange={(next) => {
                   setKind(next);
-                  setBackendRows(null);
+                  invalidate();
                 }}
                 options={[
                   { value: "electrum", label: "Electrum" },
@@ -217,7 +244,7 @@ export function ConnectPage() {
                   hint="The default works out of the box"
                   onCommit={(url) => {
                     setElectrumUrl(url);
-                    setBackendRows(null);
+                    invalidate();
                   }}
                 />
               </SummaryGroup>
@@ -263,12 +290,16 @@ export function ConnectPage() {
               )
             )}
 
-            <div>
-              <Button size="sm" variant="secondary" loading={testing} onClick={() => void probe(currentConfig())}>
-                Test connection
-              </Button>
-              {backendRows && <TestResultRows rows={backendRows} />}
-            </div>
+            {/* A result and the button that produces it are the same control in two states,
+                never both: the check runs on its own until an edit leaves nothing to report. */}
+            {backendRow && <TestResultRows rows={[backendRow]} />}
+            {(backendRow === null || backendRow.state === "failed") && (
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => void probe(currentConfig())}>
+                  {backendRow ? "Try again" : "Test connection"}
+                </Button>
+              </div>
+            )}
           </SettingsSection>
 
           <SettingsSection
@@ -285,12 +316,14 @@ export function ConnectPage() {
               rows={[
                 {
                   label: "Tor",
-                  ok: torReady,
+                  state: torError ? "failed" : torReady ? "ok" : "pending",
                   message: torError
                     ? torError
                     : torReady
                       ? "Bootstrap complete — Tor is ready"
-                      : `Bootstrapping — ${torProgress ?? 0}%`,
+                      : torProgress === null
+                        ? "Starting…"
+                        : `Bootstrapping — ${torProgress}%`,
                 },
               ]}
             />
@@ -316,7 +349,7 @@ export function ConnectPage() {
           {!torReady && !torError && (
             <span className="text-[12px] text-muted">Waiting for Tor to finish…</span>
           )}
-          <Button disabled={!torReady} loading={testing} onClick={() => void next()}>
+          <Button disabled={!torReady} loading={advancing} onClick={() => void next()}>
             Next
           </Button>
         </div>

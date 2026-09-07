@@ -1,6 +1,6 @@
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } from "lucide-react";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
@@ -244,7 +244,20 @@ function SendPanel() {
               onClick={() => setFeeKey(key)}
               selected={feeKey === key}
               label={key === "mid" ? "Medium" : key}
-              value={fees ? `${formatFeeRate(fees[key])} s/vB` : "…"}
+              value={
+                fees ? (
+                  <>
+                    {formatFeeRate(fees[key])} s/vB
+                    {/* The target each rate buys. A quiet mainnet quotes the same rate for all
+                        three, and without this the tiles read as a broken estimate. */}
+                    <span className="mt-0.5 block font-mono text-[9.5px] font-normal tracking-wide text-subtle">
+                      {FEE_TARGET[key]}
+                    </span>
+                  </>
+                ) : (
+                  "…"
+                )
+              }
               size="sm"
             />
           ))}
@@ -312,39 +325,60 @@ function SendPanel() {
   );
 }
 
+// The Recent Addresses disclosure lists at most 8 entries, and every extra transaction in this
+// window costs Electrum an input fetch.
+const RECENT_ADDRESS_TX_WINDOW = 25;
+
 function ReceivePanel() {
   const pushToast = useToastStore((s) => s.push);
   const [addressType, setAddressType] = useState<AddressType>("p2wpkh");
-  const [current, setCurrent] = useState<NewAddress | null>(null);
+  // Kept per type: an unissued address stays valid until it is paid, so switching
+  // SegWit/Taproot and back is a lookup instead of another round trip to the wallet.
+  const [issued, setIssued] = useState<Partial<Record<AddressType, NewAddress>>>({});
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
+  const [pendingType, setPendingType] = useState<AddressType | null>(null);
   const [transactions, setTransactions] = useState<TxSummary[]>([]);
+  const current = issued[addressType] ?? null;
 
+  // A ref, not `pendingType`: this has to reject a duplicate synchronously, before the state
+  // update lands, or toggling the two types quickly issues two requests for the same one.
+  const inFlight = useRef<Set<AddressType>>(new Set());
   const generate = useCallback(
     async (type: AddressType) => {
-      setGenerating(true);
+      if (inFlight.current.has(type)) return;
+      inFlight.current.add(type);
+      setPendingType(type);
       try {
         const next = await getNewAddress(type);
-        setCurrent(next);
+        setIssued((prev) => ({ ...prev, [type]: next }));
       } catch (e) {
         pushToast("error", (e as { message?: string })?.message ?? "Failed to generate address.");
       } finally {
-        setGenerating(false);
+        inFlight.current.delete(type);
+        setPendingType((p) => (p === type ? null : p));
       }
     },
     [pushToast],
   );
 
   useEffect(() => {
+    if (issued[addressType]) return;
     void generate(addressType);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addressType]);
+  }, [addressType, issued, generate]);
+
+  // Deferred behind the first address, and only ever fetched once: both calls take the wallet's
+  // read lock, and this one feeds a disclosure the user has to open before it is even visible.
+  const historyRequested = useRef(false);
+  useEffect(() => {
+    if (!current || historyRequested.current) return;
+    historyRequested.current = true;
+    void getTransactions(RECENT_ADDRESS_TX_WINDOW, 0).then(setTransactions).catch(() => {});
+  }, [current]);
 
   useEffect(() => {
-    void getTransactions(100, 0).then(setTransactions);
-  }, []);
-
-  useEffect(() => {
+    // Cleared, not left standing: the panel is labelled with the selected type, so holding the
+    // previous type's QR while a new address loads offers the wrong address to copy.
+    setQrDataUrl(null);
     if (!current) return;
     let cancelled = false;
     void QRCode.toDataURL(current.address, { width: 184, margin: 1 }).then((url) => {
@@ -416,7 +450,11 @@ function ReceivePanel() {
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Your Address</span>
         <div className="flex h-[46px] items-center justify-between gap-2 rounded-control border border-line-strong bg-surface-raised px-3.5">
           <span className="truncate font-mono text-[12.5px] text-muted" title={current?.address}>
-            {current ? truncateMiddle(current.address, 14, 10) : generating ? "Generating…" : "—"}
+            {current
+              ? truncateMiddle(current.address, 14, 10)
+              : pendingType === addressType
+                ? "Generating…"
+                : "—"}
           </span>
           <button
             type="button"
@@ -429,7 +467,13 @@ function ReceivePanel() {
         </div>
       </label>
 
-      <Button variant="secondary" onClick={() => void generate(addressType)} loading={generating}>
+      {/* Bypasses the per-type cache: this is the one control that asks the wallet whether the
+          address it issued has been paid, and hands over a fresh one if it has. */}
+      <Button
+        variant="secondary"
+        onClick={() => void generate(addressType)}
+        loading={pendingType !== null}
+      >
         Generate New Address
       </Button>
 
@@ -464,6 +508,12 @@ function ReceivePanel() {
     </Card>
   );
 }
+
+const FEE_TARGET: Record<"low" | "mid" | "high", string> = {
+  low: "~1 hour",
+  mid: "~30 min",
+  high: "next block",
+};
 
 export function SendPage() {
   return (

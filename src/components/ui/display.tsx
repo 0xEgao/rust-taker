@@ -97,22 +97,33 @@ export function SettingsSection({
 /** One verdict from a connectivity probe. */
 export interface TestRow {
   label: string;
-  ok: boolean;
+  /** `pending` is work still in flight — a cross here would report a failure that hasn't happened. */
+  state: "pending" | "ok" | "failed";
   message: string;
 }
 
+const TEST_ROW_TONE: Record<TestRow["state"], string> = {
+  pending: "text-muted",
+  ok: "text-success",
+  failed: "text-danger",
+};
+
 export function TestResultRows({ rows }: { rows: TestRow[] }) {
   return (
-    <div className="mt-3 flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5">
       {rows.map((r) => (
         <div
           key={r.label}
           className="flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3 py-2 text-[12px]"
         >
           <span
-            className={`flex items-center gap-1.5 font-medium ${r.ok ? "text-success" : "text-danger"}`}
+            className={`flex items-center gap-1.5 font-medium ${TEST_ROW_TONE[r.state]}`}
           >
-            {r.ok ? (
+            {r.state === "pending" ? (
+              // Same ring `Button` spins, rather than an icon, so a control and a row that are
+              // both waiting look like they are waiting on the same thing.
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent opacity-70" />
+            ) : r.state === "ok" ? (
               <CheckCircle2 size={13} strokeWidth={2} />
             ) : (
               <XCircle size={13} strokeWidth={2} />
