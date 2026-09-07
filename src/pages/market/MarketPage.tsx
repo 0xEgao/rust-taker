@@ -2,15 +2,15 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ExternalLink, Inbox, RefreshCw, Search } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getOffers, pollMaker, removeMaker, syncOfferbook } from "../../api/commands";
-import type { Maker } from "../../api/types";
+import { getOffers, pollRouter, removeRouter, syncOfferbook } from "../../api/commands";
+import type { Router } from "../../api/types";
 import { Card, IndeterminateBar, Modal, SatsAmount, StatStrip, Tooltip } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
-import { estimateMakerFee, formatTorEndpoint } from "../../lib/market-format";
+import { estimateRouterFee, formatTorEndpoint } from "../../lib/market-format";
 import { explorerTxUrl } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
-type MakerStatus = "good" | "bad" | "unresponsive";
+type RouterStatus = "good" | "bad" | "unresponsive";
 type SortKey = "baseFee" | "liquidityFee" | "timeRate" | "minSwap" | "maxSwap" | "bond";
 type SortDir = "asc" | "desc";
 
@@ -21,16 +21,16 @@ type SortDir = "asc" | "desc";
 // network I/O, which is what makes the tighter cadence free.
 const OFFERBOOK_REREAD_MS = 60 * 1000;
 
-// Muted (desaturated) variants of the success/warning/danger tokens, one per maker status.
-const STATUS_TAB_CLASS: Record<MakerStatus, { text: string; glow: string }> = {
+// Muted (desaturated) variants of the success/warning/danger tokens, one per router status.
+const STATUS_TAB_CLASS: Record<RouterStatus, { text: string; glow: string }> = {
   good: { text: "text-success", glow: "bg-success/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-success)_35%,transparent)]" },
   bad: { text: "text-danger", glow: "bg-danger/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-danger)_35%,transparent)]" },
   unresponsive: { text: "text-warning", glow: "bg-warning/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-warning)_35%,transparent)]" },
 };
 
-// Address/Swap range/Fidelity Bond/Actions gate whether a maker is usable at all, so they stay
+// Address/Swap range/Fidelity Bond/Actions gate whether a router is usable at all, so they stay
 // visible; the raw Base/Liquidity/Time fee breakdown is a detail tucked behind the expand toggle.
-const MAKER_TABLE_GRID = {
+const ROUTER_TABLE_GRID = {
   collapsed: "grid-cols-[minmax(150px,1.4fr)_repeat(2,minmax(90px,0.85fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
   expanded:
     "grid-cols-[minmax(150px,1.35fr)_repeat(5,minmax(74px,0.78fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
@@ -38,17 +38,17 @@ const MAKER_TABLE_GRID = {
 
 // Fewer columns (collapsed) means more room per column, so text can run larger; each range is also
 // fluid via clamp()'s vw term, so resizing the window scales it smoothly instead of at breakpoints.
-const MAKER_HEADER_TEXT = {
+const ROUTER_HEADER_TEXT = {
   collapsed: "text-[clamp(9px,0.55vw,11px)]",
   expanded: "text-[clamp(8px,0.45vw,9.5px)]",
 };
-const MAKER_ROW_TEXT = {
+const ROUTER_ROW_TEXT = {
   collapsed: "text-[clamp(11px,1vw,14px)]",
   expanded: "text-[clamp(9px,0.75vw,11px)]",
 };
 // One height for both modes — sized for collapsed's larger text — so toggling the expand button
 // doesn't jump row height, only the column layout and font size change.
-const MAKER_ROW_HEIGHT = "min-h-[clamp(46px,4vw,58px)]";
+const ROUTER_ROW_HEIGHT = "min-h-[clamp(46px,4vw,58px)]";
 
 function SortHeader({
   label,
@@ -113,14 +113,14 @@ function TooltipButton({
   );
 }
 
-function FidelityBondModal({ maker, onClose }: { maker: Maker; onClose: () => void }) {
-  const bond = maker.offer!;
+function FidelityBondModal({ router, onClose }: { router: Router; onClose: () => void }) {
+  const bond = router.offer!;
   return (
     <Modal title="Fidelity Bond Details" onClose={onClose} footer={<Button variant="secondary" onClick={onClose}>Close</Button>}>
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Tor Address</span>
-          <strong className="break-all font-mono text-[13px] text-foreground">{maker.address}</strong>
+          <strong className="break-all font-mono text-[13px] text-foreground">{router.address}</strong>
         </div>
         <div className="rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Bond Amount</span>
@@ -153,22 +153,22 @@ function FidelityBondModal({ maker, onClose }: { maker: Maker; onClose: () => vo
   );
 }
 
-function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => void }) {
-  const offer = maker.offer!;
+function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () => void }) {
+  const offer = router.offer!;
   const [amount, setAmount] = useState(offer.minSize > 0 ? offer.minSize : Math.min(10_000_000, offer.maxSize || 10_000_000));
   const [position, setPosition] = useState(1);
-  const [totalMakers, setTotalMakers] = useState(2);
+  const [totalRouters, setTotalRouters] = useState(2);
 
-  const invalid = !Number.isInteger(position) || !Number.isInteger(totalMakers) || position < 1 || totalMakers < 1 || position > totalMakers;
+  const invalid = !Number.isInteger(position) || !Number.isInteger(totalRouters) || position < 1 || totalRouters < 1 || position > totalRouters;
   const estimate = invalid
     ? null
-    : estimateMakerFee({
+    : estimateRouterFee({
         baseFee: offer.baseFee,
         amountRelativeFeePct: offer.amountRelativeFeePct,
         timeRelativeFeePct: offer.timeRelativeFeePct,
         amountSats: amount,
-        makerPosition: position,
-        totalMakers,
+        routerPosition: position,
+        totalRouters,
       });
   const totalPercent = estimate && amount > 0 ? (estimate.totalFee / amount) * 100 : 0;
 
@@ -178,8 +178,8 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
       onClose={onClose}
       footer={<Button variant="secondary" onClick={onClose}>Close</Button>}
     >
-      <p className="truncate font-mono text-[11px] text-muted" title={maker.address}>
-        {formatTorEndpoint(maker.address, 22, 12, true)}
+      <p className="truncate font-mono text-[11px] text-muted" title={router.address}>
+        {formatTorEndpoint(router.address, 22, 12, true)}
       </p>
 
       <label className="flex flex-col gap-2">
@@ -193,14 +193,14 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
         />
       </label>
       <div className="mt-1.5 flex items-center justify-between font-mono text-[11px] text-subtle">
-        <span>Maker range</span>
+        <span>Router range</span>
         <strong className="font-extrabold text-muted">
           <SatsAmount sats={offer.minSize} /> – <SatsAmount sats={offer.maxSize} />
         </strong>
       </div>
 
       <label className="mt-4 flex flex-col gap-2">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Maker Position in Circuit (n)</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Router Position in Circuit (n)</span>
         <input
           type="number"
           min={1}
@@ -210,12 +210,12 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
         />
       </label>
       <label className="mt-4 flex flex-col gap-2">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total Makers in Swap (m)</span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total Routers in Swap (m)</span>
         <input
           type="number"
           min={1}
-          value={totalMakers}
-          onChange={(e) => setTotalMakers(Number(e.target.value))}
+          value={totalRouters}
+          onChange={(e) => setTotalRouters(Number(e.target.value))}
           className="h-[46px] rounded-card border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65 focus:shadow-ring"
         />
       </label>
@@ -224,7 +224,7 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
         <strong className="font-extrabold text-muted">{estimate ? `${estimate.refundLocktime} blocks` : "Enter position"}</strong>
       </div>
       {invalid && (
-        <p className="mt-1.5 text-[11px] text-danger">Enter positive maker counts where n is not greater than m.</p>
+        <p className="mt-1.5 text-[11px] text-danger">Enter positive router counts where n is not greater than m.</p>
       )}
 
       <div className="mt-4 rounded-card border border-primary/28 bg-primary/[0.08] p-3.5 font-mono text-[12px] font-bold leading-relaxed text-foreground">
@@ -272,7 +272,7 @@ function FeeCalculatorModal({ maker, onClose }: { maker: Maker; onClose: () => v
 function ConfirmRemoveModal({ address, onConfirm, onCancel, removing }: { address: string; onConfirm: () => void; onCancel: () => void; removing: boolean }) {
   return (
     <Modal
-      title="Remove maker?"
+      title="Remove router?"
       onClose={onCancel}
       footer={
         <>
@@ -290,17 +290,17 @@ function ConfirmRemoveModal({ address, onConfirm, onCancel, removing }: { addres
 }
 
 export function MarketPage() {
-  const [good, setGood] = useState<Maker[]>([]);
-  const [bad, setBad] = useState<Maker[]>([]);
-  const [unresponsive, setUnresponsive] = useState<Maker[]>([]);
+  const [good, setGood] = useState<Router[]>([]);
+  const [bad, setBad] = useState<Router[]>([]);
+  const [unresponsive, setUnresponsive] = useState<Router[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tab, setTab] = useState<MakerStatus>("good");
+  const [tab, setTab] = useState<RouterStatus>("good");
   const [pollingAddress, setPollingAddress] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
-  const [feeCalcMaker, setFeeCalcMaker] = useState<Maker | null>(null);
-  const [bondMaker, setBondMaker] = useState<Maker | null>(null);
+  const [feeCalcRouter, setFeeCalcRouter] = useState<Router | null>(null);
+  const [bondRouter, setBondRouter] = useState<Router | null>(null);
   const [showAllColumns, setShowAllColumns] = useState(false);
   const [footerTick, setFooterTick] = useState(0);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -309,7 +309,7 @@ export function MarketPage() {
   const pushToast = useToastStore((s) => s.push);
   const pushFailure = useToastStore((s) => s.pushFailure);
 
-  const applyOfferBook = useCallback((view: { good: Maker[]; bad: Maker[]; unresponsive: Maker[] }) => {
+  const applyOfferBook = useCallback((view: { good: Router[]; bad: Router[]; unresponsive: Router[] }) => {
     setGood(view.good);
     setBad(view.bad);
     setUnresponsive(view.unresponsive);
@@ -344,7 +344,7 @@ export function MarketPage() {
           }, 2000);
         }
       } catch (e) {
-        pushFailure(e, "Failed to load makers.");
+        pushFailure(e, "Failed to load routers.");
       } finally {
         setLoading(false);
       }
@@ -352,7 +352,7 @@ export function MarketPage() {
   }, [load, pushFailure]);
 
   // Separate from pollIntervalRef, which tracks a sync to completion and then stops. This one
-  // runs for as long as the page is open. Failures are swallowed: get_offers takes the taker
+  // runs for as long as the page is open. Failures are swallowed: get_offers takes the wallet
   // lock without blocking, so it simply fails for the duration of a running swap.
   useEffect(() => {
     const id = setInterval(() => void load().catch(() => {}), OFFERBOOK_REREAD_MS);
@@ -388,7 +388,7 @@ export function MarketPage() {
     return { totalLiquidity, totalFidelity };
   }, [good]);
 
-  const buckets: Record<MakerStatus, Maker[]> = { good, bad, unresponsive };
+  const buckets: Record<RouterStatus, Router[]> = { good, bad, unresponsive };
   const displayed = buckets[tab];
 
   function toggleSort(key: SortKey) {
@@ -403,7 +403,7 @@ export function MarketPage() {
   const rows = useMemo(() => {
     if (!sortKey) return displayed;
 
-    const valueOf = ({ offer }: Maker): number => {
+    const valueOf = ({ offer }: Router): number => {
       switch (sortKey) {
         case "baseFee":
           return offer?.baseFee ?? 0;
@@ -429,7 +429,7 @@ export function MarketPage() {
     if (pollingAddress) return;
     setPollingAddress(address);
     try {
-      const fresh = await pollMaker(address);
+      const fresh = await pollRouter(address);
       setGood((g) => g.filter((m) => m.address !== address));
       setBad((b) => b.filter((m) => m.address !== address));
       setUnresponsive((u) => u.filter((m) => m.address !== address));
@@ -438,9 +438,9 @@ export function MarketPage() {
       else setUnresponsive((u) => [...u, fresh]);
 
       if (fresh.state === "good") {
-        pushToast("success", "Maker responded with a fresh offer. Offerbook updated.");
+        pushToast("success", "Router responded with a fresh offer. Offerbook updated.");
       } else {
-        pushToast("error", "Maker did not respond with a usable fresh offer.");
+        pushToast("error", "Router did not respond with a usable fresh offer.");
       }
     } catch (e) {
       pushFailure(e, "Poll failed.");
@@ -453,7 +453,7 @@ export function MarketPage() {
     if (!removeTarget) return;
     setRemoving(true);
     try {
-      await removeMaker(removeTarget);
+      await removeRouter(removeTarget);
       await load();
       setRemoveTarget(null);
     } catch (e) {
@@ -469,7 +469,7 @@ export function MarketPage() {
         <div>
           <h1 className="font-header text-[26px] font-bold leading-none text-foreground">Market</h1>
           <p className="mt-1.5 max-w-lg text-[13px] text-muted">
-            Live view of Portal makers routing through your Tor circuit.
+            Live view of Portal routers routing through your Tor circuit.
           </p>
         </div>
         <Button
@@ -493,7 +493,7 @@ export function MarketPage() {
           <div className="mb-3"><IndeterminateBar /></div>
           <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-primary-hover">
             <Search size={14} strokeWidth={2} />
-            Discovering makers over Tor network...
+            Discovering routers over Tor network...
           </div>
         </div>
       )}
@@ -504,16 +504,16 @@ export function MarketPage() {
           {
             label: "Fidelity locked",
             value: <SatsAmount sats={stats.totalFidelity} />,
-            detail: `across ${good.length} active makers`,
+            detail: `across ${good.length} active routers`,
           },
           {
             label: "Total liquidity",
             value: <SatsAmount sats={stats.totalLiquidity} />,
-            detail: "spendable maker depth",
+            detail: "spendable router depth",
             tone: "primary",
           },
           {
-            label: "Active makers",
+            label: "Active routers",
             value: String(good.length),
             detail: `${bad.length} bad · ${unresponsive.length} unresponsive`,
             tone: good.length > 0 ? "success" : "foreground",
@@ -526,10 +526,10 @@ export function MarketPage() {
           <div className="inline-flex items-center gap-1 rounded-full p-1">
             {(
               [
-                ["good", "Good Makers", good.length],
-                ["bad", "Bad Makers", bad.length],
+                ["good", "Good Routers", good.length],
+                ["bad", "Bad Routers", bad.length],
                 ["unresponsive", "Unresponsive", unresponsive.length],
-              ] as [MakerStatus, string, number][]
+              ] as [RouterStatus, string, number][]
             ).map(([value, label, count]) => (
               <button
                 key={value}
@@ -569,9 +569,9 @@ export function MarketPage() {
         <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <div
             className={`sticky top-0 z-1 grid ${
-              showAllColumns ? MAKER_TABLE_GRID.expanded : MAKER_TABLE_GRID.collapsed
+              showAllColumns ? ROUTER_TABLE_GRID.expanded : ROUTER_TABLE_GRID.collapsed
             } gap-3 bg-surface-raised px-7.5 pb-2.5 pt-3.5 font-mono ${
-              showAllColumns ? MAKER_HEADER_TEXT.expanded : MAKER_HEADER_TEXT.collapsed
+              showAllColumns ? ROUTER_HEADER_TEXT.expanded : ROUTER_HEADER_TEXT.collapsed
             } uppercase tracking-widest text-subtle`}
           >
             <div>Tor Address</div>
@@ -595,12 +595,12 @@ export function MarketPage() {
               <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
                 <RefreshCw size={42} strokeWidth={1.6} className="animate-spin text-primary" />
                 <strong className="text-[15px] text-foreground">Syncing market data...</strong>
-                <span>Fetching makers over Tor network</span>
+                <span>Fetching routers over Tor network</span>
               </div>
             ) : good.length + bad.length + unresponsive.length === 0 ? (
               <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
                 <Inbox size={42} strokeWidth={1.6} className="text-primary" />
-                <strong className="text-[15px] text-foreground">No makers found</strong>
+                <strong className="text-[15px] text-foreground">No routers found</strong>
                 <Button size="sm" onClick={() => void refresh()}>
                   <RefreshCw size={14} strokeWidth={2} /> Refresh
                 </Button>
@@ -608,23 +608,23 @@ export function MarketPage() {
             ) : displayed.length === 0 ? (
               <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
                 <Inbox size={42} strokeWidth={1.6} className="text-primary" />
-                <strong className="text-[15px] text-foreground">No {tab} makers found</strong>
+                <strong className="text-[15px] text-foreground">No {tab} routers found</strong>
               </div>
             ) : (
-              rows.map((maker) => {
-                const offer = maker.offer;
-                const isPolling = pollingAddress === maker.address;
+              rows.map((router) => {
+                const offer = router.offer;
+                const isPolling = pollingAddress === router.address;
                 return (
                   <div
-                    key={maker.address}
-                    className={`grid ${MAKER_ROW_HEIGHT} ${
-                      showAllColumns ? MAKER_TABLE_GRID.expanded : MAKER_TABLE_GRID.collapsed
+                    key={router.address}
+                    className={`grid ${ROUTER_ROW_HEIGHT} ${
+                      showAllColumns ? ROUTER_TABLE_GRID.expanded : ROUTER_TABLE_GRID.collapsed
                     } items-center gap-3 px-3 py-2.5 font-mono ${
-                      showAllColumns ? MAKER_ROW_TEXT.expanded : MAKER_ROW_TEXT.collapsed
+                      showAllColumns ? ROUTER_ROW_TEXT.expanded : ROUTER_ROW_TEXT.collapsed
                     } transition-colors hover:bg-[var(--color-hover)]`}
                   >
-                    <div className="truncate text-muted" title={maker.address}>
-                      {formatTorEndpoint(maker.address, 8, 6, true)}
+                    <div className="truncate text-muted" title={router.address}>
+                      {formatTorEndpoint(router.address, 8, 6, true)}
                     </div>
                     {showAllColumns && (
                       <div className="text-right font-semibold text-primary">
@@ -653,7 +653,7 @@ export function MarketPage() {
                         <button
                           type="button"
                           title="View fidelity bond"
-                          onClick={() => setBondMaker(maker)}
+                          onClick={() => setBondRouter(router)}
                           className="grid h-[18px] w-[18px] place-items-center rounded text-subtle hover:bg-primary/10 hover:text-primary"
                         >
                           <ExternalLink size={12} strokeWidth={2} />
@@ -662,24 +662,24 @@ export function MarketPage() {
                     </div>
                     <div className="flex justify-end gap-2">
                       <TooltipButton
-                        tooltip="Calculate the estimated maker fee for this maker using your amount and hop position."
-                        onClick={() => setFeeCalcMaker(maker)}
+                        tooltip="Calculate the estimated router fee for this router using your amount and hop position."
+                        onClick={() => setFeeCalcRouter(router)}
                         disabled={!offer}
                       >
                         Calculate
                       </TooltipButton>
-                      {maker.state !== "good" && (
+                      {router.state !== "good" && (
                         <TooltipButton
-                          tooltip="Ask this maker for a fresh offer now and update its availability and fee data."
-                          onClick={() => void poll(maker.address)}
+                          tooltip="Ask this router for a fresh offer now and update its availability and fee data."
+                          onClick={() => void poll(router.address)}
                           disabled={isPolling}
                         >
                           {isPolling ? "Polling..." : "Poll"}
                         </TooltipButton>
                       )}
                       <TooltipButton
-                        tooltip="Remove this maker from your local offerbook so it no longer appears in market results."
-                        onClick={() => setRemoveTarget(maker.address)}
+                        tooltip="Remove this router from your local offerbook so it no longer appears in market results."
+                        onClick={() => setRemoveTarget(router.address)}
                         danger
                       >
                         Remove
@@ -698,8 +698,8 @@ export function MarketPage() {
         </div>
       </Card>
 
-      {feeCalcMaker && <FeeCalculatorModal maker={feeCalcMaker} onClose={() => setFeeCalcMaker(null)} />}
-      {bondMaker && <FidelityBondModal maker={bondMaker} onClose={() => setBondMaker(null)} />}
+      {feeCalcRouter && <FeeCalculatorModal router={feeCalcRouter} onClose={() => setFeeCalcRouter(null)} />}
+      {bondRouter && <FidelityBondModal router={bondRouter} onClose={() => setBondRouter(null)} />}
       {removeTarget && (
         <ConfirmRemoveModal
           address={removeTarget}

@@ -3,12 +3,15 @@
 //! itself — we only read it.
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-use coinswap::wallet::{SwapStatus, TakerReport};
+use coinswap::bitcoin::{Address, OutPoint, Txid};
+use coinswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport};
 
+use crate::commands::chain_backend;
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, AppState};
-use crate::types::{MakerFeeInfo, Outpoint, SwapReportDetail, SwapReportSummary};
+use crate::types::{Outpoint, ReportRouterFee, SwapReportDetail, SwapReportSummary, SwapUtxoDto};
 
 /// Mirrors the `taker` field of the crate's `wallet::report::SwapReportFile` — that wrapper type
 /// isn't re-exported from `coinswap::wallet`, so this reads the same on-disk JSON shape directly
@@ -91,7 +94,7 @@ pub async fn list_swap_reports(
             outgoing_amount_sats: r.outgoing_amount,
             received_amount_sats: r.outgoing_amount.saturating_sub(r.fee_paid),
             fee_paid_sats: r.fee_paid,
-            makers_count: r.makers_count,
+            routers_count: r.makers_count,
         })
         .collect())
 }
@@ -117,12 +120,12 @@ pub async fn get_swap_report(
             )
         })?;
 
-    let maker_fee_info = r
+    let router_fee_info = r
         .maker_fee_info
         .into_iter()
-        .map(|m| MakerFeeInfo {
-            maker_index: m.maker_index,
-            maker_address: m.maker_address,
+        .map(|m| ReportRouterFee {
+            router_index: m.maker_index,
+            router_address: m.maker_address,
             base_fee_sats: m.base_fee,
             amount_relative_fee_sats: m.amount_relative_fee,
             time_relative_fee_sats: m.time_relative_fee,
@@ -155,13 +158,15 @@ pub async fn get_swap_report(
         fee_paid_sats: r.fee_paid,
         mining_fee_sats: r.mining_fee,
         fee_percentage: r.fee_percentage,
-        total_maker_fees_sats: r.total_maker_fees,
+        total_router_fees_sats: r.total_maker_fees,
         outgoing_contract_txid: r.outgoing_contract_txid,
         incoming_contract_txid: r.incoming_contract_txid,
         funding_txids: r.funding_txids,
-        makers_count: r.makers_count,
-        maker_addresses: r.maker_addresses,
-        maker_fee_info,
+        routers_count: r.makers_count,
+        router_addresses: r.maker_addresses,
+        router_fee_info,
+        input_utxo_sats: r.input_utxos,
+        change_utxo_sats: r.output_change_amounts,
         proven_outpoint,
         deniability_proof,
     })
@@ -179,6 +184,104 @@ pub async fn verify_deniability(
         taker
             .verify_deniability(&swap_id)
             .map_err(|e| AppError::internal(e.to_string()))
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+/// Recovers the coin a swap actually paid the user.
+///
+/// The report file can't answer this: its `output_swap_utxos` is the wallet's whole swept-coin
+/// set at write time, not this swap's, and it stores bare amounts with no outpoint. So this
+/// walks the chain instead — the sweep is the transaction spending the incoming contract
+/// outpoint, and its output is the coin. Costs a chain round-trip per candidate, so it is a
+/// separate on-demand command rather than part of `get_swap_report`.
+#[tauri::command]
+pub async fn get_incoming_swap_utxo(
+    state: tauri::State<'_, AppState>,
+    swap_id: String,
+) -> Result<Option<SwapUtxoDto>, AppError> {
+    let path = resolve_report_path(&state)?;
+    let wallet = state
+        .wallet
+        .read()?
+        .clone()
+        .ok_or_else(AppError::not_initialized)?;
+    let socks_port = *state.active_socks_port.read()?;
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<SwapUtxoDto>, AppError> {
+        let report = load_report_file(&path)?
+            .taker
+            .into_iter()
+            .find(|r| r.swap_id == swap_id)
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::ReportNotFound,
+                    format!("no router report found for swap_id {swap_id}"),
+                )
+            })?;
+
+        // The proof names the incoming contract outpoint exactly; the txid alone would leave
+        // the vout a guess.
+        let contract = match report.deniability_proof.as_ref() {
+            Some(p) => p.proven_outpoint(),
+            None => match report.incoming_contract_txid.as_deref() {
+                Some(txid) => OutPoint::new(
+                    Txid::from_str(txid)
+                        .map_err(|e| AppError::internal(format!("bad contract txid: {e}")))?,
+                    0,
+                ),
+                None => return Ok(None),
+            },
+        };
+
+        // Carries the wallet's own `vout` so the receiving output is read, not guessed —
+        // a sweep's output index is not guaranteed to be 0.
+        let (wallet_name, candidates) = {
+            let w = wallet.read()?;
+            let txs = w.get_transactions(None, None)?;
+            // The sweep lands while the swap runs, so the whole wallet history is not worth
+            // fetching raw; `start_timestamp` bounds it to a handful of transactions.
+            let received: Vec<(Txid, u32)> = txs
+                .into_iter()
+                .filter(|tx| tx.info.time >= report.start_timestamp)
+                .map(|tx| (tx.info.txid, tx.detail.vout))
+                .collect();
+            (w.get_name().to_string(), received)
+        };
+
+        let backend =
+            AnyBlockchain::from_config(&chain_backend::resolve(&wallet_name, socks_port)?)
+                .map_err(|e| AppError::internal(format!("{e:?}")))?;
+        // `Wallet` keeps its network private, so the backend is the only source for the
+        // address encoding.
+        let network = backend
+            .get_blockchain_info()
+            .map(|info| info.chain)
+            .map_err(|e| AppError::internal(format!("{e:?}")))?;
+
+        for (txid, vout) in candidates {
+            let Ok(tx) = backend.get_raw_transaction(&txid, None) else {
+                continue;
+            };
+            if !tx.input.iter().any(|i| i.previous_output == contract) {
+                continue;
+            }
+            let Some(out) = tx.output.get(vout as usize) else {
+                continue;
+            };
+            return Ok(Some(SwapUtxoDto {
+                txid: txid.to_string(),
+                vout,
+                amount_sats: out.value.to_sat(),
+                // Decoding the script here is what gives a real address on Electrum, whose
+                // `list_unspent` leaves the address blank.
+                address: Address::from_script(&out.script_pubkey, network)
+                    .ok()
+                    .map(|a| a.to_string()),
+            }));
+        }
+        Ok(None)
     })
     .await
     .map_err(AppError::internal)?

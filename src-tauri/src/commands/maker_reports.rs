@@ -19,11 +19,11 @@ use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{MakerSwapReportDetail, MakerSwapReportSummary};
 
-fn get_maker_server(state: &AppState, maker_id: &str) -> Result<Arc<MakerServer>, AppError> {
+fn get_maker_server(state: &AppState, router_id: &str) -> Result<Arc<MakerServer>, AppError> {
     let makers = state.makers.lock()?;
     let entry = makers
-        .get(maker_id)
-        .ok_or_else(|| AppError::maker_not_found(maker_id))?;
+        .get(router_id)
+        .ok_or_else(|| AppError::maker_not_found(router_id))?;
     entry
         .runtime
         .as_ref()
@@ -41,14 +41,14 @@ struct SwapReportFile {
     maker: HashMap<String, Vec<MakerReport>>,
 }
 
-fn resolve_report_path(state: &AppState, maker_id: &str) -> Result<PathBuf, AppError> {
+fn resolve_report_path(state: &AppState, router_id: &str) -> Result<PathBuf, AppError> {
     let makers = state.makers.lock()?;
-    let in_memory = makers.get(maker_id).map(|entry| entry.settings.clone());
+    let in_memory = makers.get(router_id).map(|entry| entry.settings.clone());
     drop(makers);
     let settings = match in_memory {
         Some(settings) => settings,
         None => {
-            maker_settings::load(maker_id)?.ok_or_else(|| AppError::maker_not_found(maker_id))?
+            maker_settings::load(router_id)?.ok_or_else(|| AppError::maker_not_found(router_id))?
         }
     };
     let data_dir = settings
@@ -74,9 +74,9 @@ fn load_report_file(path: &PathBuf) -> Result<SwapReportFile, AppError> {
 #[tauri::command]
 pub async fn list_maker_swap_reports(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<Vec<MakerSwapReportSummary>, AppError> {
-    let path = resolve_report_path(&state, &maker_id)?;
+    let path = resolve_report_path(&state, &router_id)?;
     let file = tauri::async_runtime::spawn_blocking(move || load_report_file(&path))
         .await
         .map_err(AppError::internal)??;
@@ -106,10 +106,10 @@ pub async fn list_maker_swap_reports(
 #[tauri::command]
 pub async fn get_maker_swap_report(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
     swap_id: String,
 ) -> Result<MakerSwapReportDetail, AppError> {
-    let path = resolve_report_path(&state, &maker_id)?;
+    let path = resolve_report_path(&state, &router_id)?;
     let file = tauri::async_runtime::spawn_blocking(move || load_report_file(&path))
         .await
         .map_err(AppError::internal)??;
@@ -122,7 +122,7 @@ pub async fn get_maker_swap_report(
         .ok_or_else(|| {
             AppError::new(
                 ErrorCode::ReportNotFound,
-                format!("no maker report found for swap_id {swap_id}"),
+                format!("no router report found for swap_id {swap_id}"),
             )
         })?;
 
@@ -150,10 +150,10 @@ pub async fn get_maker_swap_report(
 #[tauri::command]
 pub async fn verify_maker_deniability(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
     swap_id: String,
 ) -> Result<bool, AppError> {
-    let server = get_maker_server(&state, &maker_id)?;
+    let server = get_maker_server(&state, &router_id)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<bool, AppError> {
         Ok(server.verify_deniability(&swap_id)?)
     })

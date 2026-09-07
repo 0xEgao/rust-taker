@@ -1,13 +1,13 @@
 import { AlertTriangle, ArrowLeft, Server } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { checkBackend, checkMakerPorts, checkTor, getSuggestedMakerPorts, initMaker } from "../../api/commands";
-import type { MakerInitConfig, MakerPortCheck } from "../../api/types";
+import { checkBackend, checkRouterPorts, checkTor, getSuggestedRouterPorts, initRouter } from "../../api/commands";
+import type { RouterInitConfig, RouterPortCheck } from "../../api/types";
 import { Card, Disclosure } from "../../components/ui/display";
 import { Button, LinkButton, PasswordField, SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
 import { validateNewPassword } from "../../lib/password-policy";
 import { useToastStore } from "../../store/toast";
-import { MAKER_DEFAULTS, MAKER_ID_PATTERN } from "./maker-defaults";
+import { ROUTER_DEFAULTS, ROUTER_ID_PATTERN } from "./router-defaults";
 
 // Long enough that editing a port digit-by-digit doesn't fire a check per keystroke.
 const CHECK_DEBOUNCE_MS = 400;
@@ -18,13 +18,13 @@ const INITIAL_VALUES = {
   controlPort: "",
   networkPort: "",
   rpcPort: "",
-  minSwapAmount: String(MAKER_DEFAULTS.minSwapAmount),
-  baseFee: String(MAKER_DEFAULTS.baseFee),
-  amountRelativeFeePct: String(MAKER_DEFAULTS.amountRelativeFeePct),
-  timeRelativeFeePct: String(MAKER_DEFAULTS.timeRelativeFeePct),
-  requiredConfirms: String(MAKER_DEFAULTS.requiredConfirms),
-  fidelityAmount: String(MAKER_DEFAULTS.fidelityAmount),
-  fidelityTimelock: String(MAKER_DEFAULTS.fidelityTimelock),
+  minSwapAmount: String(ROUTER_DEFAULTS.minSwapAmount),
+  baseFee: String(ROUTER_DEFAULTS.baseFee),
+  amountRelativeFeePct: String(ROUTER_DEFAULTS.amountRelativeFeePct),
+  timeRelativeFeePct: String(ROUTER_DEFAULTS.timeRelativeFeePct),
+  requiredConfirms: String(ROUTER_DEFAULTS.requiredConfirms),
+  fidelityAmount: String(ROUTER_DEFAULTS.fidelityAmount),
+  fidelityTimelock: String(ROUTER_DEFAULTS.fidelityTimelock),
 };
 
 type Values = typeof INITIAL_VALUES;
@@ -45,11 +45,11 @@ function sats(value: string) {
   return Number.isFinite(n) ? n.toLocaleString() : value;
 }
 
-export function AddMakerPage() {
+export function AddRouterPage() {
   const navigate = useNavigate();
   const pushToast = useToastStore((state) => state.push);
 
-  const [makerId, setMakerId] = useState("");
+  const [routerId, setRouterId] = useState("");
   const [walletName, setWalletName] = useState("");
   const [dataDir, setDataDir] = useState("");
   const [walletPassword, setWalletPassword] = useState("");
@@ -57,7 +57,7 @@ export function AddMakerPage() {
   const [values, setValues] = useState<Values>(INITIAL_VALUES);
 
   const [torError, setTorError] = useState<string | null>(null);
-  const [portErrors, setPortErrors] = useState<MakerPortCheck>({});
+  const [portErrors, setPortErrors] = useState<RouterPortCheck>({});
   const [chain, setChain] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -70,12 +70,12 @@ export function AddMakerPage() {
     [values],
   );
 
-  const trimmedId = makerId.trim();
-  const malformedId = trimmedId.length > 0 && !MAKER_ID_PATTERN.test(trimmedId);
+  const trimmedId = routerId.trim();
+  const malformedId = trimmedId.length > 0 && !ROUTER_ID_PATTERN.test(trimmedId);
   const walletPasswordError = validateNewPassword(walletPassword, walletPasswordConfirm);
 
   useEffect(() => {
-    void getSuggestedMakerPorts()
+    void getSuggestedRouterPorts()
       .then((ports) => setValues((v) => ({ ...v, networkPort: String(ports.networkPort), rpcPort: String(ports.rpcPort) })))
       .catch((e) => setPortErrors({ networkPort: (e as { message?: string })?.message ?? "Could not find free ports." }));
     void checkBackend()
@@ -100,7 +100,7 @@ export function AddMakerPage() {
     if (![networkPort, rpcPort].every((p) => Number.isInteger(p) && p > 0)) return;
     const run = ++portRun.current;
     const timer = setTimeout(() => {
-      void checkMakerPorts(networkPort, rpcPort)
+      void checkRouterPorts(networkPort, rpcPort)
         .then((result) => {
           if (run === portRun.current) setPortErrors(result);
         })
@@ -109,13 +109,13 @@ export function AddMakerPage() {
     return () => clearTimeout(timer);
   }, [numbers.networkPort, numbers.rpcPort, numbers.socksPort, numbers.controlPort]);
 
-  const config = useMemo<MakerInitConfig | null>(() => {
+  const config = useMemo<RouterInitConfig | null>(() => {
     if (!trimmedId || malformedId || walletPasswordError) return null;
     if (Object.values(numbers).some((n) => !Number.isFinite(n) || n < 0)) return null;
     if (numbers.requiredConfirms < 1) return null;
     return {
-      makerId: trimmedId,
-      // A maker's wallet is its own, so the id doubles as the wallet name unless overridden.
+      routerId: trimmedId,
+      // A router's wallet is its own, so the id doubles as the wallet name unless overridden.
       walletName: walletName.trim() || trimmedId,
       dataDir: dataDir.trim() || undefined,
       walletPassword,
@@ -139,17 +139,17 @@ export function AddMakerPage() {
     return (next: string) => setValues((v) => ({ ...v, [key]: next }));
   }
 
-  async function createMaker() {
+  async function createRouter() {
     if (!config) return;
     setCreating(true);
     try {
-      await initMaker(config);
+      await initRouter(config);
       setWalletPassword("");
       setWalletPasswordConfirm("");
-      pushToast("success", `${config.makerId} was created and registered.`);
-      navigate(`/maker/${encodeURIComponent(config.makerId)}/setup`);
+      pushToast("success", `${config.routerId} was created and registered.`);
+      navigate(`/router/${encodeURIComponent(config.routerId)}/setup`);
     } catch (error) {
-      pushToast("error", (error as { message?: string })?.message ?? "Could not create maker.");
+      pushToast("error", (error as { message?: string })?.message ?? "Could not create router.");
     } finally {
       setCreating(false);
     }
@@ -159,9 +159,9 @@ export function AddMakerPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto w-full max-w-[640px] pb-8">
         <header className="mb-6">
-          <Link to="/maker" className="mb-4 inline-flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle hover:text-foreground">
+          <Link to="/router" className="mb-4 inline-flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle hover:text-foreground">
             <ArrowLeft size={14} />
-            Back to makers
+            Back to routers
           </Link>
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -169,7 +169,7 @@ export function AddMakerPage() {
                 <Server size={22} />
               </span>
               <div>
-                <h1 className="font-header text-[29px] font-bold text-foreground">Add Maker</h1>
+                <h1 className="font-header text-[29px] font-bold text-foreground">Add Router</h1>
                 <p className="mt-1 text-[12.5px] text-muted">Created stopped — start it once the fidelity bond is funded.</p>
               </div>
             </div>
@@ -184,19 +184,19 @@ export function AddMakerPage() {
         <Card className="border-line-strong">
           <div className="p-5">
             <TextField
-              label="Maker ID"
-              placeholder="maker-02"
+              label="Router ID"
+              placeholder="router-02"
               autoFocus
-              value={makerId}
-              onChange={(e) => setMakerId(e.target.value)}
+              value={routerId}
+              onChange={(e) => setRouterId(e.target.value)}
               error={malformedId ? "Letters, numbers, hyphens and underscores only." : undefined}
               hint={malformedId ? undefined : "Also names its wallet. Everything below is already set."}
             />
             <div className="mt-3">
               <Disclosure label="Wallet name and data directory">
                 <div className="flex flex-col gap-3 pt-1">
-                  <TextField label="Wallet name" placeholder={trimmedId || "Same as Maker ID"} value={walletName} onChange={(e) => setWalletName(e.target.value)} />
-                  <TextField label="Data directory" placeholder="Default maker directory" value={dataDir} onChange={(e) => setDataDir(e.target.value)} />
+                  <TextField label="Wallet name" placeholder={trimmedId || "Same as Router ID"} value={walletName} onChange={(e) => setWalletName(e.target.value)} />
+                  <TextField label="Data directory" placeholder="Default router directory" value={dataDir} onChange={(e) => setDataDir(e.target.value)} />
                   <p className="text-[11.5px] leading-5 text-subtle">
                     Wallet name and data directory are permanent and cannot be changed later.
                   </p>
@@ -213,7 +213,7 @@ export function AddMakerPage() {
                 error={walletPassword || walletPasswordConfirm ? walletPasswordError : undefined}
               />
               <p className="text-[11.5px] leading-5 text-subtle">
-                Portal encrypts every maker wallet it creates. Losing this password can make its
+                Portal encrypts every router wallet it creates. Losing this password can make its
                 funds unrecoverable.
               </p>
             </div>
@@ -229,7 +229,7 @@ export function AddMakerPage() {
           )}
 
           {group(
-            "Maker ports",
+            "Router ports",
             <>
               <SummaryRow label="Network port" value={values.networkPort || "…"} onCommit={set("networkPort")} />
               <SummaryRow label="RPC port" value={values.rpcPort || "…"} onCommit={set("rpcPort")} />
@@ -258,15 +258,15 @@ export function AddMakerPage() {
 
           <div className="border-t border-line px-5 py-4">
             <p className="text-[11.5px] leading-5 text-subtle">
-              These are defaults. All of them can be changed later from the maker's Settings tab.
+              These are defaults. All of them can be changed later from the router's Settings tab.
             </p>
           </div>
         </Card>
 
         <div className="mt-4 flex items-center justify-end gap-2">
-          <LinkButton to="/maker" variant="secondary">Cancel</LinkButton>
-          <Button onClick={() => void createMaker()} loading={creating} disabled={!config || blocked}>
-            Create maker
+          <LinkButton to="/router" variant="secondary">Cancel</LinkButton>
+          <Button onClick={() => void createRouter()} loading={creating} disabled={!config || blocked}>
+            Create router
           </Button>
         </div>
       </div>

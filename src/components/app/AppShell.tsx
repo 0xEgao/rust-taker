@@ -8,7 +8,7 @@ import { useSessionStore } from "../../store/session";
 import { useToastStore } from "../../store/toast";
 import { IconButton } from "../ui/display";
 
-const TAKER_NAV_ITEMS: { path: string; label: string; d: string }[] = [
+const WALLET_NAV_ITEMS: { path: string; label: string; d: string }[] = [
   { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
   { path: "/market", label: "Market", d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
   { path: "/send", label: "Send", d: '<path d="M7 17L17 7M9 7h8v8"/>' },
@@ -16,23 +16,23 @@ const TAKER_NAV_ITEMS: { path: string; label: string; d: string }[] = [
 ];
 
 function Logo({
-  makerMode,
-  atMakerRoot,
-  takerUnlocked,
+  routerMode,
+  atRouterRoot,
+  walletUnlocked,
 }: {
-  makerMode: boolean;
-  atMakerRoot: boolean;
-  takerUnlocked: boolean;
+  routerMode: boolean;
+  atRouterRoot: boolean;
+  walletUnlocked: boolean;
 }) {
-  // Only the fleet leaves the maker side; every maker sub-page steps back to the fleet first.
-  // A maker-only session has no taker to return to — leaving means going back to the role
+  // Only the fleet leaves the router side; every router sub-page steps back to the fleet first.
+  // A router-only session has no wallet to return to — leaving means going back to the role
   // picker and unlocking a wallet there.
-  const [to, title] = !makerMode
+  const [to, title] = !routerMode
     ? ["/", "Open wallet"]
-    : !atMakerRoot
-      ? ["/maker", "Back to your makers"]
-      : takerUnlocked
-        ? ["/", "Return to Taker wallet"]
+    : !atRouterRoot
+      ? ["/router", "Back to your routers"]
+      : walletUnlocked
+        ? ["/", "Return to wallet"]
         : ["/launch", "Back to start"];
 
   return (
@@ -41,7 +41,7 @@ function Logo({
       title={title}
       className="group flex items-center gap-3 rounded-control outline-none focus-visible:shadow-ring"
     >
-      {makerMode ? (
+      {routerMode ? (
         <span className="flex items-center gap-2 font-header text-[15px] font-bold text-foreground transition-colors group-hover:text-primary">
           <ArrowLeft size={16} strokeWidth={2} className="text-primary" /> Portal
         </span>
@@ -50,7 +50,7 @@ function Logo({
           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.24),0_6px_16px_-8px_color-mix(in_oklab,var(--color-primary)_60%,transparent)]">P</div>
           <div className="min-w-0 leading-tight">
             <div className="font-header text-[15px] font-bold text-foreground">Portal</div>
-            <div className="text-[11px] text-subtle">Taker Wallet</div>
+            <div className="text-[11px] text-subtle">Wallet</div>
           </div>
         </>
       )}
@@ -59,13 +59,13 @@ function Logo({
 }
 
 function TopNav({
-  makerMode,
-  atMakerRoot,
-  takerUnlocked,
+  routerMode,
+  atRouterRoot,
+  walletUnlocked,
 }: {
-  makerMode: boolean;
-  atMakerRoot: boolean;
-  takerUnlocked: boolean;
+  routerMode: boolean;
+  atRouterRoot: boolean;
+  walletUnlocked: boolean;
 }) {
   const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
   const refreshing = useHeaderActionsStore((s) => s.refreshing);
@@ -91,14 +91,14 @@ function TopNav({
         backdropFilter: "blur(6px)",
       }}
     >
-      <Logo makerMode={makerMode} atMakerRoot={atMakerRoot} takerUnlocked={takerUnlocked} />
+      <Logo routerMode={routerMode} atRouterRoot={atRouterRoot} walletUnlocked={walletUnlocked} />
 
       <nav className="flex items-center gap-1" aria-label="Main navigation">
-        {makerMode ? (
+        {routerMode ? (
           <div className="flex items-center gap-2 rounded-pill border border-primary/25 bg-primary/[0.07] px-3.5 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-primary">
-            <Server size={13} strokeWidth={1.9} /> Maker Dashboard
+            <Server size={13} strokeWidth={1.9} /> Router Dashboard
           </div>
-        ) : TAKER_NAV_ITEMS.map((item) => (
+        ) : WALLET_NAV_ITEMS.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}
@@ -147,15 +147,15 @@ function TopNav({
             )}
           </NavLink>
         ))}
-        {!makerMode && (
+        {!routerMode && (
           <>
             <span className="mx-2 h-5 w-px bg-line-strong" aria-hidden="true" />
             <NavLink
-              to="/maker"
-              className="lift flex items-center gap-2 rounded-control border border-maker/25 bg-maker/[0.07] px-3.5 py-2 text-[12.5px] font-semibold text-maker outline-none hover:border-maker/45 hover:bg-maker/[0.12] focus-visible:shadow-ring"
+              to="/router"
+              className="lift flex items-center gap-2 rounded-control border border-router/25 bg-router/[0.07] px-3.5 py-2 text-[12.5px] font-semibold text-router outline-none hover:border-router/45 hover:bg-router/[0.12] focus-visible:shadow-ring"
             >
               <Server size={14} strokeWidth={1.9} />
-              Maker Console
+              Router Console
               <span aria-hidden="true">→</span>
             </NavLink>
           </>
@@ -163,9 +163,9 @@ function TopNav({
       </nav>
 
       {/* Wallet is the only page that registers a refresh handler, so both of these are
-          taker-only — a maker reads its own log from its workspace instead. */}
+          wallet-only — a router reads its own log from its workspace instead. */}
       <div className="flex items-center justify-self-end gap-2">
-        {!makerMode && (
+        {!routerMode && (
           <>
             <IconButton
               onClick={() => onRefresh?.()}
@@ -246,9 +246,9 @@ function ToastStack() {
 export function AppShell() {
   const { pathname } = useLocation();
   const reduceMotion = useReducedMotion();
-  const makerMode = pathname.startsWith("/maker");
-  const atMakerRoot = pathname === "/maker";
-  const takerUnlocked = useSessionStore((s) => s.initialized);
+  const routerMode = pathname.startsWith("/router");
+  const atRouterRoot = pathname === "/router";
+  const walletUnlocked = useSessionStore((s) => s.initialized);
 
   useEffect(() => {
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -266,12 +266,12 @@ export function AppShell() {
   }, []);
 
   return (
-    // Scopes the accent to the whole maker side, nav item included, so crossing between
-    // maker screens never crosses a colour boundary.
-    <div className="relative h-screen" data-accent={makerMode ? "maker" : undefined}>
+    // Scopes the accent to the whole router side, nav item included, so crossing between
+    // router screens never crosses a colour boundary.
+    <div className="relative h-screen" data-accent={routerMode ? "router" : undefined}>
       <Background />
       <div className="relative flex h-screen flex-col">
-        <TopNav makerMode={makerMode} atMakerRoot={atMakerRoot} takerUnlocked={takerUnlocked} />
+        <TopNav routerMode={routerMode} atRouterRoot={atRouterRoot} walletUnlocked={walletUnlocked} />
         <main className="flex min-h-0 min-w-0 flex-1">
           {/* Keyed on the path so every route change gets a deliberate upward reveal. The new
               route enters immediately; avoiding a blocking exit keeps navigation responsive. */}

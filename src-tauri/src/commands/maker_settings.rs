@@ -106,8 +106,8 @@ fn maker_data_dir(settings: &MakerSettingsDto) -> Result<PathBuf, AppError> {
     let legacy = get_maker_dir()?;
     Ok(legacy
         .parent()
-        .map(|base| base.join(&settings.maker_id))
-        .unwrap_or_else(|| legacy.join(&settings.maker_id)))
+        .map(|base| base.join(&settings.router_id))
+        .unwrap_or_else(|| legacy.join(&settings.router_id)))
 }
 
 fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError> {
@@ -207,10 +207,10 @@ fn load_dashboard_registrations(
     Ok(stored
         .makers
         .into_iter()
-        .map(|(maker_id, settings)| {
-            let wallet_name = settings.wallet_name.unwrap_or_else(|| maker_id.clone());
+        .map(|(router_id, settings)| {
+            let wallet_name = settings.wallet_name.unwrap_or_else(|| router_id.clone());
             let dto = MakerSettingsDto {
-                maker_id: maker_id.clone(),
+                router_id: router_id.clone(),
                 wallet_name,
                 network_port: settings.network_port,
                 rpc_port: settings.rpc_port,
@@ -225,7 +225,7 @@ fn load_dashboard_registrations(
                 time_relative_fee_pct: settings.time_relative_fee_pct,
                 data_dir: settings.data_directory,
             };
-            (maker_id, dto)
+            (router_id, dto)
         })
         .collect())
 }
@@ -239,8 +239,8 @@ pub(crate) fn load_all() -> Result<HashMap<String, MakerSettingsDto>, AppError> 
     Ok(stored.makers)
 }
 
-pub(crate) fn load(maker_id: &str) -> Result<Option<MakerSettingsDto>, AppError> {
-    Ok(load_all()?.remove(maker_id))
+pub(crate) fn load(router_id: &str) -> Result<Option<MakerSettingsDto>, AppError> {
+    Ok(load_all()?.remove(router_id))
 }
 
 pub(crate) fn save(settings: &MakerSettingsDto) -> Result<(), AppError> {
@@ -249,20 +249,20 @@ pub(crate) fn save(settings: &MakerSettingsDto) -> Result<(), AppError> {
     let mut stored = load_file(&path)?;
     stored
         .makers
-        .insert(settings.maker_id.clone(), settings.clone());
+        .insert(settings.router_id.clone(), settings.clone());
     save_file(&path, &stored)
 }
 
 #[tauri::command]
 pub fn list_makers() -> Result<Vec<MakerSettingsDto>, AppError> {
     let mut makers: Vec<_> = load_all()?.into_values().collect();
-    makers.sort_by(|a, b| a.maker_id.cmp(&b.maker_id));
+    makers.sort_by(|a, b| a.router_id.cmp(&b.router_id));
     Ok(makers)
 }
 
 #[tauri::command]
-pub fn get_saved_maker_settings(maker_id: String) -> Result<Option<MakerSettingsDto>, AppError> {
-    load(&maker_id)
+pub fn get_saved_maker_settings(router_id: String) -> Result<Option<MakerSettingsDto>, AppError> {
+    load(&router_id)
 }
 
 /// Maker Dashboard registrations this app has no entry for yet. Offering them for an explicit
@@ -276,22 +276,22 @@ pub fn list_dashboard_imports() -> Result<Vec<MakerSettingsDto>, AppError> {
     let registered = load_file(&settings_path()?)?.makers;
     let mut available: Vec<_> = load_dashboard_registrations(&dashboard_path)?
         .into_iter()
-        .filter(|(maker_id, _)| !registered.contains_key(maker_id))
+        .filter(|(router_id, _)| !registered.contains_key(router_id))
         .map(|(_, dto)| dto)
         .collect();
-    available.sort_by(|a, b| a.maker_id.cmp(&b.maker_id));
+    available.sort_by(|a, b| a.router_id.cmp(&b.router_id));
     Ok(available)
 }
 
 #[tauri::command]
-pub fn import_dashboard_makers(maker_ids: Vec<String>) -> Result<Vec<MakerSettingsDto>, AppError> {
+pub fn import_dashboard_makers(router_ids: Vec<String>) -> Result<Vec<MakerSettingsDto>, AppError> {
     let Some(dashboard_path) = dashboard_settings_path() else {
         return Ok(Vec::new());
     };
     let mut discovered = load_dashboard_registrations(&dashboard_path)?;
-    let imported: Vec<_> = maker_ids
+    let imported: Vec<_> = router_ids
         .iter()
-        .filter_map(|maker_id| discovered.remove(maker_id))
+        .filter_map(|router_id| discovered.remove(router_id))
         .collect();
     for settings in &imported {
         save(settings)?;
@@ -302,9 +302,9 @@ pub fn import_dashboard_makers(maker_ids: Vec<String>) -> Result<Vec<MakerSettin
 #[tauri::command]
 pub fn clear_maker_settings(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<(), AppError> {
-    if let Some(entry) = state.makers.lock()?.get(&maker_id) {
+    if let Some(entry) = state.makers.lock()?.get(&router_id) {
         if !matches!(
             entry.phase,
             crate::types::MakerPhase::Stopped | crate::types::MakerPhase::Failed { .. }
@@ -315,10 +315,10 @@ pub fn clear_maker_settings(
     let _guard = SETTINGS_IO.lock()?;
     let path = settings_path()?;
     let mut stored = load_file(&path)?;
-    stored.makers.remove(&maker_id);
+    stored.makers.remove(&router_id);
     save_file(&path, &stored)?;
-    state.makers.lock()?.remove(&maker_id);
-    crate::logging::unregister_maker(&maker_id);
+    state.makers.lock()?.remove(&router_id);
+    crate::logging::unregister_maker(&router_id);
     Ok(())
 }
 
@@ -379,7 +379,7 @@ fn port_conflict(
         return Some(format!("Port {port} is already used by Tor."));
     }
     if let Some(owner) = taken.get(&port) {
-        return Some(format!("Port {port} is already used by maker '{owner}'."));
+        return Some(format!("Port {port} is already used by router '{owner}'."));
     }
     if !is_port_free(port) {
         return Some(format!("Port {port} is already in use. Pick another."));
@@ -390,10 +390,7 @@ fn port_conflict(
 /// Validates a maker's two listener ports so the UI can warn before `init_maker` writes a
 /// wallet — a failure there has to be unwound (`maker::abort_failed_creation`).
 #[tauri::command]
-pub fn check_maker_ports(
-    network_port: u16,
-    rpc_port: u16,
-) -> Result<MakerPortCheckDto, AppError> {
+pub fn check_maker_ports(network_port: u16, rpc_port: u16) -> Result<MakerPortCheckDto, AppError> {
     let [socks_port, control_port] = tor_ports();
     let mut taken = HashMap::new();
     for (id, settings) in load_all()? {
@@ -419,7 +416,7 @@ mod tests {
 
     fn settings() -> MakerSettingsDto {
         MakerSettingsDto {
-            maker_id: "maker-one".to_string(),
+            router_id: "maker-one".to_string(),
             wallet_name: "wallet-one".to_string(),
             network_port: 6102,
             rpc_port: 6103,
@@ -496,8 +493,8 @@ mod tests {
 
         let offered: Vec<_> = discovered
             .into_iter()
-            .filter(|(maker_id, _)| !registered.contains_key(maker_id))
-            .map(|(maker_id, _)| maker_id)
+            .filter(|(router_id, _)| !registered.contains_key(router_id))
+            .map(|(router_id, _)| router_id)
             .collect();
         assert_eq!(offered, vec!["Luffy"]);
     }

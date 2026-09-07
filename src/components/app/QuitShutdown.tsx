@@ -6,7 +6,7 @@ import { Button } from "../ui/inputs";
 import { Modal } from "../ui/display";
 
 /**
- * Teardown is unbounded — a maker closes by finishing its connections and a full wallet sync.
+ * Teardown is unbounded — a router closes by finishing its connections and a full wallet sync.
  * Both states exist so that wait reads as work rather than as a hung window.
  */
 export function QuitShutdown() {
@@ -32,7 +32,7 @@ export function QuitShutdown() {
       <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-3 bg-surface">
         <p className="font-header text-[15px] font-bold text-foreground">{step}…</p>
         <p className="max-w-sm text-center text-[12px] leading-5 text-muted">
-          Letting the maker and taker finish and close their wallets. Quitting before they
+          Letting the router and wallet finish and close their wallets. Quitting before they
           are done is what leaves state to repair on the next launch.
         </p>
       </div>
@@ -43,10 +43,10 @@ export function QuitShutdown() {
 
   const running = [
     blockers.swapRunning ? "a coinswap" : null,
-    blockers.runningMakers.length === 1
-      ? `the maker ${blockers.runningMakers[0]}`
-      : blockers.runningMakers.length > 1
-        ? `${blockers.runningMakers.length} makers`
+    blockers.runningRouters.length === 1
+      ? `the router ${blockers.runningRouters[0]}`
+      : blockers.runningRouters.length > 1
+        ? `${blockers.runningRouters.length} routers`
         : null,
   ].filter(Boolean);
 
@@ -75,9 +75,9 @@ export function QuitShutdown() {
           their timelocked contracts until recovery clears them.
         </p>
       )}
-      {blockers.runningMakers.length > 0 && (
+      {blockers.runningRouters.length > 0 && (
         <p className="text-[12.5px] leading-5 text-muted">
-          Makers finish serving their current connections before stopping, so this can take
+          Routers finish serving their current connections before stopping, so this can take
           a moment.
         </p>
       )}

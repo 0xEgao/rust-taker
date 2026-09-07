@@ -34,24 +34,24 @@ fn valid_id(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-fn default_maker_data_dir(maker_id: &str) -> Result<PathBuf, AppError> {
+fn default_maker_data_dir(router_id: &str) -> Result<PathBuf, AppError> {
     let legacy = get_maker_dir()?;
     Ok(legacy
         .parent()
-        .map(|base| base.join(maker_id))
-        .unwrap_or_else(|| legacy.join(maker_id)))
+        .map(|base| base.join(router_id))
+        .unwrap_or_else(|| legacy.join(router_id)))
 }
 
 fn resolve_maker_data_dir(config: &MakerInitConfig) -> Result<PathBuf, AppError> {
     match &config.data_dir {
         Some(dir) => Ok(PathBuf::from(dir)),
-        None => default_maker_data_dir(&config.maker_id),
+        None => default_maker_data_dir(&config.router_id),
     }
 }
 
 fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
     let invalid = |msg: String| AppError::new(ErrorCode::InvalidInput, msg);
-    if !valid_id(config.maker_id.trim()) {
+    if !valid_id(config.router_id.trim()) {
         return Err(invalid(
             "makerId must contain only letters, numbers, '-' or '_'".to_string(),
         ));
@@ -149,7 +149,7 @@ async fn construct_server(
 /// retry of the same wallet name, and no command can register an already-created wallet.
 fn abort_failed_creation(
     app: &tauri::AppHandle,
-    maker_id: &str,
+    router_id: &str,
     wallet_file: &Path,
     error: &AppError,
 ) -> Result<(), AppError> {
@@ -164,11 +164,11 @@ fn abort_failed_creation(
             wallet_file.display()
         ),
     }
-    app.state::<AppState>().makers.lock()?.remove(maker_id);
-    crate::logging::unregister_maker(maker_id);
+    app.state::<AppState>().makers.lock()?.remove(router_id);
+    crate::logging::unregister_maker(router_id);
     emit_phase(
         app,
-        maker_id,
+        router_id,
         MakerPhase::Failed {
             message: error.message.clone(),
         },
@@ -185,33 +185,33 @@ pub(crate) fn read_tor_hostname(data_dir: &Path) -> Option<String> {
     Some(hostname)
 }
 
-fn emit_phase(app: &tauri::AppHandle, maker_id: &str, phase: MakerPhase) {
+fn emit_phase(app: &tauri::AppHandle, router_id: &str, phase: MakerPhase) {
     let _ = app.emit(
         "maker://phase-changed",
         MakerPhaseEvent {
-            maker_id: maker_id.to_string(),
+            router_id: router_id.to_string(),
             phase,
         },
     );
 }
 
 fn ensure_unique_registration(
-    maker_id: &str,
+    router_id: &str,
     data_dir: &Path,
     network_port: u16,
     rpc_port: u16,
 ) -> Result<(), AppError> {
     for saved in maker_settings::load_all()?.values() {
-        if saved.maker_id == maker_id {
+        if saved.router_id == router_id {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
-                "maker ID is already registered",
+                "router ID is already registered",
             ));
         }
         if saved.data_dir.as_deref().map(Path::new) == Some(data_dir) {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
-                "another maker already uses this data directory",
+                "another router already uses this data directory",
             ));
         }
         if [saved.network_port, saved.rpc_port].contains(&network_port)
@@ -219,7 +219,7 @@ fn ensure_unique_registration(
         {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
-                "maker network/RPC port is already registered",
+                "router network/RPC port is already registered",
             ));
         }
     }
@@ -228,7 +228,7 @@ fn ensure_unique_registration(
 
 fn ensure_unique_settings_update(settings: &MakerSettingsDto) -> Result<(), AppError> {
     for saved in maker_settings::load_all()?.values() {
-        if saved.maker_id == settings.maker_id {
+        if saved.router_id == settings.router_id {
             continue;
         }
         if [saved.network_port, saved.rpc_port].contains(&settings.network_port)
@@ -236,7 +236,7 @@ fn ensure_unique_settings_update(settings: &MakerSettingsDto) -> Result<(), AppE
         {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
-                "maker network/RPC port is already registered",
+                "router network/RPC port is already registered",
             ));
         }
     }
@@ -249,17 +249,17 @@ pub async fn init_maker(
     app: tauri::AppHandle,
     mut config: MakerInitConfig,
 ) -> Result<MakerStatusDto, AppError> {
-    config.maker_id = config.maker_id.trim().to_string();
+    config.router_id = config.router_id.trim().to_string();
     config.wallet_name = config.wallet_name.trim().to_string();
     validate_maker_config(&config)?;
     let password = config.wallet_password.as_deref().ok_or_else(|| {
         AppError::new(
             ErrorCode::InvalidInput,
-            "Portal-created makers require a wallet password",
+            "Portal-created routers require a wallet password",
         )
     })?;
-    validate_password(password, "maker wallet password")?;
-    let maker_id = config.maker_id.clone();
+    validate_password(password, "router wallet password")?;
+    let router_id = config.router_id.clone();
     let data_dir = resolve_maker_data_dir(&config)?;
     if config.data_dir.is_some() && data_dir.exists() {
         crate::security::fs::require_private_dir(&data_dir)?;
@@ -267,7 +267,7 @@ pub async fn init_maker(
         crate::security::fs::ensure_private_dir(&data_dir)?;
     }
     crate::security::fs::ensure_private_dir(&data_dir.join("wallets"))?;
-    ensure_unique_registration(&maker_id, &data_dir, config.network_port, config.rpc_port)?;
+    ensure_unique_registration(&router_id, &data_dir, config.network_port, config.rpc_port)?;
     // `ensure_unique_registration` has already ruled out a registration for this ID or data
     // directory, so a wallet sitting here has none — and nothing can register an existing one.
     let wallet_file = wallet_path(&data_dir, &config.wallet_name);
@@ -286,10 +286,10 @@ pub async fn init_maker(
     {
         let state = app.state::<AppState>();
         let mut makers = try_lock_makers(&state.makers)?;
-        if makers.contains_key(&maker_id) {
+        if makers.contains_key(&router_id) {
             return Err(AppError::new(
                 ErrorCode::MakerBusy,
-                "maker is already being created",
+                "router is already being created",
             ));
         }
         if makers.values().any(|entry| {
@@ -300,11 +300,11 @@ pub async fn init_maker(
         }) {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
-                "another maker creation is already reserving this data directory or port",
+                "another router creation is already reserving this data directory or port",
             ));
         }
         makers.insert(
-            maker_id.clone(),
+            router_id.clone(),
             MakerHandle {
                 settings: settings.clone(),
                 runtime: None,
@@ -313,13 +313,13 @@ pub async fn init_maker(
             },
         );
     }
-    emit_phase(&app, &maker_id, MakerPhase::Initializing);
+    emit_phase(&app, &router_id, MakerPhase::Initializing);
 
-    crate::logging::register_maker(maker_id.clone(), data_dir.clone(), settings.network_port);
+    crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
     let server = match construct_server(config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
-            abort_failed_creation(&app, &maker_id, &wallet_file, &error)?;
+            abort_failed_creation(&app, &router_id, &wallet_file, &error)?;
             return Err(error);
         }
     };
@@ -328,7 +328,7 @@ pub async fn init_maker(
     {
         server.watch_service.shutdown();
         drop(server);
-        abort_failed_creation(&app, &maker_id, &wallet_file, &error)?;
+        abort_failed_creation(&app, &router_id, &wallet_file, &error)?;
         return Err(error);
     }
     // `MakerServer::init` is the crate's only wallet create/load API and starts
@@ -341,15 +341,15 @@ pub async fn init_maker(
     let state = app.state::<AppState>();
     let mut makers = state.makers.lock()?;
     let entry = makers
-        .get_mut(&maker_id)
-        .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+        .get_mut(&router_id)
+        .ok_or_else(|| AppError::maker_not_found(&router_id))?;
     entry.runtime = None;
     entry.phase = MakerPhase::Stopped;
     drop(makers);
-    emit_phase(&app, &maker_id, MakerPhase::Stopped);
+    emit_phase(&app, &router_id, MakerPhase::Stopped);
 
     Ok(MakerStatusDto {
-        maker_id,
+        router_id,
         phase: MakerPhase::Stopped,
         running: false,
         tor_address: None,
@@ -365,21 +365,21 @@ pub async fn init_maker(
 #[tauri::command]
 pub fn update_maker_settings(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
     settings: MakerSettingsDto,
 ) -> Result<MakerSettingsDto, AppError> {
     let existing =
-        maker_settings::load(&maker_id)?.ok_or_else(|| AppError::maker_not_found(&maker_id))?;
-    if settings.maker_id != maker_id {
+        maker_settings::load(&router_id)?.ok_or_else(|| AppError::maker_not_found(&router_id))?;
+    if settings.router_id != router_id {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "maker ID cannot be changed",
+            "router ID cannot be changed",
         ));
     }
     if settings.wallet_name != existing.wallet_name || settings.data_dir != existing.data_dir {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "maker wallet name and data directory cannot be changed",
+            "router wallet name and data directory cannot be changed",
         ));
     }
 
@@ -387,7 +387,7 @@ pub fn update_maker_settings(
     ensure_unique_settings_update(&settings)?;
 
     let mut makers = try_lock_makers(&state.makers)?;
-    if let Some(entry) = makers.get(&maker_id) {
+    if let Some(entry) = makers.get(&router_id) {
         let runtime_thread_is_active = entry
             .runtime
             .as_ref()
@@ -398,29 +398,29 @@ pub fn update_maker_settings(
         {
             return Err(AppError::new(
                 ErrorCode::MakerBusy,
-                "stop the maker before changing its settings",
+                "stop the router before changing its settings",
             ));
         }
     }
 
     maker_settings::write_runtime_config(&settings)?;
     maker_settings::save(&settings)?;
-    if let Some(entry) = makers.get_mut(&maker_id) {
+    if let Some(entry) = makers.get_mut(&router_id) {
         entry.settings = settings.clone();
         entry.runtime = None;
     }
     drop(makers);
 
     if let Some(data_dir) = settings.data_dir.as_deref() {
-        crate::logging::register_maker(maker_id, PathBuf::from(data_dir), settings.network_port);
+        crate::logging::register_maker(router_id, PathBuf::from(data_dir), settings.network_port);
     }
     Ok(settings)
 }
 
 fn insert_saved_registration(state: &AppState, settings: MakerSettingsDto) -> Result<(), AppError> {
-    let maker_id = settings.maker_id.clone();
+    let router_id = settings.router_id.clone();
     let mut makers = state.makers.lock()?;
-    makers.entry(maker_id).or_insert(MakerHandle {
+    makers.entry(router_id).or_insert(MakerHandle {
         settings,
         runtime: None,
         phase: MakerPhase::Stopped,
@@ -434,23 +434,23 @@ fn insert_saved_registration(state: &AppState, settings: MakerSettingsDto) -> Re
 #[tauri::command]
 pub async fn start_maker(
     app: tauri::AppHandle,
-    maker_id: String,
+    router_id: String,
     wallet_password: Option<String>,
 ) -> Result<(), AppError> {
     let state = app.state::<AppState>();
     // Reload before every start so config.toml remains the source of truth even
     // when it was edited outside this process between maker runs.
     let persisted_settings =
-        maker_settings::load(&maker_id)?.ok_or_else(|| AppError::maker_not_found(&maker_id))?;
-    if !state.makers.lock()?.contains_key(&maker_id) {
+        maker_settings::load(&router_id)?.ok_or_else(|| AppError::maker_not_found(&router_id))?;
+    if !state.makers.lock()?.contains_key(&router_id) {
         insert_saved_registration(&state, persisted_settings.clone())?;
     }
 
     {
         let mut makers = try_lock_makers(&state.makers)?;
         let entry = makers
-            .get_mut(&maker_id)
-            .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+            .get_mut(&router_id)
+            .ok_or_else(|| AppError::maker_not_found(&router_id))?;
         match entry.phase {
             MakerPhase::Starting | MakerPhase::Initializing | MakerPhase::Stopping => {
                 return Err(AppError::maker_busy())
@@ -458,7 +458,7 @@ pub async fn start_maker(
             MakerPhase::Running => {
                 return Err(AppError::new(
                     ErrorCode::MakerAlreadyRunning,
-                    "maker is already running",
+                    "router is already running",
                 ))
             }
             _ => {}
@@ -469,13 +469,13 @@ pub async fn start_maker(
         // it after a stop or failed run.
         entry.runtime = None;
     }
-    emit_phase(&app, &maker_id, MakerPhase::Initializing);
+    emit_phase(&app, &router_id, MakerPhase::Initializing);
 
     let settings = {
         let makers = state.makers.lock()?;
         let entry = makers
-            .get(&maker_id)
-            .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+            .get(&router_id)
+            .ok_or_else(|| AppError::maker_not_found(&router_id))?;
         entry.settings.clone()
     };
 
@@ -489,16 +489,16 @@ pub async fn start_maker(
     ] {
         if TcpListener::bind(("127.0.0.1", port)).is_err() {
             let message = format!(
-                "Maker {label} port {port} is already in use. Stop the other maker process using this port before starting. Do not change the network port of a fidelity-bonded maker."
+                "Router {label} port {port} is already in use. Stop the other router process using this port before starting. Do not change the network port of a fidelity-bonded router."
             );
-            if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
+            if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
                 entry.phase = MakerPhase::Failed {
                     message: message.clone(),
                 };
             }
             emit_phase(
                 &app,
-                &maker_id,
+                &router_id,
                 MakerPhase::Failed {
                     message: message.clone(),
                 },
@@ -512,20 +512,20 @@ pub async fn start_maker(
     let config = settings.clone().into_init(wallet_password);
     if !wallet_path(&resolve_maker_data_dir(&config)?, &config.wallet_name).exists() {
         let password = config.wallet_password.as_deref().unwrap_or_default();
-        if let Err(error) = validate_password(password, "maker wallet password") {
+        if let Err(error) = validate_password(password, "router wallet password") {
             let message = format!(
-                "{} — the wallet file for '{maker_id}' is missing, so starting it would create a \
+                "{} — the wallet file for '{router_id}' is missing, so starting it would create a \
                  new one",
                 error.message
             );
-            if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
+            if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
                 entry.phase = MakerPhase::Failed {
                     message: message.clone(),
                 };
             }
             emit_phase(
                 &app,
-                &maker_id,
+                &router_id,
                 MakerPhase::Failed {
                     message: message.clone(),
                 },
@@ -534,14 +534,14 @@ pub async fn start_maker(
         }
     }
     if let Err(error) = validate_maker_config(&config) {
-        if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
+        if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
             entry.phase = MakerPhase::Failed {
                 message: error.message.clone(),
             };
         }
         emit_phase(
             &app,
-            &maker_id,
+            &router_id,
             MakerPhase::Failed {
                 message: error.message.clone(),
             },
@@ -549,18 +549,18 @@ pub async fn start_maker(
         return Err(error);
     }
     let data_dir = resolve_maker_data_dir(&config)?;
-    crate::logging::register_maker(maker_id.clone(), data_dir.clone(), settings.network_port);
+    crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
     let server = match construct_server(config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
-            if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
+            if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
                 entry.phase = MakerPhase::Failed {
                     message: error.message.clone(),
                 };
             }
             emit_phase(
                 &app,
-                &maker_id,
+                &router_id,
                 MakerPhase::Failed {
                     message: error.message.clone(),
                 },
@@ -570,8 +570,8 @@ pub async fn start_maker(
     };
     let mut makers = state.makers.lock()?;
     let entry = makers
-        .get_mut(&maker_id)
-        .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+        .get_mut(&router_id)
+        .ok_or_else(|| AppError::maker_not_found(&router_id))?;
     entry.runtime = Some(MakerRuntime {
         server,
         thread: None,
@@ -592,10 +592,10 @@ pub async fn start_maker(
     entry.phase = MakerPhase::Starting;
 
     let run_app = app.clone();
-    let run_id = maker_id.clone();
+    let run_id = router_id.clone();
     let run_server = server.clone();
     let server_thread = thread::Builder::new()
-        .name(format!("maker-{maker_id}"))
+        .name(format!("maker-{router_id}"))
         .spawn(move || {
             let cleanup_server = run_server.clone();
             let result = start_server(run_server);
@@ -637,7 +637,7 @@ pub async fn start_maker(
             drop(makers);
             emit_phase(
                 &app,
-                &maker_id,
+                &router_id,
                 MakerPhase::Failed {
                     message: error.to_string(),
                 },
@@ -647,19 +647,19 @@ pub async fn start_maker(
     };
     runtime.thread = Some(server_thread);
     drop(makers);
-    emit_phase(&app, &maker_id, MakerPhase::Starting);
+    emit_phase(&app, &router_id, MakerPhase::Starting);
 
     let watch_app = app.clone();
     thread::spawn(move || loop {
         if server.is_setup_complete.load(Ordering::Relaxed) {
             let state = watch_app.state::<AppState>();
             if let Ok(mut makers) = state.makers.lock() {
-                if let Some(entry) = makers.get_mut(&maker_id) {
+                if let Some(entry) = makers.get_mut(&router_id) {
                     if entry.generation == generation && matches!(entry.phase, MakerPhase::Starting)
                     {
                         entry.phase = MakerPhase::Running;
                         drop(makers);
-                        emit_phase(&watch_app, &maker_id, MakerPhase::Running);
+                        emit_phase(&watch_app, &router_id, MakerPhase::Running);
                     }
                 }
             }
@@ -672,7 +672,7 @@ pub async fn start_maker(
             .ok()
             .and_then(|makers| {
                 makers
-                    .get(&maker_id)
+                    .get(&router_id)
                     .map(|e| e.generation == generation && matches!(e.phase, MakerPhase::Starting))
             })
             .unwrap_or(false);
@@ -685,20 +685,20 @@ pub async fn start_maker(
 }
 
 #[tauri::command]
-pub async fn stop_maker(app: tauri::AppHandle, maker_id: String) -> Result<(), AppError> {
+pub async fn stop_maker(app: tauri::AppHandle, router_id: String) -> Result<(), AppError> {
     let thread = {
         let state = app.state::<AppState>();
         let mut makers = try_lock_makers(&state.makers)?;
         let entry = makers
-            .get_mut(&maker_id)
-            .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+            .get_mut(&router_id)
+            .ok_or_else(|| AppError::maker_not_found(&router_id))?;
         if matches!(entry.phase, MakerPhase::Initializing | MakerPhase::Stopping) {
             return Err(AppError::maker_busy());
         }
         if !matches!(entry.phase, MakerPhase::Starting | MakerPhase::Running) {
             return Err(AppError::new(
                 ErrorCode::MakerNotRunning,
-                "maker is not running",
+                "router is not running",
             ));
         }
         entry.phase = MakerPhase::Stopping;
@@ -709,23 +709,23 @@ pub async fn stop_maker(app: tauri::AppHandle, maker_id: String) -> Result<(), A
         runtime.server.shutdown.store(true, Ordering::Relaxed);
         runtime.thread.take()
     };
-    emit_phase(&app, &maker_id, MakerPhase::Stopping);
+    emit_phase(&app, &router_id, MakerPhase::Stopping);
     let join_result = if let Some(thread) = thread {
         tauri::async_runtime::spawn_blocking(move || thread.join())
             .await
             .map_err(AppError::internal)?
-            .map_err(|_| AppError::new(ErrorCode::Internal, "maker server thread panicked"))
+            .map_err(|_| AppError::new(ErrorCode::Internal, "router server thread panicked"))
     } else {
         Ok(())
     };
     let state = app.state::<AppState>();
-    if let Some(entry) = state.makers.lock()?.get_mut(&maker_id) {
+    if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
         entry.runtime = None;
         entry.phase = if join_result.is_ok() {
             MakerPhase::Stopped
         } else {
             MakerPhase::Failed {
-                message: "maker server thread panicked".to_string(),
+                message: "router server thread panicked".to_string(),
             }
         };
     }
@@ -733,27 +733,27 @@ pub async fn stop_maker(app: tauri::AppHandle, maker_id: String) -> Result<(), A
         MakerPhase::Stopped
     } else {
         MakerPhase::Failed {
-            message: "maker server thread panicked".to_string(),
+            message: "router server thread panicked".to_string(),
         }
     };
-    emit_phase(&app, &maker_id, phase);
+    emit_phase(&app, &router_id, phase);
     join_result
 }
 
 #[tauri::command]
 pub fn get_maker_status(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<MakerStatusDto, AppError> {
-    if !state.makers.lock()?.contains_key(&maker_id) {
-        if let Some(settings) = maker_settings::load(&maker_id)? {
+    if !state.makers.lock()?.contains_key(&router_id) {
+        if let Some(settings) = maker_settings::load(&router_id)? {
             insert_saved_registration(&state, settings)?;
         }
     }
     let makers = state.makers.lock()?;
     let entry = makers
-        .get(&maker_id)
-        .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+        .get(&router_id)
+        .ok_or_else(|| AppError::maker_not_found(&router_id))?;
     let (running, runtime_tor_address) = entry
         .runtime
         .as_ref()
@@ -779,7 +779,7 @@ pub fn get_maker_status(
         .ok()
     });
     Ok(MakerStatusDto {
-        maker_id,
+        router_id,
         phase: entry.phase.clone(),
         running,
         tor_address,
@@ -791,17 +791,17 @@ pub fn get_maker_status(
 #[tauri::command]
 pub fn get_maker_info(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<WalletInfo, AppError> {
-    if !state.makers.lock()?.contains_key(&maker_id) {
-        if let Some(settings) = maker_settings::load(&maker_id)? {
+    if !state.makers.lock()?.contains_key(&router_id) {
+        if let Some(settings) = maker_settings::load(&router_id)? {
             insert_saved_registration(&state, settings)?;
         }
     }
     let makers = state.makers.lock()?;
     let entry = makers
-        .get(&maker_id)
-        .ok_or_else(|| AppError::maker_not_found(&maker_id))?;
+        .get(&router_id)
+        .ok_or_else(|| AppError::maker_not_found(&router_id))?;
     let data_dir = entry
         .settings
         .data_dir

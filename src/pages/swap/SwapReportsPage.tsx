@@ -126,7 +126,7 @@ export function SwapReportsPage() {
               <span>When</span>
               <span>Duration</span>
               <span>Amount</span>
-              <span>Makers</span>
+              <span>Routers</span>
               <span>Fee</span>
             </div>
             <div className="flex flex-1 flex-col divide-y divide-line overflow-y-auto">
@@ -151,7 +151,7 @@ export function SwapReportsPage() {
                     <span className="font-mono text-[11.5px] text-subtle">{formatRelativeTime(r.endTimestamp)}</span>
                     <span className="font-mono text-[11.5px] text-subtle">{formatDuration(r.endTimestamp - r.startTimestamp)}</span>
                     <SatsAmount sats={r.outgoingAmountSats} className="text-[12.5px] font-semibold text-foreground" />
-                    <span className="font-mono text-[12px] text-foreground">{r.makersCount}</span>
+                    <span className="font-mono text-[12px] text-foreground">{r.routersCount}</span>
                     <SatsAmount sats={r.feePaidSats} className="text-[12px] text-warning" />
                   </Link>
                 );

@@ -83,7 +83,9 @@ pub fn remove_legacy_config() {
 /// This session's backend, seeded from the code defaults on first read.
 pub(crate) fn load() -> ChainBackendConfig {
     let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-    session.get_or_insert_with(ChainBackendConfig::default).clone()
+    session
+        .get_or_insert_with(ChainBackendConfig::default)
+        .clone()
 }
 
 fn store(config: ChainBackendConfig) {
@@ -481,6 +483,3 @@ mod tests {
         assert!(validate(&config).is_err());
     }
 }
-
-
-

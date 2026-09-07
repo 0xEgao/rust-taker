@@ -1,7 +1,6 @@
 //! Serde DTOs crossing the IPC boundary. Mirrored by `src/api/types.ts`.
 //! Conventions: camelCase field names, amounts in sats as u64.
 
-
 /// Which chain data source the wallet is built against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -355,16 +354,16 @@ pub enum ProtocolVersionDto {
 pub struct SwapRequest {
     pub protocol: ProtocolVersionDto,
     pub amount_sats: u64,
-    /// Falls back to the two-maker route floor when a caller omits it.
-    #[serde(default = "default_maker_count")]
-    pub maker_count: usize,
+    /// Falls back to the two-router route floor when a caller omits it.
+    #[serde(default = "default_router_count")]
+    pub router_count: usize,
     #[serde(default)]
     pub outpoints: Option<Vec<Outpoint>>,
     #[serde(default)]
-    pub preferred_makers: Option<Vec<String>>,
+    pub preferred_routers: Option<Vec<String>>,
 }
 
-fn default_maker_count() -> usize {
+fn default_router_count() -> usize {
     2
 }
 
@@ -374,14 +373,14 @@ pub struct SwapFundingEstimateDto {
     pub input_count: usize,
     pub vbytes: u64,
     pub fee_sats: u64,
-    pub route_mining_fee_per_maker_sats: u64,
+    pub route_mining_fee_per_router_sats: u64,
     /// Fee for the final incoming-contract claim; not a full swap fee total.
     pub sweep_fee_sats: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MakerFeeInfoDto {
+pub struct RouterFeeInfoDto {
     pub address: String,
     pub protocol: String,
     pub base_fee: u64,
@@ -397,14 +396,14 @@ pub struct SwapSummaryDto {
     pub swap_id: String,
     pub protocol: String,
     pub send_amount_sats: u64,
-    pub makers: Vec<MakerFeeInfoDto>,
-    /// Estimated maker fees plus route mining fees and the final sweep fee.
+    pub routers: Vec<RouterFeeInfoDto>,
+    /// Estimated router fees plus route mining fees and the final sweep fee.
     pub total_estimated_fee_sats: u64,
     pub estimated_receive_amount_sats: u64,
 }
 
 /// Coarse in-memory lifecycle snapshot (survives across commands via `AppState.active_swap`).
-/// For live per-maker detail, see `SwapTrackerDto` / `get_swap_tracker`, which reads the crate's
+/// For live per-router detail, see `SwapTrackerDto` / `get_swap_tracker`, which reads the crate's
 /// own `swap_tracker.cbor` — the same file the old Electron app polled directly off disk.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,15 +416,49 @@ pub struct SwapProgressDto {
     pub error: Option<String>,
 }
 
+/// One of the crate's own per-maker boolean flags, carried by its field name so the UI can name
+/// the protocol step instead of rendering a fraction.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MakerProgressDto {
-    pub address: String,
-    pub steps_done: usize,
-    pub steps_total: usize,
+pub struct RouterMilestoneDto {
+    pub key: &'static str,
+    pub done: bool,
 }
 
-/// Live per-maker detail read straight from `coinswap::taker::swap_tracker::SwapTracker`
+/// Where one router is in the protocol.
+///
+/// Deliberately coarser than the crate's flags: the taker only flushes the tracker at a handful
+/// of points per hop (once per maker under taproot), so these are the transitions actually
+/// observable from disk. `Ord` follows the protocol order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterStageDto {
+    /// Route position not reached yet.
+    Waiting,
+    /// Terms agreed, nothing in flight.
+    Negotiated,
+    /// Connected over Tor, exchanging contract data.
+    Handshaking,
+    /// This hop's contract is on-chain, waiting for confirmations.
+    Confirming,
+    /// Contract confirmed — the funds have reached this hop.
+    Routed,
+    KeyReceived,
+    /// Private key passed to the next hop; this router is done.
+    Settled,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterProgressDto {
+    pub address: String,
+    pub stage: RouterStageDto,
+    /// The raw flags behind `stage`, in the order the crate sets them: the protocol's exchange
+    /// flags (5 taproot / 12 legacy) plus `negotiated` and the two shared finalization flags.
+    pub milestones: Vec<RouterMilestoneDto>,
+}
+
+/// Live per-router detail read straight from `coinswap::taker::swap_tracker::SwapTracker`
 /// (a public crate API — see `commands::taker_swap`'s module doc).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -433,14 +466,14 @@ pub struct SwapTrackerDto {
     /// "makers_discovered" | "negotiated" | "funding_created" | "funds_broadcast" |
     /// "contracts_exchanged" | "finalizing" | "privkeys_forwarded" | "completed" | "failed"
     pub phase: String,
-    // send_amount_sats/maker_count let the frontend rebuild its progress screen after remounting
+    // send_amount_sats/router_count let the frontend rebuild its progress screen after remounting
     // mid-swap (e.g. navigating away and back) without a cached SwapSummary — prepareSwap only
     // ever returns one, and re-running it isn't possible for an already-running swap.
     pub send_amount_sats: u64,
-    pub maker_count: usize,
+    pub router_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
-    pub makers: Vec<MakerProgressDto>,
+    pub routers: Vec<RouterProgressDto>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -468,18 +501,29 @@ pub struct SwapReportSummary {
     /// for non-Success outcomes, so this is derived here rather than passed through.
     pub received_amount_sats: u64,
     pub fee_paid_sats: u64,
-    pub makers_count: usize,
+    pub routers_count: usize,
 }
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MakerFeeInfo {
-    pub maker_index: usize,
-    pub maker_address: String,
+pub struct ReportRouterFee {
+    pub router_index: usize,
+    pub router_address: String,
     pub base_fee_sats: f64,
     pub amount_relative_fee_sats: f64,
     pub time_relative_fee_sats: f64,
     pub total_fee_sats: f64,
+}
+
+/// The coin a completed swap actually paid the user, recovered from chain rather than from
+/// the report file — see `taker_reports::get_incoming_swap_utxo`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapUtxoDto {
+    pub txid: String,
+    pub vout: u32,
+    pub amount_sats: u64,
+    pub address: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -499,15 +543,20 @@ pub struct SwapReportDetail {
     pub fee_paid_sats: u64,
     pub mining_fee_sats: u64,
     pub fee_percentage: f64,
-    pub total_maker_fees_sats: u64,
+    pub total_router_fees_sats: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outgoing_contract_txid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incoming_contract_txid: Option<String>,
     pub funding_txids: Vec<Vec<String>>,
-    pub makers_count: usize,
-    pub maker_addresses: Vec<String>,
-    pub maker_fee_info: Vec<MakerFeeInfo>,
+    pub routers_count: usize,
+    pub router_addresses: Vec<String>,
+    pub router_fee_info: Vec<ReportRouterFee>,
+    /// Amounts of the wallet coins this swap consumed. The crate records these as bare
+    /// sats with no outpoint, so they can't be linked to a transaction.
+    pub input_utxo_sats: Vec<u64>,
+    /// Amounts of the change coins the swap returned to the regular wallet.
+    pub change_utxo_sats: Vec<u64>,
     /// The exact outpoint `verify_deniability` checks on-chain — the one field of the proof the
     /// UI reasons about, so it's typed rather than pulled out of the raw JSON below.
     pub proven_outpoint: Option<Outpoint>,
@@ -524,7 +573,7 @@ pub struct SwapReportDetail {
 #[serde(rename_all = "camelCase")]
 pub struct MakerInitConfig {
     /// Stable registration ID. Wallet name remains independently configurable.
-    pub maker_id: String,
+    pub router_id: String,
     pub wallet_name: String,
     #[serde(default)]
     pub wallet_password: Option<String>,
@@ -548,7 +597,8 @@ pub struct MakerInitConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MakerSettingsDto {
-    pub maker_id: String,
+    #[serde(alias = "makerId")]
+    pub router_id: String,
     pub wallet_name: String,
     pub network_port: u16,
     pub rpc_port: u16,
@@ -568,7 +618,7 @@ pub struct MakerSettingsDto {
 impl MakerSettingsDto {
     pub fn from_init(c: &MakerInitConfig, data_dir: &std::path::Path) -> Self {
         Self {
-            maker_id: c.maker_id.clone(),
+            router_id: c.router_id.clone(),
             wallet_name: c.wallet_name.clone(),
             network_port: c.network_port,
             rpc_port: c.rpc_port,
@@ -587,7 +637,7 @@ impl MakerSettingsDto {
 
     pub fn into_init(self, wallet_password: Option<String>) -> MakerInitConfig {
         MakerInitConfig {
-            maker_id: self.maker_id,
+            router_id: self.router_id,
             wallet_name: self.wallet_name,
             wallet_password,
             network_port: self.network_port,
@@ -626,14 +676,14 @@ pub enum MakerPhase {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MakerPhaseEvent {
-    pub maker_id: String,
+    pub router_id: String,
     pub phase: MakerPhase,
 }
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MakerStatusDto {
-    pub maker_id: String,
+    pub router_id: String,
     pub phase: MakerPhase,
     pub running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

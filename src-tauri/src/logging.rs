@@ -195,9 +195,9 @@ pub fn set_taker_dir(dir: PathBuf) {
     rebuild();
 }
 
-pub fn register_maker(maker_id: String, dir: PathBuf, network_port: u16) {
+pub fn register_maker(router_id: String, dir: PathBuf, network_port: u16) {
     makers().lock().unwrap().insert(
-        maker_id,
+        router_id,
         MakerLogTarget {
             path: dir.join("debug.log"),
             network_port,
@@ -206,8 +206,8 @@ pub fn register_maker(maker_id: String, dir: PathBuf, network_port: u16) {
     rebuild();
 }
 
-pub fn unregister_maker(maker_id: &str) {
-    makers().lock().unwrap().remove(maker_id);
+pub fn unregister_maker(router_id: &str) {
+    makers().lock().unwrap().remove(router_id);
 }
 
 /// Reads the last `want` lines without loading an unbounded log into memory.

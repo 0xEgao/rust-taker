@@ -2,15 +2,15 @@ import { ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
-import { getMakerBalances, getMakerLogs, getMakerStatus, startMaker } from "../../api/commands";
-import type { LogLine, MakerPhase } from "../../api/types";
+import { getRouterBalances, getRouterLogs, getRouterStatus, startRouter } from "../../api/commands";
+import type { LogLine, RouterPhase } from "../../api/types";
 import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
 
 /**
- * A maker cannot be bonded before it runs: the server derives the fidelity-bond address itself
+ * A router cannot be bonded before it runs: the server derives the fidelity-bond address itself
  * on startup and announces it in its log, then waits for the deposit. So setup is start → read
  * the address out of the log → fund it → the server bonds and goes live on its own.
  */
@@ -41,7 +41,7 @@ function looksFunded(lines: LogLine[]) {
   return lines.some((l) => FUNDED_MARKERS.some((marker) => l.line.includes(marker)));
 }
 
-const STEP_LABELS = ["Starting maker", "Awaiting deposit", "Creating fidelity bond", "Live on the network"];
+const STEP_LABELS = ["Starting router", "Awaiting deposit", "Creating fidelity bond", "Live on the network"];
 const ORDER: Stage[] = ["starting", "funding", "bonding", "live"];
 
 function stepStates(stage: Stage, failedAt: number): CheckState[] {
@@ -54,9 +54,9 @@ function stepStates(stage: Stage, failedAt: number): CheckState[] {
   });
 }
 
-export function MakerSetupPage() {
-  const { makerId } = useParams<{ makerId: string }>();
-  const id = makerId!;
+export function RouterSetupPage() {
+  const { routerId } = useParams<{ routerId: string }>();
+  const id = routerId!;
   const navigate = useNavigate();
 
   const [stage, setStage] = useState<Stage>("starting");
@@ -81,7 +81,7 @@ export function MakerSetupPage() {
   // Phase is authoritative for "live": the backend flips to Running only once the server
   // reports setup complete, which is bond confirmed and liquidity ready.
   const applyPhase = useCallback(
-    (phase: MakerPhase) => {
+    (phase: RouterPhase) => {
       if (phase.phase === "running") setStage("live");
       else if (phase.phase === "failed") fail(phase.message);
     },
@@ -90,23 +90,23 @@ export function MakerSetupPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const unlisten = listen<{ makerId: string; phase: MakerPhase }>("maker://phase-changed", (event) => {
-      if (event.payload.makerId === id) applyPhase(event.payload.phase);
+    const unlisten = listen<{ routerId: string; phase: RouterPhase }>("maker://phase-changed", (event) => {
+      if (event.payload.routerId === id) applyPhase(event.payload.phase);
     });
 
     void (async () => {
       try {
-        const status = await getMakerStatus(id);
+        const status = await getRouterStatus(id);
         if (cancelled) return;
-        // Resuming an interrupted setup, or arriving at an already-running maker.
+        // Resuming an interrupted setup, or arriving at an already-running router.
         if (status.running) return applyPhase(status.phase);
         if (status.walletEncrypted) {
           setNeedsPassword(true);
           return;
         }
-        await startMaker(id);
+        await startRouter(id);
       } catch (e) {
-        if (!cancelled) fail((e as { message?: string })?.message ?? "Could not start the maker.");
+        if (!cancelled) fail((e as { message?: string })?.message ?? "Could not start the router.");
       }
     })();
 
@@ -116,15 +116,15 @@ export function MakerSetupPage() {
     };
   }, [id, applyPhase, fail]);
 
-  async function startEncryptedMaker() {
+  async function startEncryptedRouter() {
     if (!walletPassword) return;
     setStartingWithPassword(true);
     try {
-      await startMaker(id, walletPassword);
+      await startRouter(id, walletPassword);
       setWalletPassword("");
       setNeedsPassword(false);
     } catch (e) {
-      setError((e as { message?: string })?.message ?? "Could not unlock the maker wallet.");
+      setError((e as { message?: string })?.message ?? "Could not unlock the router wallet.");
     } finally {
       setStartingWithPassword(false);
     }
@@ -135,7 +135,7 @@ export function MakerSetupPage() {
   useEffect(() => {
     if (stage === "live" || stage === "error") return;
     const tick = async () => {
-      const lines = await getMakerLogs(id, 300).catch(() => null);
+      const lines = await getRouterLogs(id, 300).catch(() => null);
       if (!lines) return;
       setLogs(lines);
       const found = readDeposit(lines);
@@ -155,7 +155,7 @@ export function MakerSetupPage() {
   useEffect(() => {
     if (stage !== "funding") return;
     const timer = setInterval(() => {
-      void getMakerBalances(id)
+      void getRouterBalances(id)
         .then((b) => {
           if (b.regular > 0 || b.spendable > 0) setStage("bonding");
         })
@@ -184,7 +184,7 @@ export function MakerSetupPage() {
             : `Starting ${id}`;
 
   return (
-    <IntroStage lead="Portal" accent="Maker" caption={caption} className="min-h-full">
+    <IntroStage lead="Portal" accent="Router" caption={caption} className="min-h-full">
       <div className="mx-auto w-full max-w-lg">
         <Card className={`border-line-strong ${stage === "funding" ? "hairline" : ""}`}>
           <div className="p-8 text-left">
@@ -194,18 +194,18 @@ export function MakerSetupPage() {
           {needsPassword && (
             <div className="border-t border-line px-8 py-6 text-left">
               <PasswordField
-                label="Maker wallet password"
+                label="Router wallet password"
                 autoComplete="current-password"
                 value={walletPassword}
                 onChange={(e) => { setWalletPassword(e.target.value); setError(null); }}
                 error={error ?? undefined}
               />
               <p className="mt-3 text-[11.5px] leading-5 text-subtle">
-                Portal does not retain maker wallet passwords. Enter it each time this encrypted
-                maker is started.
+                Portal does not retain router wallet passwords. Enter it each time this encrypted
+                router is started.
               </p>
-              <Button className="mt-4 w-full" loading={startingWithPassword} disabled={!walletPassword} onClick={() => void startEncryptedMaker()}>
-                Unlock &amp; start maker
+              <Button className="mt-4 w-full" loading={startingWithPassword} disabled={!walletPassword} onClick={() => void startEncryptedRouter()}>
+                Unlock &amp; start router
               </Button>
             </div>
           )}
@@ -237,11 +237,11 @@ export function MakerSetupPage() {
                 </button>
               ) : (
                 <p className="mt-3 text-[12.5px] text-muted">
-                  Waiting for the maker to report its bond address…
+                  Waiting for the router to report its bond address…
                 </p>
               )}
               <p className="mt-3 text-[11.5px] text-subtle">
-                The maker watches this address and bonds the funds itself. Leave this open — it
+                The router watches this address and bonds the funds itself. Leave this open — it
                 keeps running if you navigate away.
               </p>
               <p className="mt-3 flex items-start gap-1.5 text-[11.5px] leading-5 text-warning">
@@ -255,8 +255,8 @@ export function MakerSetupPage() {
           {stage === "live" && (
             <div className="flex items-center justify-between gap-4 border-t border-line px-8 py-5">
               <p className="text-[12.5px] text-muted">Serving swaps on the Portal network.</p>
-              <Button onClick={() => navigate(`/maker/${encodeURIComponent(id)}`)}>
-                Open maker
+              <Button onClick={() => navigate(`/router/${encodeURIComponent(id)}`)}>
+                Open router
                 <ArrowRight size={15} strokeWidth={2} />
               </Button>
             </div>
@@ -266,9 +266,9 @@ export function MakerSetupPage() {
             <div className="border-t border-line px-8 py-5 text-left">
               <p className="text-[12.5px] text-danger">{error}</p>
               <div className="mt-4 flex gap-3">
-                <LinkButton to="/maker" variant="secondary">Back to makers</LinkButton>
-                <Button className="flex-1" onClick={() => navigate(`/maker/${encodeURIComponent(id)}`)}>
-                  Open maker anyway
+                <LinkButton to="/router" variant="secondary">Back to routers</LinkButton>
+                <Button className="flex-1" onClick={() => navigate(`/router/${encodeURIComponent(id)}`)}>
+                  Open router anyway
                 </Button>
               </div>
             </div>
@@ -276,9 +276,9 @@ export function MakerSetupPage() {
         </Card>
 
         <div className="mt-4 text-left">
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Maker log</span>
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Router log</span>
           <div className="mt-2 h-56 overflow-hidden rounded-card border border-line">
-            <LogViewer lines={logs} emptyMessage="Waiting for the maker to start…" className="h-full" />
+            <LogViewer lines={logs} emptyMessage="Waiting for the router to start…" className="h-full" />
           </div>
         </div>
       </div>

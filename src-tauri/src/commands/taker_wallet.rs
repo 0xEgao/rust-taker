@@ -11,11 +11,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 use coinswap::bitcoin::{Address, OutPoint, Txid};
-use coinswap::fee_estimation::FeeEstimator;
 use coinswap::nostr_coinswap::NOSTR_RELAYS;
 use coinswap::taker::api::ConnectionType;
 use coinswap::taker::{Taker, TakerInitConfig};
-use coinswap::utill::get_taker_dir;
+use coinswap::utill::{get_taker_dir, MIN_FEE_RATE};
 use coinswap::wallet::{AddressType, Wallet};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use uuid::Uuid;
@@ -169,14 +168,13 @@ pub async fn init_taker(
     config: InitConfig,
 ) -> Result<InitResult, AppError> {
     validate_leaf_name(&config.wallet_name, "walletName")?;
-    let tor = crate::tor::ensure_tor()
-        .map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
+    let tor = crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
     {
         let guard = crate::state::try_lock_taker(&state.taker)?;
         if guard.is_some() {
             return Err(AppError::new(
                 ErrorCode::Internal,
-                "taker is already initialized for this session",
+                "wallet is already initialized for this session",
             ));
         }
     }
@@ -841,25 +839,50 @@ pub async fn sync_wallet(state: tauri::State<'_, AppState>) -> Result<(), AppErr
     .map_err(AppError::internal)?
 }
 
-/// Hits mempool.space/esplora over clearnet regardless of Tor setting.
+/// Hits mempool.space over clearnet regardless of Tor setting.
+///
+/// Deliberately not the crate's `FeeEstimator`: it averages mempool.space with
+/// Blockstream's `/fee-estimates`, which blends historical data and returns
+/// sub-1 sat/vB rates, dragging the mean below the 1 sat/vB relay minimum so the
+/// resulting transaction can't propagate. Each of its `get_*_priority_rate`
+/// calls also re-runs the whole fan-out, costing six HTTP requests per refresh.
 #[tauri::command]
 pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
     tauri::async_runtime::spawn_blocking(|| -> Result<FeeEstimate, AppError> {
-        let estimator = FeeEstimator::new(None);
+        let response = minreq::get("https://mempool.space/api/v1/fees/recommended")
+            .with_timeout(10)
+            .send()
+            .map_err(AppError::internal)?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(AppError::new(
+                ErrorCode::Internal,
+                format!("fee service returned HTTP {}", response.status_code),
+            ));
+        }
+        let body: serde_json::Value = response.json().map_err(AppError::internal)?;
+        // `minimumFee` is the node's own relay floor; clamping to it keeps a quiet
+        // mempool from producing a rate the network would reject.
+        let floor = read_fee(&body, "minimumFee").unwrap_or(MIN_FEE_RATE);
         Ok(FeeEstimate {
-            high: estimator
-                .get_high_priority_rate()
-                .map_err(AppError::internal)?,
-            mid: estimator
-                .get_mid_priority_rate()
-                .map_err(AppError::internal)?,
-            low: estimator
-                .get_low_priority_rate()
-                .map_err(AppError::internal)?,
+            high: read_fee(&body, "fastestFee")?.max(floor),
+            mid: read_fee(&body, "halfHourFee")?.max(floor),
+            low: read_fee(&body, "hourFee")?.max(floor),
         })
     })
     .await
     .map_err(AppError::internal)?
+}
+
+fn read_fee(body: &serde_json::Value, key: &str) -> Result<f64, AppError> {
+    body.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|rate| rate.is_finite() && *rate > 0.0)
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorCode::Internal,
+                format!("fee response missing a valid `{key}` value"),
+            )
+        })
 }
 
 /// Hits mempool.space/api/v1/prices over clearnet, same as estimate_fees — public market data,

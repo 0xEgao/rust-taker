@@ -24,8 +24,9 @@ use crate::error::{AppError, ErrorCode};
 use crate::security::operation::{ensure_main_window, SensitiveOperation, SensitiveOperationGuard};
 use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
-    MakerFeeInfoDto, MakerProgressDto, ProtocolVersionDto, RecoveryStatus, SwapFundingEstimateDto,
-    SwapProgressDto, SwapRequest, SwapSummaryDto, SwapTrackerDto,
+    ProtocolVersionDto, RecoveryStatus, RouterFeeInfoDto, RouterMilestoneDto, RouterProgressDto,
+    RouterStageDto, SwapFundingEstimateDto, SwapProgressDto, SwapRequest, SwapSummaryDto,
+    SwapTrackerDto,
 };
 
 use super::taker_wallet::get_wallet_handle;
@@ -42,10 +43,10 @@ fn to_summary_dto(s: &SwapSummary) -> SwapSummaryDto {
         swap_id: s.swap_id.clone(),
         protocol: protocol_label(s.protocol).to_string(),
         send_amount_sats: s.send_amount.to_sat(),
-        makers: s
+        routers: s
             .makers
             .iter()
-            .map(|m| MakerFeeInfoDto {
+            .map(|m| RouterFeeInfoDto {
                 address: m.address.clone(),
                 protocol: protocol_label(m.protocol).to_string(),
                 base_fee: m.base_fee,
@@ -84,64 +85,115 @@ fn tracker_phase_label(phase: SwapPhase) -> &'static str {
     }
 }
 
-// Counts of completed vs total boolean milestones — only the counts are ever rendered (a tone,
-// not a checklist), so we don't build/ship per-step labels for something nothing displays.
-fn legacy_steps_done(p: &LegacyExchangeProgress) -> (usize, usize) {
-    let flags = [
-        p.connected,
-        p.sender_sigs_requested,
-        p.sender_sigs_received,
-        p.prev_funding_broadcast,
-        p.prev_funding_confirmed,
-        p.proof_of_funding_sent,
-        p.maker_contracts_received,
-        p.next_maker_sigs_obtained,
-        p.prev_maker_sigs_obtained,
-        p.combined_sigs_sent,
-        p.maker_funding_confirmed,
-        p.watchonly_created,
-    ];
-    (flags.iter().filter(|d| **d).count(), flags.len())
-}
-
-fn taproot_steps_done(p: &TaprootExchangeProgress) -> (usize, usize) {
-    let flags = [
-        p.connected,
-        p.contract_data_sent,
-        p.maker_contract_received,
-        p.swapcoins_created,
-        p.maker_funding_confirmed,
-    ];
-    (flags.iter().filter(|d| **d).count(), flags.len())
-}
-
-fn to_maker_progress_dto(m: &MakerProgress) -> MakerProgressDto {
-    let (mut done, mut total) = match &m.exchange {
-        ExchangeProgress::Legacy(p) => legacy_steps_done(p),
-        ExchangeProgress::Taproot(p) => taproot_steps_done(p),
-    };
-    done += [
-        m.finalization.privkey_received,
-        m.finalization.privkey_forwarded,
+fn legacy_milestones(p: &LegacyExchangeProgress) -> Vec<(&'static str, bool)> {
+    vec![
+        ("connected", p.connected),
+        ("sender_sigs_requested", p.sender_sigs_requested),
+        ("sender_sigs_received", p.sender_sigs_received),
+        ("prev_funding_broadcast", p.prev_funding_broadcast),
+        ("prev_funding_confirmed", p.prev_funding_confirmed),
+        ("proof_of_funding_sent", p.proof_of_funding_sent),
+        ("maker_contracts_received", p.maker_contracts_received),
+        ("next_maker_sigs_obtained", p.next_maker_sigs_obtained),
+        ("prev_maker_sigs_obtained", p.prev_maker_sigs_obtained),
+        ("combined_sigs_sent", p.combined_sigs_sent),
+        ("maker_funding_confirmed", p.maker_funding_confirmed),
+        ("watchonly_created", p.watchonly_created),
     ]
-    .iter()
-    .filter(|d| **d)
-    .count();
-    total += 2;
-    MakerProgressDto {
+}
+
+fn taproot_milestones(p: &TaprootExchangeProgress) -> Vec<(&'static str, bool)> {
+    vec![
+        ("connected", p.connected),
+        ("contract_data_sent", p.contract_data_sent),
+        ("maker_contract_received", p.maker_contract_received),
+        ("swapcoins_created", p.swapcoins_created),
+        ("maker_funding_confirmed", p.maker_funding_confirmed),
+    ]
+}
+
+/// Collapse a maker's flags onto the stage the UI narrates.
+///
+/// Both protocols park the taker on a confirmation wait immediately after one specific flag, so
+/// that flag — not a step count — is what says "this hop is waiting on the chain now".
+fn router_stage(m: &MakerProgress) -> RouterStageDto {
+    if m.finalization.privkey_forwarded {
+        return RouterStageDto::Settled;
+    }
+    if m.finalization.privkey_received {
+        return RouterStageDto::KeyReceived;
+    }
+    let (confirmed, awaiting_confirmation, connected) = match &m.exchange {
+        ExchangeProgress::Taproot(p) => {
+            (p.maker_funding_confirmed, p.contract_data_sent, p.connected)
+        }
+        ExchangeProgress::Legacy(p) => (
+            p.maker_funding_confirmed,
+            // Two waits per legacy hop: the previous hop's funding before the proof of funding
+            // goes out, and this maker's own funding once it has the combined signatures.
+            p.combined_sigs_sent || (p.prev_funding_broadcast && !p.prev_funding_confirmed),
+            p.connected,
+        ),
+    };
+    if confirmed {
+        RouterStageDto::Routed
+    } else if awaiting_confirmation {
+        RouterStageDto::Confirming
+    } else if connected {
+        RouterStageDto::Handshaking
+    } else if m.negotiated {
+        RouterStageDto::Negotiated
+    } else {
+        RouterStageDto::Waiting
+    }
+}
+
+fn to_router_progress_dto(m: &MakerProgress) -> RouterProgressDto {
+    let mut flags = vec![("negotiated", m.negotiated)];
+    flags.extend(match &m.exchange {
+        ExchangeProgress::Legacy(p) => legacy_milestones(p),
+        ExchangeProgress::Taproot(p) => taproot_milestones(p),
+    });
+    flags.push(("privkey_received", m.finalization.privkey_received));
+    flags.push(("privkey_forwarded", m.finalization.privkey_forwarded));
+    RouterProgressDto {
         address: m.address.clone(),
-        steps_done: done,
-        steps_total: total,
+        stage: router_stage(m),
+        milestones: flags
+            .into_iter()
+            .map(|(key, done)| RouterMilestoneDto { key, done })
+            .collect(),
     }
 }
 
 fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
+    let mut routers: Vec<RouterProgressDto> = r.makers.iter().map(to_router_progress_dto).collect();
+
+    // Taproot sets all five of a maker's exchange flags in one write, *after* the wait for that
+    // maker's contract to confirm — so the maker whose turn it is reads as untouched for the
+    // whole hop, which is the longest stretch of the swap. `FundsBroadcast` is exactly the phase
+    // the per-maker exchange loop runs in, so inside it the first unstarted maker is in flight,
+    // and confirmation is what it is overwhelmingly waiting on.
+    if r.phase == SwapPhase::FundsBroadcast {
+        if let Some(front) = routers
+            .iter()
+            .position(|x| x.stage <= RouterStageDto::Negotiated)
+        {
+            if routers[..front]
+                .iter()
+                .all(|x| x.stage >= RouterStageDto::Routed)
+            {
+                routers[front].stage = RouterStageDto::Confirming;
+            }
+        }
+    }
+
     SwapTrackerDto {
         phase: tracker_phase_label(r.phase).to_string(),
         send_amount_sats: r.send_amount_sat,
-        maker_count: r.maker_count,
+        router_count: r.maker_count,
         failure_reason: r.failure_reason.clone(),
-        makers: r.makers.iter().map(to_maker_progress_dto).collect(),
+        routers,
     }
 }
 
@@ -207,7 +259,7 @@ pub async fn estimate_swap_funding(
             input_count: selected.len(),
             vbytes,
             fee_sats,
-            route_mining_fee_per_maker_sats: estimate_funding_tx_fee_sats(),
+            route_mining_fee_per_router_sats: estimate_funding_tx_fee_sats(),
             // Truncating, not rounded up: matches the crate's own
             // `Amount::from_sat((feerate * vsize as f64) as u64)`.
             sweep_fee_sats: (sweep_vbytes as f64 * MIN_FEE_RATE) as u64,
@@ -229,10 +281,10 @@ pub async fn prepare_swap(
             return Err(AppError::swap_in_progress());
         }
     }
-    if request.maker_count < 2 {
+    if request.router_count < 2 {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "maker_count must be at least 2 for route privacy",
+            "routerCount must be at least 2 for route privacy",
         ));
     }
 
@@ -243,7 +295,7 @@ pub async fn prepare_swap(
     let mut params = SwapParams::new(
         protocol,
         Amount::from_sat(request.amount_sats),
-        request.maker_count,
+        request.router_count,
     );
     if let Some(outpoints) = request.outpoints {
         let converted = outpoints
@@ -256,7 +308,7 @@ pub async fn prepare_swap(
             .collect::<Result<Vec<_>, _>>()?;
         params = params.with_utxos(converted);
     }
-    if let Some(preferred) = request.preferred_makers {
+    if let Some(preferred) = request.preferred_routers {
         params = params.with_preferred_makers(preferred);
     }
 
@@ -347,22 +399,22 @@ pub async fn start_swap(
         let socks_port = *state.active_socks_port.read()?;
         crate::commands::chain_backend::route_description(&config, socks_port)
     };
-    let maker_list = prepared
-        .makers
+    let router_list = prepared
+        .routers
         .iter()
-        .map(|maker| maker.address.as_str())
+        .map(|router| router.address.as_str())
         .collect::<Vec<_>>()
         .join("\n");
     let message = format!(
-        "Protocol: {}\nChain data route: {}\nSend: {} sats ({:.8} BTC)\nEstimated receive: {} sats\nEstimated total fee: {} sats\nMakers ({}):\n{}\n\nPreparing did not move funds. Starting now may commit funds for the duration of the swap. Start this swap?",
+        "Protocol: {}\nChain data route: {}\nSend: {} sats ({:.8} BTC)\nEstimated receive: {} sats\nEstimated total fee: {} sats\nRouters ({}):\n{}\n\nPreparing did not move funds. Starting now may commit funds for the duration of the swap. Start this swap?",
         prepared.protocol,
         route,
         prepared.send_amount_sats,
         prepared.send_amount_sats as f64 / 100_000_000.0,
         prepared.estimated_receive_amount_sats,
         prepared.total_estimated_fee_sats,
-        prepared.makers.len(),
-        maker_list,
+        prepared.routers.len(),
+        router_list,
     );
     let dialog_window = window.clone();
     let approved = tauri::async_runtime::spawn_blocking(move || {

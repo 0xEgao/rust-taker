@@ -92,6 +92,7 @@ pub fn run() {
             // taker reports
             taker_reports::list_swap_reports,
             taker_reports::get_swap_report,
+            taker_reports::get_incoming_swap_utxo,
             taker_reports::verify_deniability,
             // taker logs
             logs::get_logs,

@@ -269,4 +269,3 @@ mod tests {
         assert_ne!(socks, control);
     }
 }
-

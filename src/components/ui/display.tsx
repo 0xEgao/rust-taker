@@ -52,7 +52,7 @@ export function Card({
   );
 }
 
-/** Shared settings surface established by the maker workspace. */
+/** Shared settings surface established by the router workspace. */
 export function SettingsSection({
   title,
   subtitle,

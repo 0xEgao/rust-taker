@@ -20,30 +20,30 @@ import {
 } from "react-router-dom";
 import {
   checkTor,
-  clearMakerSettings,
-  getMakerBalances,
-  getMakerInfo,
-  getMakerLogs,
-  getMakerNewAddress,
-  getMakerStatus,
-  getMakerTransactions,
-  getSavedMakerSettings,
-  listMakerFidelityBonds,
-  listMakerSwapReports,
-  listMakerUtxos,
-  startMaker,
-  stopMaker,
-  syncMakerWallet,
-  updateMakerSettings,
+  clearRouterSettings,
+  getRouterBalances,
+  getRouterInfo,
+  getRouterLogs,
+  getRouterNewAddress,
+  getRouterStatus,
+  getRouterTransactions,
+  getSavedRouterSettings,
+  listRouterFidelityBonds,
+  listRouterSwapReports,
+  listRouterUtxos,
+  startRouter,
+  stopRouter,
+  syncRouterWallet,
+  updateRouterSettings,
 } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type {
   Balances,
   FidelityBond,
   LogLine,
-  MakerSettings,
-  MakerStatus,
-  MakerSwapReportSummary,
+  RouterSettings,
+  RouterStatus,
+  RouterSwapReportSummary,
   NewAddress,
   TxSummary,
   UtxoEntry,
@@ -122,12 +122,12 @@ function OverviewPanel({
   bonds,
   reports,
 }: {
-  status: MakerStatus;
-  settings: MakerSettings;
+  status: RouterStatus;
+  settings: RouterSettings;
   info: WalletInfo;
   balances: Balances | null;
   bonds: FidelityBond[];
-  reports: MakerSwapReportSummary[];
+  reports: RouterSwapReportSummary[];
 }) {
   const total = balances
     ? balances.regular + balances.swap + balances.contract + balances.fidelity
@@ -142,7 +142,7 @@ function OverviewPanel({
         <div className="grid grid-cols-[1.45fr_repeat(2,1fr)] gap-4 max-[1000px]:grid-cols-2 max-[680px]:grid-cols-1">
           <Card className="row-span-2 border-primary/30 p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_18px_55px_-38px_color-mix(in_oklab,var(--color-primary)_65%,transparent)] max-[1000px]:col-span-2 max-[680px]:col-span-1">
             <div className="flex items-center justify-between">
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total maker balance</span>
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total router balance</span>
               <span className="grid h-8 w-8 place-items-center rounded-control border border-primary/25 bg-primary/10 text-primary"><WalletCards size={15} /></span>
             </div>
             <strong className="mt-4 block font-mono text-[38px] text-primary">
@@ -215,7 +215,7 @@ function OverviewPanel({
           <div>
             <WalletCards size={34} className="mx-auto text-primary" />
             <strong className="mt-3 block text-[14px]">
-              Start the maker to load wallet data
+              Start the router to load wallet data
             </strong>
             <span className="mt-1 block text-[12px] text-muted">
               Saved configuration remains available while the runtime is
@@ -267,17 +267,17 @@ function OverviewPanel({
           ))}
         </div>
       </Card>
-      <ReportList makerId={settings.makerId} reports={reports} />
+      <ReportList routerId={settings.routerId} reports={reports} />
     </div>
   );
 }
 
 function ReportList({
-  makerId,
+  routerId,
   reports,
 }: {
-  makerId: string;
-  reports: MakerSwapReportSummary[];
+  routerId: string;
+  reports: RouterSwapReportSummary[];
 }) {
   return (
     <Card className="border-line-strong">
@@ -289,14 +289,14 @@ function ReportList({
       </div>
       {reports.length === 0 ? (
         <p className="p-8 text-center text-[12px] text-subtle">
-          Completed maker swaps will appear here.
+          Completed router swaps will appear here.
         </p>
       ) : (
         <div className="divide-y divide-line">
           {reports.slice(0, 10).map((report) => (
             <Link
               key={report.swapId}
-              to={`/maker/${encodeURIComponent(makerId)}/report/${encodeURIComponent(report.swapId)}`}
+              to={`/router/${encodeURIComponent(routerId)}/report/${encodeURIComponent(report.swapId)}`}
               className="grid grid-cols-[1fr_auto_auto] items-center gap-5 px-5 py-3.5 hover:bg-[var(--color-hover)]"
             >
               <div className="min-w-0">
@@ -322,10 +322,10 @@ function ReportList({
 }
 
 function WalletPanel({
-  makerId,
+  routerId,
   running,
 }: {
-  makerId: string;
+  routerId: string;
   running: boolean;
 }) {
   const pushToast = useToastStore((state) => state.push);
@@ -337,13 +337,13 @@ function WalletPanel({
     if (!running) return;
     setLoading(true);
     const [u, t] = await Promise.all([
-      listMakerUtxos(makerId),
-      getMakerTransactions(makerId, 30, 0),
+      listRouterUtxos(routerId),
+      getRouterTransactions(routerId, 30, 0),
     ]);
     setUtxos(u);
     setTransactions(t);
     setLoading(false);
-  }, [makerId, running]);
+  }, [routerId, running]);
   useEffect(() => {
     void load().catch(() => setLoading(false));
   }, [load]);
@@ -352,9 +352,9 @@ function WalletPanel({
       <Card className="grid min-h-[300px] place-items-center border-dashed border-line-strong text-center">
         <div>
           <WalletCards className="mx-auto text-primary" />
-          <strong className="mt-3 block">Maker wallet is offline</strong>
+          <strong className="mt-3 block">Router wallet is offline</strong>
           <span className="mt-1 block text-[12px] text-muted">
-            Start the maker to receive, sync, and inspect UTXOs.
+            Start the router to receive, sync, and inspect UTXOs.
           </span>
         </div>
       </Card>
@@ -375,13 +375,13 @@ function WalletPanel({
             </code>
           ) : (
             <p className="mt-4 text-[12px] text-muted">
-              Generate a fresh P2WPKH maker-wallet address.
+              Generate a fresh P2WPKH router-wallet address.
             </p>
           )}
           <Button
             className="mt-4 w-full"
             onClick={() =>
-              void getMakerNewAddress(makerId, "p2wpkh")
+              void getRouterNewAddress(routerId, "p2wpkh")
                 .then(setAddress)
                 .catch((e) => pushToast("error", e.message))
             }
@@ -394,7 +394,7 @@ function WalletPanel({
             Wallet synchronization
           </span>
           <p className="mt-4 text-[12px] leading-5 text-muted">
-            Refresh the maker wallet from its configured chain backend before
+            Refresh the router wallet from its configured chain backend before
             spending or reviewing balances.
           </p>
           <Button
@@ -402,7 +402,7 @@ function WalletPanel({
             className="mt-4 w-full"
             loading={loading}
             onClick={() =>
-              void syncMakerWallet(makerId)
+              void syncRouterWallet(routerId)
                 .then(load)
                 .catch((e) => pushToast("error", e.message))
             }
@@ -487,20 +487,20 @@ function WalletPanel({
   );
 }
 
-type MakerLogFilter = "all" | "info" | "warn" | "error";
+type RouterLogFilter = "all" | "info" | "warn" | "error";
 
-function LogsPanel({ makerId }: { makerId: string }) {
+function LogsPanel({ routerId }: { routerId: string }) {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [loading, setLoading] = useState(false);
-  const [levelFilter, setLevelFilter] = useState<MakerLogFilter>("all");
+  const [levelFilter, setLevelFilter] = useState<RouterLogFilter>("all");
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setLines(await getMakerLogs(makerId, 500));
+      setLines(await getRouterLogs(routerId, 500));
     } finally {
       setLoading(false);
     }
-  }, [makerId]);
+  }, [routerId]);
   useEffect(() => {
     void load();
     const timer = setInterval(() => void load(), 3000);
@@ -529,14 +529,14 @@ function LogsPanel({ makerId }: { makerId: string }) {
     <Card className="flex h-[580px] flex-col border-line-strong">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
         <div>
-          <h2 className="font-header text-[14px] font-bold">Maker logs</h2>
+          <h2 className="font-header text-[14px] font-bold">Router logs</h2>
           <span className="text-[10px] text-subtle">
             Latest 500 lines · refreshes every 3 seconds
           </span>
         </div>
         <div className="flex items-center gap-2">
           <SegmentedToggle
-            groupId={`maker-log-level-${makerId}`}
+            groupId={`router-log-level-${routerId}`}
             subdued
             value={levelFilter}
             onChange={setLevelFilter}
@@ -570,7 +570,7 @@ function LogsPanel({ makerId }: { makerId: string }) {
   );
 }
 
-// Tor's ports are Portal's to choose, not the maker's: `build_config` overrides whatever a
+// Tor's ports are Portal's to choose, not the router's: `build_config` overrides whatever a
 // registration carries with the live runtime's pair. They are shown below as status only.
 const EDITABLE_SETTING_KEYS = [
   "networkPort",
@@ -586,16 +586,16 @@ const EDITABLE_SETTING_KEYS = [
 type EditableSettingKey = (typeof EDITABLE_SETTING_KEYS)[number];
 type SettingsForm = Record<EditableSettingKey, string>;
 
-function settingsToForm(settings: MakerSettings): SettingsForm {
+function settingsToForm(settings: RouterSettings): SettingsForm {
   return Object.fromEntries(
     EDITABLE_SETTING_KEYS.map((key) => [key, String(settings[key])]),
   ) as SettingsForm;
 }
 
 function parseSettingsForm(
-  settings: MakerSettings,
+  settings: RouterSettings,
   form: SettingsForm,
-): MakerSettings | string {
+): RouterSettings | string {
   const values = Object.fromEntries(
     EDITABLE_SETTING_KEYS.map((key) => [key, Number(form[key])]),
   ) as Record<EditableSettingKey, number>;
@@ -637,13 +637,13 @@ function parseSettingsForm(
 
 function SettingsPanel({
   settings,
-  makerId,
+  routerId,
   running,
   transitioning,
   onSaved,
 }: {
-  settings: MakerSettings;
-  makerId: string;
+  settings: RouterSettings;
+  routerId: string;
   running: boolean;
   transitioning: boolean;
   onSaved: () => Promise<void>;
@@ -657,7 +657,7 @@ function SettingsPanel({
   const [saving, setSaving] = useState(false);
   const [confirmSave, setConfirmSave] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  useEffect(() => setForm(settingsToForm(settings)), [makerId]);
+  useEffect(() => setForm(settingsToForm(settings)), [routerId]);
   useEffect(() => {
     void checkTor()
       .then((status) => {
@@ -693,13 +693,13 @@ function SettingsPanel({
     />
   );
 
-  async function save(next: MakerSettings) {
+  async function save(next: RouterSettings) {
     const shouldStop = running;
     let settingsWereSaved = false;
     setSaving(true);
     try {
-      if (shouldStop) await stopMaker(makerId);
-      const saved = await updateMakerSettings(makerId, next);
+      if (shouldStop) await stopRouter(routerId);
+      const saved = await updateRouterSettings(routerId, next);
       settingsWereSaved = true;
       setForm(settingsToForm(saved));
       setConfirmSave(false);
@@ -707,19 +707,19 @@ function SettingsPanel({
       pushToast(
         "success",
         shouldStop
-          ? "Maker settings saved. Re-enter the wallet password to restart the maker."
-          : "Maker settings saved to config.toml.",
+          ? "Router settings saved. Re-enter the wallet password to restart the router."
+          : "Router settings saved to config.toml.",
       );
     } catch (e) {
       await onSaved().catch(() => {});
       const message =
-        (e as { message?: string }).message ?? "Could not save maker settings.";
+        (e as { message?: string }).message ?? "Could not save router settings.";
       pushToast(
         "error",
         settingsWereSaved
           ? `Settings were saved, but the view could not refresh: ${message}`
           : shouldStop
-            ? `Could not apply settings. The maker may be stopped: ${message}`
+            ? `Could not apply settings. The router may be stopped: ${message}`
             : message,
       );
     } finally {
@@ -736,18 +736,18 @@ function SettingsPanel({
     <div className="space-y-4">
       {transitioning ? (
         <div className="rounded-control border border-warning/35 bg-warning/[0.08] px-4 py-3 text-[12px] text-warning">
-          Wait for the current maker operation to finish before editing settings.
+          Wait for the current router operation to finish before editing settings.
         </div>
       ) : running ? (
         <div className="rounded-control border border-primary/30 bg-primary/[0.07] px-4 py-3 text-[12px] text-primary">
-          Saving changes stops this maker and writes its config.toml. Re-enter
+          Saving changes stops this router and writes its config.toml. Re-enter
           its wallet password afterwards to start it again.
         </div>
       ) : null}
       <Card className="border-line-strong p-5">
         <div className="grid grid-cols-3 gap-4 max-[760px]:grid-cols-1">
           {[
-            ["Maker ID", settings.makerId],
+            ["Router ID", settings.routerId],
             ["Wallet", settings.walletName],
             ["Data directory", settings.dataDir ?? "Default"],
           ].map(([label, value]) => (
@@ -765,14 +765,14 @@ function SettingsPanel({
           ))}
         </div>
         <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">
-          Maker identity and wallet location are fixed to prevent accidentally
-          pointing this maker at another wallet.
+          Router identity and wallet location are fixed to prevent accidentally
+          pointing this router at another wallet.
         </p>
       </Card>
       <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
         <SettingsSection
           title="Network"
-          subtitle="Inbound maker and local RPC listeners"
+          subtitle="Inbound router and local RPC listeners"
         >
           <div className="col-span-2 max-[620px]:col-span-1">
             <SummaryGroup title="Listeners">
@@ -806,7 +806,7 @@ function SettingsPanel({
         </SettingsSection>
         <SettingsSection
           title="Swap policy"
-          subtitle="Minimum size and advertised maker fees"
+          subtitle="Minimum size and advertised router fees"
         >
           <div className="col-span-2 max-[620px]:col-span-1">
             <SummaryGroup title="Advertised policy">
@@ -847,8 +847,8 @@ function SettingsPanel({
               {error ??
                 (dirty
                   ? running
-                    ? "Unsaved changes will be written to config.toml, then the maker stops until you start it again."
-                    : "Unsaved changes will be written to this maker’s config.toml."
+                    ? "Unsaved changes will be written to config.toml, then the router stops until you start it again."
+                    : "Unsaved changes will be written to this router’s config.toml."
                   : "config.toml is up to date.")}
             </p>
           </div>
@@ -875,10 +875,10 @@ function SettingsPanel({
         <div className="flex items-center justify-between gap-4">
           <div>
             <h2 className="font-header text-[14px] font-bold text-danger">
-              Remove this maker
+              Remove this router
             </h2>
             <p className="mt-1 text-[11.5px] text-muted">
-              Stops managing this maker here. Wallet files and on-chain funds
+              Stops managing this router here. Wallet files and on-chain funds
               are not deleted.
             </p>
           </div>
@@ -894,7 +894,7 @@ function SettingsPanel({
       </Card>
       {confirmSave && typeof parsed !== "string" && (
         <Modal
-          title={running ? "Save and stop maker?" : "Save maker settings?"}
+          title={running ? "Save and stop router?" : "Save router settings?"}
           onClose={() => setConfirmSave(false)}
           footer={
             <>
@@ -912,18 +912,18 @@ function SettingsPanel({
         >
           <div className="space-y-3 text-[12px] leading-5 text-muted">
             <p>
-              The changes will be written to this maker’s config.toml.
-              {running && " The maker will stop; re-enter its wallet password to restart it."}
+              The changes will be written to this router’s config.toml.
+              {running && " The router will stop; re-enter its wallet password to restart it."}
             </p>
             {parsed.networkPort !== settings.networkPort && (
               <div className="flex gap-3 rounded-control border border-warning/30 bg-warning/[0.07] p-3">
                 <AlertTriangle className="mt-0.5 shrink-0 text-warning" size={18} />
                 <p>
-                  A fidelity bond commits to the maker address using network port{" "}
+                  A fidelity bond commits to the router address using network port{" "}
                   <strong className="text-foreground">{settings.networkPort}</strong>.
                   Changing it to{" "}
                   <strong className="text-foreground">{parsed.networkPort}</strong>{" "}
-                  can make an existing bond unusable for this maker. Continue only
+                  can make an existing bond unusable for this router. Continue only
                   if there is no active fidelity bond or you understand the migration.
                 </p>
               </div>
@@ -933,7 +933,7 @@ function SettingsPanel({
       )}
       {confirmRemove && (
         <Modal
-          title={`Remove ${makerId}?`}
+          title={`Remove ${routerId}?`}
           onClose={() => setConfirmRemove(false)}
           footer={
             <>
@@ -945,21 +945,21 @@ function SettingsPanel({
               </Button>
               <Button
                 onClick={() =>
-                  void clearMakerSettings(makerId)
+                  void clearRouterSettings(routerId)
                     .then(() => {
-                      pushToast("success", `${makerId} was removed.`);
-                      navigate("/maker");
+                      pushToast("success", `${routerId} was removed.`);
+                      navigate("/router");
                     })
                     .catch((e) => pushToast("error", e.message))
                 }
               >
-                Remove maker
+                Remove router
               </Button>
             </>
           }
         >
           <p className="text-[12px] leading-5 text-muted">
-            This removes <strong className="text-foreground">{makerId}</strong>{" "}
+            This removes <strong className="text-foreground">{routerId}</strong>{" "}
             from the app, permanently — it will not reappear. Its wallet file
             and anything on-chain are left untouched.
           </p>
@@ -969,21 +969,21 @@ function SettingsPanel({
   );
 }
 
-export function MakerWorkspacePage() {
-  const { makerId = "" } = useParams();
-  const id = decodeURIComponent(makerId);
+export function RouterWorkspacePage() {
+  const { routerId = "" } = useParams();
+  const id = decodeURIComponent(routerId);
   const pushToast = useToastStore((s) => s.push);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab") as Tab | null;
   const tab = TAB_OPTIONS.some((item) => item.value === requestedTab)
     ? requestedTab!
     : "overview";
-  const [status, setStatus] = useState<MakerStatus | null>(null);
-  const [settings, setSettings] = useState<MakerSettings | null>(null);
+  const [status, setStatus] = useState<RouterStatus | null>(null);
+  const [settings, setSettings] = useState<RouterSettings | null>(null);
   const [info, setInfo] = useState<WalletInfo | null>(null);
   const [balances, setBalances] = useState<Balances | null>(null);
   const [bonds, setBonds] = useState<FidelityBond[]>([]);
-  const [reports, setReports] = useState<MakerSwapReportSummary[]>([]);
+  const [reports, setReports] = useState<RouterSwapReportSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [showStart, setShowStart] = useState(false);
@@ -992,18 +992,18 @@ export function MakerWorkspacePage() {
   const [copied, setCopied] = useState(false);
   const load = useCallback(async () => {
     const [nextStatus, nextSettings, nextInfo] = await Promise.all([
-      getMakerStatus(id),
-      getSavedMakerSettings(id),
-      getMakerInfo(id),
+      getRouterStatus(id),
+      getSavedRouterSettings(id),
+      getRouterInfo(id),
     ]);
-    if (!nextSettings) throw new Error("This maker was not found.");
+    if (!nextSettings) throw new Error("This router was not found.");
     setStatus(nextStatus);
     setSettings(nextSettings);
     setInfo(nextInfo);
     const [b, f, r] = await Promise.allSettled([
-      getMakerBalances(id),
-      listMakerFidelityBonds(id),
-      listMakerSwapReports(id),
+      getRouterBalances(id),
+      listRouterFidelityBonds(id),
+      listRouterSwapReports(id),
     ]);
     setBalances(b.status === "fulfilled" ? b.value : null);
     setBonds(f.status === "fulfilled" ? f.value : []);
@@ -1027,15 +1027,15 @@ export function MakerWorkspacePage() {
     setActionLoading(true);
     setStartError(undefined);
     try {
-      await startMaker(id, walletPassword || undefined);
+      await startRouter(id, walletPassword || undefined);
       setShowStart(false);
       setWalletPassword("");
       await load();
     } catch (e) {
       setStartError(
         isAppError(e) && e.code === "WALLET_WRONG_PASSWORD"
-          ? "Wrong password for this maker's wallet."
-          : ((e as { message?: string }).message ?? "Could not start maker."),
+          ? "Wrong password for this router's wallet."
+          : ((e as { message?: string }).message ?? "Could not start router."),
       );
     } finally {
       setActionLoading(false);
@@ -1044,12 +1044,12 @@ export function MakerWorkspacePage() {
   async function stop() {
     setActionLoading(true);
     try {
-      await stopMaker(id);
+      await stopRouter(id);
       await load();
     } catch (e) {
       pushToast(
         "error",
-        (e as { message?: string }).message ?? "Could not stop maker.",
+        (e as { message?: string }).message ?? "Could not stop router.",
       );
     } finally {
       setActionLoading(false);
@@ -1067,9 +1067,9 @@ export function MakerWorkspacePage() {
       <div className="mx-auto w-full max-w-[1380px] pb-8">
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
-            <BackButton to="/maker" label="Back to makers" />
+            <BackButton to="/router" label="Back to routers" />
             <div className="min-w-0">
-              <span className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-primary">Maker workspace · Signet</span>
+              <span className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-primary">Router workspace · Signet</span>
               <div className="flex items-center gap-2">
                 <h1 className="truncate font-header text-[27px] font-bold">
                   {id}
@@ -1118,7 +1118,7 @@ export function MakerWorkspacePage() {
                 disabled={transitioning}
               >
                 <Square size={13} />
-                Stop maker
+                Stop router
               </Button>
             ) : (
               <Button
@@ -1130,7 +1130,7 @@ export function MakerWorkspacePage() {
                 disabled={transitioning}
               >
                 <Play size={13} />
-                Start maker
+                Start router
               </Button>
             )}
           </div>
@@ -1145,7 +1145,7 @@ export function MakerWorkspacePage() {
         )}
         <div className="mt-6 border-b border-line">
           <SegmentedToggle
-            groupId="maker-workspace-tabs"
+            groupId="router-workspace-tabs"
             value={tab}
             onChange={(value) =>
               setSearchParams(value === "overview" ? {} : { tab: value })
@@ -1164,12 +1164,12 @@ export function MakerWorkspacePage() {
               reports={reports}
             />
           )}
-          {tab === "wallet" && <WalletPanel makerId={id} running={running} />}
-          {tab === "logs" && <LogsPanel makerId={id} />}
+          {tab === "wallet" && <WalletPanel routerId={id} running={running} />}
+          {tab === "logs" && <LogsPanel routerId={id} />}
           {tab === "settings" && (
             <SettingsPanel
               settings={settings}
-              makerId={id}
+              routerId={id}
               running={running}
               transitioning={transitioning}
               onSaved={load}
@@ -1190,7 +1190,7 @@ export function MakerWorkspacePage() {
                   loading={actionLoading}
                   disabled={status.walletEncrypted === true && !walletPassword}
                 >
-                  Start maker
+                  Start router
                 </Button>
               </>
             }

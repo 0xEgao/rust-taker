@@ -57,7 +57,7 @@ export interface TorStatus {
 /** Work a quit would interrupt rather than finish. Payload of `app://quit-blocked`. */
 export interface QuitBlockers {
   swapRunning: boolean;
-  runningMakers: string[];
+  runningRouters: string[];
 }
 
 export type ConnectionType = "tor" | "clearnet";
@@ -108,12 +108,12 @@ export type ErrorCode =
   | "NOT_INITIALIZED"
   | "SWAP_IN_PROGRESS"
   | "INSUFFICIENT_FUNDS"
-  | "NOT_ENOUGH_MAKERS"
-  | "MAKER_NOT_FOUND"
-  | "MAKER_NOT_INITIALIZED"
-  | "MAKER_ALREADY_RUNNING"
-  | "MAKER_NOT_RUNNING"
-  | "MAKER_BUSY"
+  | "NOT_ENOUGH_ROUTERS"
+  | "ROUTER_NOT_FOUND"
+  | "ROUTER_NOT_INITIALIZED"
+  | "ROUTER_ALREADY_RUNNING"
+  | "ROUTER_NOT_RUNNING"
+  | "ROUTER_BUSY"
   | "REPORT_NOT_FOUND"
   | "USER_CANCELLED"
   | "AUTHORIZATION_DENIED"
@@ -223,7 +223,7 @@ export interface Offer {
   bondIsSpent: boolean;
 }
 
-export interface Maker {
+export interface Router {
   address: string;
   protocol?: string;
   offer?: Offer;
@@ -231,19 +231,19 @@ export interface Maker {
 }
 
 export interface OfferBookView {
-  good: Maker[];
-  bad: Maker[];
-  unresponsive: Maker[];
+  good: Router[];
+  bad: Router[];
+  unresponsive: Router[];
   syncing: boolean;
   lastSyncTs: number;
 }
 
 // ---------------------------------------------------------------------------
-// Maker operations
+// Router operations
 // ---------------------------------------------------------------------------
 
-export interface MakerSettings {
-  makerId: string;
+export interface RouterSettings {
+  routerId: string;
   walletName: string;
   networkPort: number;
   rpcPort: number;
@@ -259,22 +259,22 @@ export interface MakerSettings {
   dataDir?: string;
 }
 
-export interface MakerInitConfig extends MakerSettings {
+export interface RouterInitConfig extends RouterSettings {
   walletPassword: string;
 }
 
-export interface SuggestedMakerPorts {
+export interface SuggestedRouterPorts {
   networkPort: number;
   rpcPort: number;
 }
 
 /** Per-port conflict message, absent when the port is usable. */
-export interface MakerPortCheck {
+export interface RouterPortCheck {
   networkPort?: string;
   rpcPort?: string;
 }
 
-export type MakerPhase =
+export type RouterPhase =
   | { phase: "notConfigured" }
   | { phase: "initializing" }
   | { phase: "starting" }
@@ -283,9 +283,9 @@ export type MakerPhase =
   | { phase: "stopped" }
   | { phase: "failed"; message: string };
 
-export interface MakerStatus {
-  makerId: string;
-  phase: MakerPhase;
+export interface RouterStatus {
+  routerId: string;
+  phase: RouterPhase;
   running: boolean;
   torAddress?: string;
   networkPort: number;
@@ -303,7 +303,7 @@ export interface FidelityBond {
   bondValueSats?: number;
 }
 
-export interface MakerSwapReportSummary {
+export interface RouterSwapReportSummary {
   swapId: string;
   status: string;
   startTimestamp: number;
@@ -313,7 +313,7 @@ export interface MakerSwapReportSummary {
   feeEarnedSats: number;
 }
 
-export interface MakerSwapReportDetail extends MakerSwapReportSummary {
+export interface RouterSwapReportDetail extends RouterSwapReportSummary {
   network: string;
   swapDurationSeconds: number;
   incomingContractTxid: string;
@@ -331,22 +331,22 @@ export type ProtocolVersion = "legacy" | "taproot";
 export interface SwapRequest {
   protocol: ProtocolVersion;
   amountSats: number;
-  /** Omitted requests get the backend's two-maker route default. */
-  makerCount?: number;
+  /** Omitted requests get the backend's two-router route default. */
+  routerCount?: number;
   outpoints?: Outpoint[];
-  preferredMakers?: string[];
+  preferredRouters?: string[];
 }
 
 export interface SwapFundingEstimate {
   inputCount: number;
   vbytes: number;
   feeSats: number;
-  routeMiningFeePerMakerSats: number;
+  routeMiningFeePerRouterSats: number;
   /** Claiming the incoming contract at the end of the swap; depends on the protocol. */
   sweepFeeSats: number;
 }
 
-export interface MakerFeeInfo {
+export interface RouterFeeInfo {
   address: string;
   protocol: string;
   baseFee: number;
@@ -360,13 +360,13 @@ export interface SwapSummary {
   swapId: string;
   protocol: string;
   sendAmountSats: number;
-  makers: MakerFeeInfo[];
-  /** Maker fees plus route mining fees and the final incoming-contract sweep. */
+  routers: RouterFeeInfo[];
+  /** Router fees plus route mining fees and the final incoming-contract sweep. */
   totalEstimatedFeeSats: number;
   estimatedReceiveAmountSats: number;
 }
 
-// Coarse in-memory lifecycle — for live per-maker detail, see SwapTrackerProgress/getSwapTracker.
+// Coarse in-memory lifecycle — for live per-router detail, see SwapTrackerProgress/getSwapTracker.
 export type SwapPhase = "prepared" | "running" | "recovering" | "finished" | "failed";
 
 export interface SwapProgress {
@@ -376,14 +376,34 @@ export interface SwapProgress {
   error?: string;
 }
 
-export interface MakerProgress {
+/** One of the crate's own per-maker flags, by field name — see `MILESTONE_LABEL` for the prose. */
+export interface RouterMilestone {
+  key: string;
+  done: boolean;
+}
+
+/**
+ * Where one router is in the protocol, in order. Coarser than the flags below because the taker
+ * only flushes its tracker a few times per hop — see `router_stage` in `commands/taker_swap.rs`.
+ */
+export type RouterStage =
+  | "waiting"
+  | "negotiated"
+  | "handshaking"
+  | "confirming"
+  | "routed"
+  | "key_received"
+  | "settled";
+
+export interface RouterProgress {
   address: string;
-  stepsDone: number;
-  stepsTotal: number;
+  stage: RouterStage;
+  /** The raw flags behind `stage`; the set differs by protocol (5 taproot / 12 legacy). */
+  milestones: RouterMilestone[];
 }
 
 export type TrackerPhase =
-  | "makers_discovered"
+  | "routers_discovered"
   | "negotiated"
   | "funding_created"
   | "funds_broadcast"
@@ -397,9 +417,9 @@ export type TrackerPhase =
 export interface SwapTrackerProgress {
   phase: TrackerPhase;
   sendAmountSats: number;
-  makerCount: number;
+  routerCount: number;
   failureReason?: string;
-  makers: MakerProgress[];
+  routers: RouterProgress[];
 }
 
 export interface RecoveryStatus {
@@ -422,16 +442,24 @@ export interface SwapReportSummary {
   outgoingAmountSats: number;
   receivedAmountSats: number;
   feePaidSats: number;
-  makersCount: number;
+  routersCount: number;
 }
 
-export interface MakerFeeInfo {
-  makerIndex: number;
-  makerAddress: string;
+export interface ReportRouterFee {
+  routerIndex: number;
+  routerAddress: string;
   baseFeeSats: number;
   amountRelativeFeeSats: number;
   timeRelativeFeeSats: number;
   totalFeeSats: number;
+}
+
+/** The coin a completed swap paid the user, recovered from chain rather than the report file. */
+export interface SwapUtxo {
+  txid: string;
+  vout: number;
+  amountSats: number;
+  address: string | null;
 }
 
 export interface SwapReportDetail {
@@ -447,13 +475,17 @@ export interface SwapReportDetail {
   feePaidSats: number;
   miningFeeSats: number;
   feePercentage: number;
-  totalMakerFeesSats: number;
+  totalRouterFeesSats: number;
   outgoingContractTxid?: string;
   incomingContractTxid?: string;
   fundingTxids: string[][];
-  makersCount: number;
-  makerAddresses: string[];
-  makerFeeInfo: MakerFeeInfo[];
+  routersCount: number;
+  routerAddresses: string[];
+  routerFeeInfo: ReportRouterFee[];
+  /** Amounts of the wallet coins this swap consumed; the report records no outpoint for them. */
+  inputUtxoSats: number[];
+  /** Amounts of the change coins the swap returned to the regular wallet. */
+  changeUtxoSats: number[];
   /** The exact outpoint verify_deniability checks on-chain. */
   provenOutpoint: Outpoint | null;
   /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */

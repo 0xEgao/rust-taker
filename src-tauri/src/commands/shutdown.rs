@@ -43,7 +43,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
                             | MakerPhase::Stopping
                     )
                 })
-                .map(|entry| entry.settings.maker_id.clone())
+                .map(|entry| entry.settings.router_id.clone())
                 .collect()
         })
         .unwrap_or_default();
@@ -101,14 +101,14 @@ fn shutdown_runtime(app: &AppHandle) {
 
     // Makers first: each one finishes its in-flight connections and a closing wallet sync,
     // and all of that traffic is still riding on Tor.
-    let _ = app.emit("app://quit-progress", "Stopping makers");
+    let _ = app.emit("app://quit-progress", "Stopping routers");
     maker::shutdown_all(&state);
 
     // Then the taker. Dropping it is the graceful path: the crate's `Drop` flushes the swap
     // tracker and stops the recovery loop and breach detector. A running swap holds the
     // taker mutex for its whole duration, so this cannot take it — the swap's own per-phase
     // writes are what the next launch recovers from.
-    let _ = app.emit("app://quit-progress", "Stopping taker");
+    let _ = app.emit("app://quit-progress", "Stopping wallet");
     if let Err(e) = taker_wallet::shutdown(&state) {
         log::warn!("taker did not shut down cleanly: {e:?}");
     }

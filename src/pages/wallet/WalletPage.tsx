@@ -22,7 +22,7 @@ type TxSortKey = "newest" | "amount";
 type SortDir = "asc" | "desc";
 
 const SCRIPT_PILL_CLASS: Record<string, string> = {
-  Taproot: "text-maker border-maker/35 bg-maker/10",
+  Taproot: "text-router border-router/35 bg-router/10",
   SegWit: "text-primary border-primary/35 bg-primary/[0.12]",
 };
 

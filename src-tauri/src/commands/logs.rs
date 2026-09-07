@@ -34,17 +34,17 @@ pub async fn get_logs(
 #[tauri::command]
 pub async fn get_maker_logs(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
     lines: Option<usize>,
 ) -> Result<Vec<LogLine>, AppError> {
     let data_dir = {
         let makers = state.makers.lock()?;
-        let in_memory = makers.get(&maker_id).map(|entry| entry.settings.clone());
+        let in_memory = makers.get(&router_id).map(|entry| entry.settings.clone());
         drop(makers);
         let settings = match in_memory {
             Some(settings) => settings,
-            None => crate::commands::maker_settings::load(&maker_id)?
-                .ok_or_else(|| AppError::maker_not_found(&maker_id))?,
+            None => crate::commands::maker_settings::load(&router_id)?
+                .ok_or_else(|| AppError::maker_not_found(&router_id))?,
         };
         settings
             .data_dir

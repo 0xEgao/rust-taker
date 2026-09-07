@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { checkBackend, checkTor, getChainBackend, setChainBackend } from "../../api/commands";
 import type { ChainBackendConfig, ChainBackendKind, NodeBackend } from "../../api/types";
@@ -22,9 +22,11 @@ import { useSessionStore } from "../../store/session";
 // reaching the network but never converging, so the gate fails instead of hanging forever.
 const TOR_BOOTSTRAP_TIMEOUT_MS = 180_000;
 const TOR_POLL_MS = 1_200;
+// Consecutive probe misses tolerated before the panel calls it a failure.
+const TOR_MAX_CONSECUTIVE_FAILURES = 6;
 
 /**
- * The first screen of every launch, ahead of the role picker, because a taker and a maker
+ * The first screen of every launch, ahead of the role picker, because a wallet and a router
  * both need the same two things before they can do anything: a chain backend that answers,
  * and a bootstrapped Tor.
  *
@@ -44,8 +46,6 @@ export function ConnectPage() {
   const [backendRows, setBackendRows] = useState<TestRow[] | null>(null);
   const [testing, setTesting] = useState(false);
 
-  // Bootstrap runs once per launch; a re-mount must not start a second poll against it.
-  const polling = useRef(false);
   // Bumped by Retry to re-arm the poll after it gave up.
   const [torAttempt, setTorAttempt] = useState(0);
 
@@ -62,12 +62,18 @@ export function ConnectPage() {
       .catch(() => {});
   }, []);
 
+  // No re-entrancy guard here on purpose. A `useRef` latch looks right but deadlocks under
+  // StrictMode's double-invoke: the first run sets it, the immediate cleanup cancels that run,
+  // and the second run sees the latch already set and never starts — so nothing ever polls and
+  // the panel sits on whatever percentage the one completed probe returned. Cancelling via the
+  // closure flag is enough, since the effect only re-runs when `torAttempt` changes.
   useEffect(() => {
-    if (polling.current) return;
-    polling.current = true;
     let cancelled = false;
     void (async () => {
       const deadline = Date.now() + TOR_BOOTSTRAP_TIMEOUT_MS;
+      // A probe that misses is not a Tor that failed: checkTor re-runs the full readiness wait
+      // on every call, so a single miss against a busy, still-bootstrapping Tor is routine.
+      let consecutiveFailures = 0;
       for (;;) {
         if (cancelled) return;
         try {
@@ -75,6 +81,7 @@ export function ConnectPage() {
           if (!(status.reachable && status.authenticated)) {
             throw new Error(status.error ?? "Tor control port unreachable.");
           }
+          consecutiveFailures = 0;
           setTorError(null);
           setTorProgress(status.bootstrapProgress ?? 0);
           if (status.bootstrapProgress === 100) return;
@@ -82,10 +89,14 @@ export function ConnectPage() {
             throw new Error("Tor started but could not finish connecting to the network.");
           }
         } catch (e) {
-          // Giving up releases the guard so Retry can arm a fresh attempt; without that a
-          // single transient failure would leave Next disabled for the whole session.
+          consecutiveFailures += 1;
+          const givingUp =
+            consecutiveFailures >= TOR_MAX_CONSECUTIVE_FAILURES || Date.now() > deadline;
+          if (!givingUp) {
+            await wait(TOR_POLL_MS);
+            continue;
+          }
           setTorError((e as { message?: string })?.message ?? "Tor could not be started.");
-          polling.current = false;
           return;
         }
         await wait(TOR_POLL_MS);

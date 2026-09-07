@@ -152,4 +152,3 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
         control_port: Some(control_port),
     }
 }
-

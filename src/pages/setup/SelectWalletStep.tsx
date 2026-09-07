@@ -3,7 +3,7 @@ import { dirname } from "@tauri-apps/api/path";
 import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { chooseRestoreBackup, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { chooseRestoreBackup, initWallet, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
@@ -189,7 +189,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           if (wallet.mode === "restore") {
             await restoreWallet(wallet.walletName, undefined, wallet.selectionId, wallet.password, dataDir);
           }
-          return initTaker({
+          return initWallet({
             walletName: wallet.walletName,
             walletPassword: wallet.password,
             connectionType: "tor",
@@ -200,7 +200,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       );
       setSteps({ verify: "passed", init: "passed" });
       // Kick off a real offerbook sync now, in the background, so the Market page has fresh
-      // maker data by the time the user looks at it — not just whatever offerbook.json had from
+      // router data by the time the user looks at it — not just whatever offerbook.json had from
       // the last session. Not awaited: this can take 30-60s+ and shouldn't block navigation.
       void syncOfferbook().catch(() => {});
       // restore_wallet completes its own sync_and_save before init_taker, so a
@@ -310,7 +310,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     <Checklist
       steps={[
         { label: "Verifying wallet password", state: steps.verify },
-        { label: "Initializing taker", state: steps.init },
+        { label: "Initializing wallet", state: steps.init },
       ]}
     />
   );
