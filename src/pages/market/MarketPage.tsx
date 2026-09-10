@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ExternalLink, Inbox, Refr
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOffers, pollRouter, removeRouter, syncOfferbook } from "../../api/commands";
+import { isAppError } from "../../api/types";
 import type { Router } from "../../api/types";
 import { Card, IndeterminateBar, Modal, SatsAmount, StatStrip, Tooltip } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
@@ -344,7 +345,12 @@ export function MarketPage() {
           }, 2000);
         }
       } catch (e) {
-        pushFailure(e, "Failed to load routers.");
+        // `get_offers` needs the taker, and a running swap holds it for hours. Arriving here
+        // mid-swap is expected and there is nothing to act on, so it stays quiet — the same
+        // rule the Swap page follows. A user-initiated Refresh below still reports it.
+        if (!isAppError(e) || e.code !== "SWAP_IN_PROGRESS") {
+          pushFailure(e, "Failed to load routers.");
+        }
       } finally {
         setLoading(false);
       }

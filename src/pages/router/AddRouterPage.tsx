@@ -135,6 +135,20 @@ export function AddRouterPage() {
 
   const blocked = torError !== null || portErrors.networkPort !== undefined || portErrors.rpcPort !== undefined;
 
+  // A disabled Create button with no explanation is the whole reason an empty password reads as
+  // the form being broken. Names the first thing standing in the way, in form order.
+  const blockedReason = !trimmedId
+    ? "Enter a router ID to continue."
+    : malformedId
+      ? "Fix the router ID to continue."
+      : walletPasswordError
+        ? walletPasswordError
+        : blocked
+          ? "Resolve the warning above to continue."
+          : !config
+            ? "Check the values above to continue."
+            : null;
+
   function set(key: keyof Values) {
     return (next: string) => setValues((v) => ({ ...v, [key]: next }));
   }
@@ -187,6 +201,7 @@ export function AddRouterPage() {
               label="Router ID"
               placeholder="router-02"
               autoFocus
+              required
               value={routerId}
               onChange={(e) => setRouterId(e.target.value)}
               error={malformedId ? "Letters, numbers, hyphens and underscores only." : undefined}
@@ -204,10 +219,11 @@ export function AddRouterPage() {
               </Disclosure>
             </div>
             <div className="mt-4 flex flex-col gap-3 border-t border-line pt-4">
-              <PasswordField label="Wallet password" autoComplete="new-password" value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
+              <PasswordField label="Wallet password" autoComplete="new-password" required value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
               <PasswordField
                 label="Confirm wallet password"
                 autoComplete="new-password"
+                required
                 value={walletPasswordConfirm}
                 onChange={(e) => setWalletPasswordConfirm(e.target.value)}
                 error={walletPassword || walletPasswordConfirm ? walletPasswordError : undefined}
@@ -263,7 +279,8 @@ export function AddRouterPage() {
           </div>
         </Card>
 
-        <div className="mt-4 flex items-center justify-end gap-2">
+        <div className="mt-4 flex items-center justify-end gap-3">
+          {blockedReason && <p className="text-[11.5px] text-subtle">{blockedReason}</p>}
           <LinkButton to="/router" variant="secondary">Cancel</LinkButton>
           <Button onClick={() => void createRouter()} loading={creating} disabled={!config || blocked}>
             Create router

@@ -9,14 +9,14 @@ import type {
 } from "../../../api/types";
 
 /** Six acts, one headline each. Acts before `route` have nothing on-chain — see `committed`. */
-export type Act = "find" | "deal" | "fund" | "route" | "unlock" | "settle";
+export type Act = "find" | "deal" | "fund" | "route" | "finalizing" | "settle";
 
 export const ACT_LABEL: Record<Act, string> = {
   find: "Find",
   deal: "Deal",
   fund: "Fund",
   route: "Route",
-  unlock: "Unlock",
+  finalizing: "Finalizing",
   settle: "Settle",
 };
 
@@ -50,30 +50,6 @@ export const STAGE_LABEL: Record<RouterStage, string> = {
  * only: the flags are not evenly spaced in time, and taproot writes five of them at once, so
  * the narrative comes from `stage` instead.
  */
-const MILESTONE_LABEL: Record<string, string> = {
-  negotiated: "Terms agreed",
-  connected: "Connected",
-
-  contract_data_sent: "Contract sent",
-  maker_contract_received: "Contract received",
-  swapcoins_created: "Swap coins built",
-
-  sender_sigs_requested: "Signatures requested",
-  sender_sigs_received: "Signatures received",
-  prev_funding_broadcast: "Incoming funding broadcast",
-  prev_funding_confirmed: "Incoming funding confirmed",
-  proof_of_funding_sent: "Proof of funding sent",
-  maker_contracts_received: "Contracts received",
-  next_maker_sigs_obtained: "Next hop signed",
-  prev_maker_sigs_obtained: "Previous hop signed",
-  combined_sigs_sent: "Combined signatures sent",
-  maker_funding_confirmed: "Contract confirmed on-chain",
-  watchonly_created: "Contract watched",
-
-  privkey_received: "Private key received",
-  privkey_forwarded: "Private key forwarded",
-};
-
 /**
  * What the swap is doing at each phase, for the stretches with no router of its own to name:
  * everything before the funds move, and the final sweep after the last key is forwarded.
@@ -106,7 +82,6 @@ export type Tone = "idle" | "active" | "success" | "danger";
 
 export interface Milestone {
   key: string;
-  label: string;
   done: boolean;
 }
 
@@ -137,6 +112,13 @@ export interface CircuitView {
   act: Act;
   /** True once funds are on-chain. Before this the swap can still be abandoned. */
   committed: boolean;
+  /**
+   * Asserted by the page, not inferred from the route. "Every router settled" comes well before
+   * the swap is over — the crate still has to sweep the incoming contract and write the report —
+   * and the tracker's own `completed` lands before that report exists. Taking it from the page
+   * keeps the diagram, the heading and the View Report button changing at one moment.
+   */
+  complete: boolean;
   failed: boolean;
   failureReason?: string;
   hops: HopView[];
@@ -159,8 +141,8 @@ const PHASE_ACT: Record<TrackerPhase, Act> = {
   funding_created: "fund",
   funds_broadcast: "route",
   contracts_exchanged: "route",
-  finalizing: "unlock",
-  privkeys_forwarded: "unlock",
+  finalizing: "finalizing",
+  privkeys_forwarded: "finalizing",
   completed: "settle",
   failed: "route",
 };
@@ -191,6 +173,7 @@ export function useSwapCircuit(
   tracker: SwapTrackerProgress | null,
   summary: SwapSummary | null,
   failure: boolean,
+  finished = false,
 ): CircuitView {
   return useMemo<CircuitView>(() => {
     const routerCount = summary?.routers.length ?? tracker?.routerCount ?? 2;
@@ -212,7 +195,6 @@ export function useSwapCircuit(
         fee,
         milestones: (live?.milestones ?? []).map((m) => ({
           key: m.key,
-          label: MILESTONE_LABEL[m.key] ?? m.key.replace(/_/g, " "),
           done: m.done,
         })),
       };
@@ -223,7 +205,7 @@ export function useSwapCircuit(
     // during the second one, hops sitting at `routed` are still waiting their turn.
     const focusIndex = (() => {
       if (phase === "completed") return null;
-      const target: RouterStage = act === "unlock" || act === "settle" ? "settled" : "routed";
+      const target: RouterStage = act === "finalizing" || act === "settle" ? "settled" : "routed";
       const idx = hops.findIndex((h) => !atLeast(h.stage, target));
       return idx === -1 ? null : idx;
     })();
@@ -279,6 +261,16 @@ export function useSwapCircuit(
     // Router k funds edge k+1, so a hop index is never an edge index. Asking which leg is
     // unconfirmed answers "what is the swap waiting on" without that off-by-one.
     const liveEdge = edges.findIndex((e) => e.stage !== "confirmed");
+
+    // The route is funded strictly one leg at a time, so only the live leg may be lit. Without
+    // this, hop 1 showed two: the tracker marks router 1 `confirming` as soon as the route starts
+    // moving, which lights its outgoing leg while our own funding leg is still broadcasting.
+    if (liveEdge !== -1) {
+      for (const edge of edges.slice(liveEdge + 1)) {
+        edge.stage = "pending";
+        edge.tone = "idle";
+      }
+    }
     if (failed && liveEdge !== -1) edges[liveEdge].tone = "danger";
 
     // A router that hasn't been reached yet isn't the story — the phase is. Once the swap is
@@ -293,6 +285,7 @@ export function useSwapCircuit(
       routerCount,
       act,
       committed,
+      complete: finished,
       failed,
       failureReason: tracker?.failureReason,
       hops,
@@ -305,5 +298,5 @@ export function useSwapCircuit(
       receiveAmountSats: summary?.estimatedReceiveAmountSats,
       totalFeeSats: summary?.totalEstimatedFeeSats,
     };
-  }, [tracker, summary, failure]);
+  }, [tracker, summary, failure, finished]);
 }

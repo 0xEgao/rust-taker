@@ -18,13 +18,18 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 /// Work that a quit would interrupt rather than finish, so the user is asked first.
 fn quit_blockers(state: &AppState) -> QuitBlockers {
     let swap_running = state.active_swap.lock().is_ok_and(|swap| {
-        swap.as_ref().is_some_and(|swap| {
-            matches!(
-                swap.phase,
-                SwapLifecycle::Running | SwapLifecycle::Recovering
-            )
-        })
+        swap.as_ref()
+            .is_some_and(|swap| matches!(swap.phase, SwapLifecycle::Running))
     });
+    // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
+    // and survives a restart, and quitting mid-recovery is the one thing that actually stalls it.
+    let recovery_running = state
+        .wallet
+        .read()
+        .ok()
+        .and_then(|handle| handle.clone())
+        .and_then(|wallet| wallet.read().ok().map(|w| !w.list_live_contract_spend_info().is_empty()))
+        .unwrap_or(false);
     // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
     // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
     // about a maker that finished long ago.
@@ -49,6 +54,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
         .unwrap_or_default();
     QuitBlockers {
         swap_running,
+        recovery_running,
         running_makers,
     }
 }
@@ -57,7 +63,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
 /// otherwise goes straight to teardown.
 pub fn begin_quit(app: &AppHandle) {
     let blockers = quit_blockers(&app.state::<AppState>());
-    if blockers.swap_running || !blockers.running_makers.is_empty() {
+    if blockers.swap_running || blockers.recovery_running || !blockers.running_makers.is_empty() {
         crate::show_main_window(app);
         let _ = app.emit("app://quit-blocked", blockers);
         return;

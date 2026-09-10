@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, RefreshCw, Timer, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getIncomingSwapUtxo, getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
@@ -13,6 +13,9 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
   success: "Completed",
   recovery_hashlock: "Recovered (hashlock)",
   recovery_timelock: "Recovered (timelock)",
+  recovered: "Interrupted · recovered",
+  interrupted: "Interrupted · recovering",
+  unfinished: "Never finished",
   failed: "Failed",
 };
 
@@ -31,7 +34,18 @@ function formatTimestamp(unixSeconds: number): string {
 }
 
 /** Full txid, not truncated — the whole point of this row is being able to read and copy it. */
-function TxArtifact({ label, txid, accent, arrow }: { label: string; txid: string; accent: string; arrow: string }) {
+function TxArtifact({ label, caption, txid, vout, amountSats, accent, arrow }: {
+  label: string;
+  caption?: string;
+  txid: string;
+  vout?: number;
+  amountSats?: number;
+  accent: string;
+  arrow: string;
+}) {
+  // `txid:vout` names the coin, which is what the contract actually holds; a bare txid only
+  // names the transaction that created it.
+  const reference = vout === undefined ? txid : `${txid}:${vout}`;
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_34px_34px] items-center gap-2.5 rounded-control border border-line bg-surface-raised p-5">
       <div className="min-w-0">
@@ -41,34 +55,16 @@ function TxArtifact({ label, txid, accent, arrow }: { label: string; txid: strin
           </span>
           {label}
         </h4>
-        <p className="break-all font-mono text-[12px] leading-relaxed text-muted">{txid}</p>
-      </div>
-      <CopyButton text={txid} title="Copy transaction ID" />
-      <ExternalLinkButton txid={txid} />
-    </div>
-  );
-}
-
-function UtxoRow({ label, amountSats, accent, utxo }: {
-  label: string; amountSats: number; accent: string; utxo?: SwapUtxo;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2">
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-          <span style={{ color: accent }} aria-hidden>■</span>
-          {label}
-        </span>
-        {utxo && (
-          <span className="truncate font-mono text-[11.5px] text-muted">
-            {truncateMiddle(utxo.txid, 10, 6)}:{utxo.vout}
-          </span>
+        <p className="break-all font-mono text-[12px] leading-relaxed text-muted">{reference}</p>
+        {amountSats !== undefined && (
+          <p className="mt-2 font-numeric text-[13px] text-foreground">
+            <SatsAmount sats={amountSats} />
+          </p>
         )}
-      </span>
-      <span className="flex shrink-0 items-center gap-2">
-        <SatsAmount sats={amountSats} className="font-mono text-[12px] text-foreground" />
-        {utxo && <ExternalLinkButton txid={utxo.txid} />}
-      </span>
+        {caption && <p className="mt-2 text-[11.5px] leading-5 text-subtle">{caption}</p>}
+      </div>
+      <CopyButton text={reference} title={vout === undefined ? "Copy transaction ID" : "Copy outpoint"} />
+      <ExternalLinkButton txid={txid} />
     </div>
   );
 }
@@ -160,7 +156,7 @@ export function SwapReportPage() {
 
   // The received coin is not in the report file — it has to be read off the chain, which costs a
   // round-trip per candidate transaction, so it loads on demand rather than with the report.
-  const loadIncomingUtxo = () => {
+  const loadIncomingUtxo = useCallback(() => {
     if (!swapId || utxoState === "loading") return;
     setUtxoState("loading");
     void getIncomingSwapUtxo(swapId)
@@ -169,7 +165,11 @@ export function SwapReportPage() {
         setUtxoState("done");
       })
       .catch(() => setUtxoState("failed"));
-  };
+  }, [swapId, utxoState]);
+
+  useEffect(() => {
+    if (swapId && utxoState === "idle") loadIncomingUtxo();
+  }, [swapId, utxoState, loadIncomingUtxo]);
 
   // Fidelity bond data isn't part of the swap report — it lives on the router's current offer.
   // Fetched lazily on first modal open (not mount) since nothing else on this page needs it, and
@@ -190,7 +190,11 @@ export function SwapReportPage() {
       .catch(() => {});
   }
 
-  const provenOutpoint = report?.provenOutpoint ?? null;
+  // The proof records both contract outpoints exactly. A report written before the proof existed
+  // has only the txids, so the vout is left off rather than guessed at 0.
+  const outgoingContract =
+    report?.outgoingContractOutpoint ??
+    (report?.outgoingContractTxid ? { txid: report.outgoingContractTxid, vout: undefined } : null);
 
   async function handleVerify() {
     if (!swapId) return;
@@ -279,61 +283,75 @@ export function SwapReportPage() {
             </p>
           </Card>
 
-          <SectionCard title="Transactions">
-            {report.outgoingContractTxid && (
-              <TxArtifact label="Outgoing Contract Tx" txid={report.outgoingContractTxid} accent={OUTGOING_ACCENT} arrow="↗" />
+          <SectionCard title="UTXOs">
+            {outgoingContract && (
+              <TxArtifact
+                label="Outgoing UTXO"
+                caption="The coin this wallet paid into the route"
+                txid={outgoingContract.txid}
+                vout={outgoingContract.vout}
+                accent={OUTGOING_ACCENT}
+                arrow="↗"
+              />
             )}
-            {report.incomingContractTxid && (
-              <TxArtifact label="Incoming Contract Tx" txid={report.incomingContractTxid} accent={HOP_ACCENTS[0]} arrow="↙" />
+            {incomingUtxo ? (
+              <TxArtifact
+                label="Incoming UTXO"
+                caption={
+                  incomingUtxo.address
+                    ? `The coin the route paid back, at ${incomingUtxo.address}`
+                    : "The coin the route paid back"
+                }
+                txid={incomingUtxo.txid}
+                vout={incomingUtxo.vout}
+                amountSats={incomingUtxo.amountSats}
+                accent={HOP_ACCENTS[0]}
+                arrow="↙"
+              />
+            ) : (
+              // Not in the report file: the sweep that lands this coin happens after the report
+              // is written, so it has to be read off the chain.
+              <div className="flex flex-col gap-2 rounded-control border border-dashed border-line bg-surface-raised p-5">
+                <h4 className="text-[15px] font-extrabold text-foreground">Incoming UTXO</h4>
+                {utxoState === "failed" ? (
+                  <p className="text-[11.5px] text-danger">
+                    Could not reach the chain backend to find it.
+                  </p>
+                ) : utxoState === "done" ? (
+                  <p className="text-[11.5px] text-subtle">
+                    No sweep of the incoming contract was found yet.
+                  </p>
+                ) : (
+                  <p className="text-[11.5px] text-subtle">Reading the chain…</p>
+                )}
+                {utxoState !== "loading" && (
+                  <Button size="sm" variant="secondary" onClick={loadIncomingUtxo}>
+                    <RefreshCw size={14} strokeWidth={1.8} />
+                    Try again
+                  </Button>
+                )}
+              </div>
             )}
-            {report.fundingTxids.map((hopTxids, hopIdx) =>
-              hopTxids.map((txid, i) => (
-                <TxArtifact
-                  key={`${hopIdx}-${i}`}
-                  label={`Funding Transaction · Hop ${hopIdx + 1}`}
-                  txid={txid}
-                  accent={HOP_ACCENTS[hopIdx % HOP_ACCENTS.length]}
-                  arrow="→"
-                />
-              )),
-            )}
-            {!report.outgoingContractTxid && !report.incomingContractTxid && report.fundingTxids.flat().length === 0 && (
-              <p className="text-[12px] text-subtle">No transaction data recorded for this swap.</p>
+            {!outgoingContract && !incomingUtxo && utxoState === "done" && (
+              <p className="text-[12px] text-subtle">No UTXO data recorded for this swap.</p>
             )}
           </SectionCard>
 
-          <SectionCard title="Coins">
-            {report.inputUtxoSats.map((sats, i) => (
-              <UtxoRow key={`in-${i}`} label={`Spent ${i + 1}`} amountSats={sats} accent={OUTGOING_ACCENT} />
-            ))}
-            {report.changeUtxoSats.map((sats, i) => (
-              <UtxoRow key={`chg-${i}`} label={`Change ${i + 1}`} amountSats={sats} accent={HOP_ACCENTS[3]} />
-            ))}
-            {incomingUtxo && (
-              <UtxoRow label="Received" amountSats={incomingUtxo.amountSats} accent={HOP_ACCENTS[0]} utxo={incomingUtxo} />
-            )}
-            {incomingUtxo?.address && (
-              <p className="break-all font-mono text-[11px] text-subtle">to {incomingUtxo.address}</p>
-            )}
-            {utxoState !== "done" && (
-              <Button variant="secondary" onClick={loadIncomingUtxo} disabled={utxoState === "loading"}>
-                <RefreshCw size={14} strokeWidth={1.8} className={utxoState === "loading" ? "animate-spin" : ""} />
-                {utxoState === "loading" ? "Reading the chain…" : "Find received coin"}
-              </Button>
-            )}
-            {utxoState === "failed" && (
-              <p className="text-[11.5px] text-danger">Could not reach the chain backend to find the received coin.</p>
-            )}
-            {utxoState === "done" && !incomingUtxo && (
-              <p className="text-[11.5px] text-subtle">
-                No sweep of the incoming contract was found — the coin may not have been swept yet.
-              </p>
-            )}
-            {report.inputUtxoSats.length === 0 && report.changeUtxoSats.length === 0 && (
-              <p className="text-[12px] text-subtle">No coin data recorded for this swap.</p>
-            )}
-          </SectionCard>
-
+          {report.fundingTxids.flat().length > 0 && (
+            <SectionCard title="Funding Transactions">
+              {report.fundingTxids.map((hopTxids, hopIdx) =>
+                hopTxids.map((txid, i) => (
+                  <TxArtifact
+                    key={`${hopIdx}-${i}`}
+                    label={`Hop ${hopIdx + 1}`}
+                    txid={txid}
+                    accent={HOP_ACCENTS[hopIdx % HOP_ACCENTS.length]}
+                    arrow="→"
+                  />
+                )),
+              )}
+            </SectionCard>
+          )}
         </div>
 
         <div className="flex flex-col gap-4">
@@ -384,15 +402,16 @@ export function SwapReportPage() {
           <SectionCard title="Deniability Proof">
             {report.deniabilityProof ? (
               <>
-                {provenOutpoint && (
+                {report.incomingContractOutpoint && (
                   <div className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3.5 py-2">
                     <span className="flex min-w-0 flex-col gap-0.5">
                       <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Proven outpoint</span>
                       <span className="truncate font-mono text-[11px] text-muted">
-                        {truncateMiddle(provenOutpoint.txid, 10, 6)}:{provenOutpoint.vout}
+                        {truncateMiddle(report.incomingContractOutpoint.txid, 10, 6)}:
+                        {report.incomingContractOutpoint.vout}
                       </span>
                     </span>
-                    <ExternalLinkButton txid={provenOutpoint.txid} />
+                    <ExternalLinkButton txid={report.incomingContractOutpoint.txid} />
                   </div>
                 )}
                 <div className="flex items-center gap-2.5">

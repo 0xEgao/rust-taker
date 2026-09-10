@@ -134,6 +134,8 @@ pub async fn get_maker_new_address(
         Ok(NewAddress {
             address,
             address_type: label.to_string(),
+            // Always freshly derived here, so there is nothing to check.
+            verified: true,
         })
     })
     .await

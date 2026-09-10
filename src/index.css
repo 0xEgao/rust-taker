@@ -356,3 +356,30 @@ button {
     animation: none;
   }
 }
+
+/* Finalizing: keys are travelling around a route that is already fully funded, so nothing is
+   moving along any one leg. The whole circuit beats instead. Driven from one class on the
+   container so every edge and node starts its animation in the same commit and stays in phase;
+   opacity only, because `buildCircuit` sizes the ring to avoid node collisions and scaling it
+   would reintroduce them. */
+@keyframes circuit-heartbeat {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.42;
+  }
+}
+
+.circuit-heartbeat svg path,
+.circuit-heartbeat .circuit-node {
+  animation: circuit-heartbeat 1500ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .circuit-heartbeat svg path,
+  .circuit-heartbeat .circuit-node {
+    animation: none;
+  }
+}

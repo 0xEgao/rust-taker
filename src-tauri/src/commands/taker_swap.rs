@@ -11,22 +11,22 @@ use std::time::SystemTime;
 use coinswap::bitcoin::{Amount, OutPoint, Txid};
 use coinswap::protocol::ProtocolVersion;
 use coinswap::taker::swap_tracker::{
-    ExchangeProgress, LegacyExchangeProgress, MakerProgress, SwapPhase, SwapRecord, SwapTracker,
-    TaprootExchangeProgress,
+    ContractResolution, ExchangeProgress, LegacyExchangeProgress, MakerProgress,
+    RecoveryPhase, SwapPhase, SwapRecord, SwapTracker, TaprootExchangeProgress,
 };
 use coinswap::taker::{SwapParams, SwapSummary};
 use coinswap::utill::{estimate_funding_tx_fee_sats, MIN_FEE_RATE};
-use coinswap::wallet::AddressType;
+use coinswap::wallet::{AddressType, UTXOSpendInfo};
 use tauri::{Emitter, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::error::{AppError, ErrorCode};
 use crate::security::operation::{ensure_main_window, SensitiveOperation, SensitiveOperationGuard};
 use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
-    ProtocolVersionDto, RecoveryStatus, RouterFeeInfoDto, RouterMilestoneDto, RouterProgressDto,
-    RouterStageDto, SwapFundingEstimateDto, SwapProgressDto, SwapRequest, SwapSummaryDto,
-    SwapTrackerDto,
+    ProtocolVersionDto, RecoveredContractDto, RecoveryContractDto, RecoveryStatus,
+    SwapPreparationDto, RouterFeeInfoDto, RouterMilestoneDto,
+    RouterProgressDto, RouterStageDto, SwapFundingEstimateDto, SwapProgressDto, SwapRequest,
+    SwapSummaryDto, SwapTrackerDto,
 };
 
 use super::taker_wallet::get_wallet_handle;
@@ -58,16 +58,6 @@ fn to_summary_dto(s: &SwapSummary) -> SwapSummaryDto {
             .collect(),
         total_estimated_fee_sats: s.total_estimated_fee.to_sat(),
         estimated_receive_amount_sats: s.estimated_receive_amount.to_sat(),
-    }
-}
-
-fn phase_label(phase: SwapLifecycle) -> &'static str {
-    match phase {
-        SwapLifecycle::Prepared => "prepared",
-        SwapLifecycle::Running => "running",
-        SwapLifecycle::Recovering => "recovering",
-        SwapLifecycle::Finished => "finished",
-        SwapLifecycle::Failed => "failed",
     }
 }
 
@@ -331,8 +321,8 @@ pub async fn prepare_swap(
     let active_socks_port = *state.active_socks_port.read()?;
     *state.active_swap.lock()? = Some(ActiveSwap {
         swap_id: summary.swap_id,
+        summary: dto.clone(),
         phase: SwapLifecycle::Prepared,
-        prepared: Some(dto.clone()),
         backend_fingerprint: crate::commands::chain_backend::fingerprint(
             &active_backend,
             active_socks_port,
@@ -341,6 +331,38 @@ pub async fn prepare_swap(
         error: None,
     });
     Ok(dto)
+}
+
+/// Progress for a `prepare_swap` still in flight.
+///
+/// Never touches the taker mutex — `prepare_coinswap` is holding it — so this is safe to poll
+/// while preparation blocks. `since` is the second the caller started preparing, which is what
+/// separates this preparation's record from an older incomplete swap's.
+#[tauri::command]
+pub async fn get_swap_preparation(
+    state: tauri::State<'_, AppState>,
+    since: u64,
+) -> Result<Option<SwapPreparationDto>, AppError> {
+    let data_dir = state
+        .data_dir
+        .read()?
+        .clone()
+        .ok_or_else(AppError::not_initialized)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<SwapPreparationDto>, AppError> {
+        let tracker = SwapTracker::load_or_create(&data_dir)?;
+        Ok(tracker
+            .incomplete_swaps()
+            .into_iter()
+            .filter(|r| r.updated_at >= since && r.phase <= SwapPhase::Negotiated)
+            .max_by_key(|r| r.updated_at)
+            .map(|r| SwapPreparationDto {
+                phase: tracker_phase_label(r.phase).to_string(),
+                router_count: r.maker_count,
+                negotiated_count: r.makers.iter().filter(|m| m.negotiated).count(),
+            }))
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
 /// Phase 2: commits funds, can run for hours — dedicated thread, not
@@ -357,16 +379,13 @@ pub async fn start_swap(
         &state.sensitive_operation_active,
         SensitiveOperation::StartSwap,
     )?;
-    let prepared = {
+    // Checked before the preflight below, which is a network round trip: a stale or missing
+    // swap id should fail immediately rather than after one.
+    {
         let guard = state.active_swap.lock()?;
         match guard.as_ref() {
             Some(active)
-                if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared =>
-            {
-                active.prepared.clone().ok_or_else(|| {
-                    AppError::new(ErrorCode::InvalidInput, "prepared swap summary is missing")
-                })?
-            }
+                if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared => {}
             Some(active) if active.phase == SwapLifecycle::Running => {
                 return Err(AppError::swap_in_progress())
             }
@@ -377,7 +396,7 @@ pub async fn start_swap(
                 ))
             }
         }
-    };
+    }
     let preflight_fingerprint = crate::commands::chain_backend::preflight_active(&state).await?;
     let expected_fingerprint = state
         .active_swap
@@ -389,53 +408,6 @@ pub async fn start_swap(
         return Err(AppError::new(
             ErrorCode::BackendRouteChanged,
             "active backend route changed after swap preparation",
-        ));
-    }
-    let route = {
-        let config = state
-            .active_chain_backend
-            .read()?
-            .clone()
-            .ok_or_else(AppError::not_initialized)?;
-        let socks_port = *state.active_socks_port.read()?;
-        crate::commands::chain_backend::route_description(&config, socks_port)
-    };
-    let router_list = prepared
-        .routers
-        .iter()
-        .map(|router| router.address.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let message = format!(
-        "Protocol: {}\nChain data route: {}\nSend: {} sats ({:.8} BTC)\nEstimated receive: {} sats\nEstimated total fee: {} sats\nRouters ({}):\n{}\n\nPreparing did not move funds. Starting now may commit funds for the duration of the swap. Start this swap?",
-        prepared.protocol,
-        route,
-        prepared.send_amount_sats,
-        prepared.send_amount_sats as f64 / 100_000_000.0,
-        prepared.estimated_receive_amount_sats,
-        prepared.total_estimated_fee_sats,
-        prepared.routers.len(),
-        router_list,
-    );
-    let dialog_window = window.clone();
-    let approved = tauri::async_runtime::spawn_blocking(move || {
-        dialog_window
-            .dialog()
-            .message(message)
-            .parent(&dialog_window)
-            .title("Confirm Coinswap")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "Start swap".to_string(),
-                "Cancel".to_string(),
-            ))
-            .blocking_show()
-    })
-    .await
-    .map_err(AppError::internal)?;
-    if !approved {
-        return Err(AppError::authorization_denied(
-            "swap start was not approved",
         ));
     }
     {
@@ -492,14 +464,27 @@ pub async fn start_swap(
                 let _ = app.emit("swap://finished", &swap_id);
             }
             Err(e) => {
-                // ContractsBroadcasted: funds on-chain, crate already started
-                // recovery — still "failed" here, UI routes it to Recovery.
                 let app_err = AppError::from(e);
-                if let Some(active) = active_guard.as_mut() {
-                    active.phase = SwapLifecycle::Failed;
-                    active.error = Some(app_err.message.clone());
+                // Past FundsBroadcast the crate has already spawned its recovery loop, so this is
+                // a handoff rather than a failure: the swap slot is released outright — recovery
+                // has its own page and its own disk-backed status, and leaving it parked here
+                // would keep the Swap page pinned to a swap that is over.
+                if recovery_started(&app_state, &swap_id) {
+                    *active_guard = None;
+                    let _ = app.emit(
+                        "swap://recovering",
+                        RecoveryHandoff {
+                            swap_id: swap_id.clone(),
+                            reason: app_err.message.clone(),
+                        },
+                    );
+                } else {
+                    if let Some(active) = active_guard.as_mut() {
+                        active.phase = SwapLifecycle::Failed;
+                        active.error = Some(app_err.message.clone());
+                    }
+                    let _ = app.emit("swap://failed", &app_err);
                 }
-                let _ = app.emit("swap://failed", &app_err);
             }
         }
     });
@@ -512,34 +497,43 @@ pub fn get_swap_progress(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<SwapProgressDto>, AppError> {
     let guard = state.active_swap.lock()?;
-    // Only Running/Recovering is worth reconciling after a remount — a terminal phase is stale
-    // by definition and would otherwise resurrect the last outcome indefinitely.
+    // Only Running is worth reconciling after a remount — a terminal phase is stale by definition
+    // and would otherwise resurrect the last outcome indefinitely. Recovery is deliberately not
+    // here: it has its own page and its own disk-backed status, and reporting it as swap progress
+    // would drag a remounted Swap page back into a progress view it has already been released from.
     Ok(guard
         .as_ref()
-        .filter(|a| matches!(a.phase, SwapLifecycle::Running | SwapLifecycle::Recovering))
+        .filter(|a| matches!(a.phase, SwapLifecycle::Running))
         .map(|active| SwapProgressDto {
             swap_id: active.swap_id.clone(),
-            phase: phase_label(active.phase).to_string(),
+            summary: active.summary.clone(),
             started_at: active
                 .started_at
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs()),
-            error: active.error.clone(),
         }))
 }
 
-/// Live per-maker detail for the active swap, straight off `<data_dir>/swap_tracker.cbor` —
-/// intended to be polled every couple seconds while a swap is running, same cadence as the old
-/// Electron app's disk-read poll.
+/// Live per-maker detail, straight off `<data_dir>/swap_tracker.cbor` — intended to be polled
+/// every couple seconds while a swap is running, same cadence as the old Electron app's disk-read
+/// poll.
+///
+/// `swap_id` is optional so the recovery page can ask for a swap the app is no longer running:
+/// recovery releases the active-swap slot, and the route it was taking is still what the recovery
+/// view draws.
 #[tauri::command]
 pub async fn get_swap_tracker(
     state: tauri::State<'_, AppState>,
+    swap_id: Option<String>,
 ) -> Result<Option<SwapTrackerDto>, AppError> {
-    let swap_id = state
-        .active_swap
-        .lock()?
-        .as_ref()
-        .map(|a| a.swap_id.clone());
+    let swap_id = match swap_id {
+        Some(id) => Some(id),
+        None => state
+            .active_swap
+            .lock()?
+            .as_ref()
+            .map(|a| a.swap_id.clone()),
+    };
     let Some(swap_id) = swap_id else {
         return Ok(None);
     };
@@ -557,48 +551,218 @@ pub async fn get_swap_tracker(
     .map_err(AppError::internal)?
 }
 
-/// Manual backout trigger; also works cross-session after a crash.
+/// Starts recovery for contracts the automatic path never picked up — a loop that failed to spawn,
+/// or a crash before `recover_active_swap` ran.
+///
+/// Refuses while a loop is already running. `recover_active_swap` replaces the taker's
+/// `recovery_loop`, and dropping the old one joins its thread mid-pass, which would hold the taker
+/// mutex for the length of a chain round trip for no gain — the running loop already retries every
+/// minute.
 #[tauri::command]
 pub async fn recover_swap(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
     let taker = state.taker.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
         let mut guard = try_lock_taker(&taker)?;
         let taker = guard.as_mut().ok_or_else(AppError::not_initialized)?;
+        if !taker.is_recovery_complete() {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                "recovery is already running",
+            ));
+        }
         Ok(taker.recover_active_swap()?)
     })
     .await
-    .map_err(AppError::internal)??;
-
-    if let Some(active) = state.active_swap.lock()?.as_mut() {
-        active.phase = SwapLifecycle::Recovering;
-    }
-    Ok(())
+    .map_err(AppError::internal)?
 }
 
-#[tauri::command]
-pub fn get_recovery_status(state: tauri::State<'_, AppState>) -> Result<RecoveryStatus, AppError> {
-    let taker_guard = try_lock_taker(&state.taker)?;
-    let taker = taker_guard.as_ref().ok_or_else(AppError::not_initialized)?;
-    let complete = taker.is_recovery_complete();
+/// The taker's own refund delay, in blocks: `REFUND_LOCKTIME_BASE + REFUND_LOCKTIME_STEP *
+/// maker_count` from `coinswap::taker::api` (20 and 20 at the time of writing — both `pub(crate)`
+/// there, so they are mirrored rather than imported, and both change under the crate's
+/// `integration-test` feature). The taker's is one step beyond the first maker's on purpose: its
+/// refund must be the last to mature so every maker can act first.
+fn refund_locktime_blocks(router_count: usize) -> u32 {
+    20 + 20 * router_count as u32
+}
 
-    let wallet = state
-        .wallet
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryHandoff {
+    swap_id: String,
+    reason: String,
+}
+
+/// Whether the crate put this swap into recovery rather than aborting it cleanly.
+///
+/// The tracker record is the authority: the crate removes it entirely for a failure before
+/// `FundsBroadcast` (nothing on-chain, nothing to recover) and marks it `Failed` once it has
+/// spawned a recovery loop.
+fn recovery_started(state: &AppState, swap_id: &str) -> bool {
+    let Ok(Some(data_dir)) = state.data_dir.read().map(|d| d.clone()) else {
+        return false;
+    };
+    let Ok(tracker) = SwapTracker::load_or_create(&data_dir) else {
+        return false;
+    };
+    tracker
+        .get_record(swap_id)
+        .is_some_and(|r| r.phase >= SwapPhase::FundsBroadcast)
+}
+
+/// Recovery state.
+///
+/// Built from the wallet's live contract UTXOs first and the tracker second, because that is the
+/// only order that describes a recovery in progress: the tracker records an outcome per contract
+/// *after* it is claimed, so during the wait — which is the whole of it — its outcome vectors are
+/// empty. The UTXOs are what actually hold the money.
+///
+/// Never takes the taker mutex: a running swap holds that for hours, and this is exactly when the
+/// user most needs to see whether an earlier swap's funds have come back.
+#[tauri::command]
+pub async fn get_recovery_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<RecoveryStatus, AppError> {
+    let wallet = get_wallet_handle(&state)?;
+    let data_dir = state
+        .data_dir
         .read()?
         .clone()
         .ok_or_else(AppError::not_initialized)?;
-    let pending_contract_count = wallet.read()?.list_live_contract_spend_info().len();
-
-    let recovering = state
+    // A healthy swap in flight holds its funds in contracts too, so a live contract UTXO is not
+    // on its own evidence of recovery.
+    let swap_running = state
         .active_swap
         .lock()?
         .as_ref()
-        .map(|a| a.phase == SwapLifecycle::Recovering)
-        .unwrap_or(false)
-        || (pending_contract_count > 0 && !complete);
+        .is_some_and(|a| matches!(a.phase, SwapLifecycle::Running));
 
-    Ok(RecoveryStatus {
-        recovering,
-        complete,
-        pending_contract_count,
+    tauri::async_runtime::spawn_blocking(move || -> Result<RecoveryStatus, AppError> {
+        let (live, locked_sats) = {
+            let guard = wallet.read()?;
+            let live = guard.list_live_contract_spend_info();
+            let locked_sats = guard.get_balances()?.contract.to_sat();
+            (live, locked_sats)
+        };
+
+        let tracker = SwapTracker::load_or_create(&data_dir)?;
+        // The one record with contracts left to resolve. `incomplete_swaps` already excludes
+        // anything cleaned up, and the crate recovers all outstanding contracts together rather
+        // than per swap, so the newest failed record is the one to report against.
+        let record = tracker
+            .incomplete_swaps()
+            .into_iter()
+            .filter(|r| {
+                r.phase == SwapPhase::Failed || r.recovery.phase != RecoveryPhase::NotStarted
+            })
+            .max_by_key(|r| r.updated_at)
+            .cloned();
+
+        // The taker's own refund delay. Without a record there is no router count to derive it
+        // from, so a countdown is simply not offered.
+        let offset = record.as_ref().map(|r| refund_locktime_blocks(r.maker_count));
+
+        let mut pending: Vec<RecoveryContractDto> = live
+            .iter()
+            .map(|(utxo, info)| {
+                let timelocked = matches!(info, UTXOSpendInfo::TimelockContract { .. });
+                RecoveryContractDto {
+                    outpoint: crate::types::Outpoint {
+                        txid: utxo.txid.to_string(),
+                        vout: utxo.vout,
+                    },
+                    amount_sats: utxo.amount.to_sat(),
+                    claim_path: if timelocked { "timelock" } else { "hashlock" }.to_string(),
+                    confirmations: utxo.confirmations,
+                    blocks_remaining: offset.filter(|_| timelocked).map(|offset| {
+                        offset.saturating_sub(utxo.confirmations)
+                    }),
+                }
+            })
+            .collect();
+        // Longest wait last, so the countdown headline and the list agree on what is holding
+        // things up.
+        pending.sort_by_key(|c| c.blocks_remaining.unwrap_or(0));
+
+        let blocks_remaining = pending
+            .iter()
+            .filter_map(|c| c.blocks_remaining)
+            .max()
+            .filter(|blocks| *blocks > 0);
+
+        let Some(record) = record else {
+            return Ok(RecoveryStatus {
+                // Contracts with no failed record behind them are only strandable once nothing
+                // is running — that is the crashed-before-persisting case.
+                active: !swap_running && !live.is_empty(),
+                swap_id: None,
+                phase: recovery_phase_label(RecoveryPhase::NotStarted).to_string(),
+                failure_reason: None,
+                failed_at_phase: None,
+                router_count: 0,
+                send_amount_sats: 0,
+                pending,
+                resolved: Vec::new(),
+                blocks_remaining,
+                locked_sats,
+                updated_at: None,
+            });
+        };
+
+        let resolved: Vec<RecoveredContractDto> = record
+            .recovery
+            .incoming
+            .iter()
+            .chain(record.recovery.outgoing.iter())
+            .map(|o| RecoveredContractDto {
+                contract_txid: o.contract_txid.to_string(),
+                resolution: resolution_label(&o.resolution).to_string(),
+                spending_txid: o.spending_txid.map(|t| t.to_string()),
+            })
+            .collect();
+
+        // `RecoveryPhase::CleanedUp` is the authority on being finished, not an empty contract
+        // list: an incoming contract whose preimage was never stamped is invisible to
+        // `list_live_contract_spend_info`, so a zero count can precede the real end of recovery.
+        // Deliberately not gated on a running swap: a failed record is direct evidence, and an
+        // earlier swap's recovery has to stay visible while a new swap runs.
+        let active = record.recovery.phase < RecoveryPhase::CleanedUp;
+
+        Ok(RecoveryStatus {
+            active,
+            swap_id: Some(record.swap_id.clone()),
+            phase: recovery_phase_label(record.recovery.phase).to_string(),
+            failure_reason: record.failure_reason.clone(),
+            failed_at_phase: record.failed_at_phase.map(|p| tracker_phase_label(p).to_string()),
+            router_count: record.maker_count,
+            send_amount_sats: record.send_amount_sat,
+            pending,
+            resolved,
+            blocks_remaining,
+            locked_sats,
+            updated_at: Some(record.updated_at),
+        })
     })
+    .await
+    .map_err(AppError::internal)?
+}
+
+fn resolution_label(r: &ContractResolution) -> &'static str {
+    match r {
+        ContractResolution::Hashlock => "hashlock",
+        ContractResolution::Timelock => "timelock",
+        ContractResolution::KeyPath => "key_path",
+        ContractResolution::Discarded => "discarded",
+        ContractResolution::Unresolved => "unresolved",
+    }
+}
+
+fn recovery_phase_label(p: RecoveryPhase) -> &'static str {
+    match p {
+        RecoveryPhase::NotStarted => "not_started",
+        RecoveryPhase::PreimageStamped => "preimage_stamped",
+        RecoveryPhase::SwapcoinsPersisted => "swapcoins_persisted",
+        RecoveryPhase::IncomingRecovered => "incoming_recovered",
+        RecoveryPhase::OutgoingRecovered => "outgoing_recovered",
+        RecoveryPhase::CleanedUp => "cleaned_up",
+    }
 }

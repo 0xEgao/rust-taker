@@ -13,7 +13,6 @@ import {
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
-// No recovery flow exists yet; recovery_* rows (if any) still show under "All".
 type StatusFilter = "all" | "success" | "failed";
 type SortField = "time" | "amount";
 
@@ -21,12 +20,19 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
   success: "Success",
   recovery_hashlock: "Recovered (hashlock)",
   recovery_timelock: "Recovered (timelock)",
+  // No report was written for these — the swap tracker is all there is. See `SwapStatus`.
+  recovered: "Interrupted · recovered",
+  interrupted: "Interrupted · recovering",
+  unfinished: "Never finished",
   failed: "Failed",
 };
 const STATUS_TONE: Record<SwapStatus, "success" | "warning" | "danger"> = {
   success: "success",
   recovery_hashlock: "warning",
   recovery_timelock: "warning",
+  recovered: "warning",
+  interrupted: "warning",
+  unfinished: "warning",
   failed: "danger",
 };
 
@@ -53,20 +59,28 @@ export function SwapReportsPage() {
   }, []);
 
   const filtered = useMemo(() => {
-    const rows = (reports ?? []).filter((r) => statusFilter === "all" || r.status === statusFilter);
+    const rows = (reports ?? []).filter((r) =>
+      statusFilter === "all"
+        ? true
+        : statusFilter === "success"
+          ? r.status === "success"
+          : r.status !== "success",
+    );
     const sorted = [...rows];
     const dir = sortDir[sortField] === "asc" ? 1 : -1;
-    if (sortField === "time") sorted.sort((a, b) => (a.endTimestamp - b.endTimestamp) * dir);
+    if (sortField === "time") sorted.sort((a, b) => (a.startTimestamp - b.startTimestamp) * dir);
     else sorted.sort((a, b) => (a.outgoingAmountSats - b.outgoingAmountSats) * dir);
     return sorted;
   }, [reports, statusFilter, sortField, sortDir]);
 
   const stats = useMemo(() => {
     const all = reports ?? [];
-    const failed = all.filter((r) => r.status === "failed").length;
+    // Anything that isn't a success. An interrupted swap has no report of its own, so counting
+    // only the report file's `failed` reported zero while money was still in a contract.
+    const unsuccessful = all.filter((r) => r.status !== "success").length;
     const totalVolume = all.reduce((sum, r) => sum + r.outgoingAmountSats, 0);
     const totalFees = all.reduce((sum, r) => sum + r.feePaidSats, 0);
-    return { total: all.length, failed, totalVolume, totalFees };
+    return { total: all.length, unsuccessful, totalVolume, totalFees };
   }, [reports]);
 
   return (
@@ -90,7 +104,11 @@ export function SwapReportsPage() {
             className="shrink-0"
             items={[
               { label: "Total reports", value: String(stats.total) },
-              { label: "Failed", value: String(stats.failed), tone: stats.failed > 0 ? "danger" : "foreground" },
+              {
+                label: "Didn't complete",
+                value: String(stats.unsuccessful),
+                tone: stats.unsuccessful > 0 ? "warning" : "foreground",
+              },
               { label: "Total volume", value: <SatsAmount sats={stats.totalVolume} />, tone: "primary" },
               { label: "Total fees", value: <SatsAmount sats={stats.totalFees} /> },
             ]}
@@ -104,7 +122,7 @@ export function SwapReportsPage() {
               options={[
                 { value: "all", label: "All" },
                 { value: "success", label: "Success" },
-                { value: "failed", label: "Failed" },
+                { value: "failed", label: "Didn't complete" },
               ]}
             />
             <SortToggle
@@ -137,23 +155,49 @@ export function SwapReportsPage() {
               )}
               {filtered.map((r) => {
                 const Icon = SWAP_STATUS_ICON[r.status];
-                return (
-                  <Link
-                    key={r.swapId}
-                    to={`/swap/reports/${encodeURIComponent(r.swapId)}`}
-                    className="grid cursor-pointer grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] items-center gap-3 px-4.5 py-3 text-left outline-none transition-colors duration-200 hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
-                  >
+                const cells = (
+                  <>
                     <StatusChip tone={STATUS_TONE[r.status]} shape="tile" className="h-[34px] w-[34px] justify-center px-0"><Icon size={17} strokeWidth={2} /></StatusChip>
                     <span className="flex min-w-0 flex-col gap-1">
                       <span className="truncate font-mono text-[12px] text-muted">{truncateMiddle(r.swapId, 10, 6)}</span>
                       <StatusChip tone={STATUS_TONE[r.status]} className="self-start">{STATUS_LABEL[r.status]}</StatusChip>
                     </span>
-                    <span className="font-mono text-[11.5px] text-subtle">{formatRelativeTime(r.endTimestamp)}</span>
-                    <span className="font-mono text-[11.5px] text-subtle">{formatDuration(r.endTimestamp - r.startTimestamp)}</span>
+                    <span className="font-mono text-[11.5px] text-subtle">
+                      {r.endTimestamp === undefined
+                        ? `started ${formatRelativeTime(r.startTimestamp)}`
+                        : formatRelativeTime(r.endTimestamp)}
+                    </span>
+                    <span className="font-mono text-[11.5px] text-subtle">
+                      {r.endTimestamp === undefined ? "—" : formatDuration(r.endTimestamp - r.startTimestamp)}
+                    </span>
                     <SatsAmount sats={r.outgoingAmountSats} className="text-[12.5px] font-semibold text-foreground" />
                     <span className="font-mono text-[12px] text-foreground">{r.routersCount}</span>
-                    <SatsAmount sats={r.feePaidSats} className="text-[12px] text-warning" />
+                    {r.reported ? (
+                      <SatsAmount sats={r.feePaidSats} className="text-[12px] text-warning" />
+                    ) : (
+                      <span className="font-mono text-[12px] text-subtle">—</span>
+                    )}
+                  </>
+                );
+                const grid =
+                  "grid grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] items-center gap-3 px-4.5 py-3 text-left outline-none transition-colors duration-200";
+                // A tracker-only row has no report to open, so it is not a link.
+                return r.reported ? (
+                  <Link
+                    key={r.swapId}
+                    to={`/swap/reports/${encodeURIComponent(r.swapId)}`}
+                    className={`${grid} cursor-pointer hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]`}
+                  >
+                    {cells}
                   </Link>
+                ) : (
+                  <div
+                    key={r.swapId}
+                    title="No report was written for this swap — these are the figures the swap tracker kept"
+                    className={`${grid} opacity-70`}
+                  >
+                    {cells}
+                  </div>
                 );
               })}
             </div>

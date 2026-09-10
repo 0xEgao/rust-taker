@@ -70,7 +70,12 @@ export function SwapCircuit({
 
   return (
     <div ref={host} className="w-full">
-    <div className="relative mx-auto" style={{ width: canvas, height: canvas }}>
+    <div
+      className={`relative mx-auto ${
+        view.act === "finalizing" && !reduceMotion ? "circuit-heartbeat" : ""
+      }`}
+      style={{ width: canvas, height: canvas }}
+    >
       <svg
         width={canvas}
         height={canvas}
@@ -89,9 +94,6 @@ export function SwapCircuit({
             onSelect={onSelect}
           />
         ))}
-        {view.act === "unlock" && !reduceMotion && (
-          <KeyRelay geo={geo} focusIndex={view.focusIndex ?? 0} />
-        )}
       </svg>
 
       {view.hops.map((hop) => (
@@ -251,20 +253,6 @@ function CoinToken({ d, tone }: { d: string; tone: Tone }) {
  * back and goes to router 2, and so on. It is the conceptual heart of the protocol, so it gets
  * its own glyph and accent rather than reusing the coin token.
  */
-function KeyRelay({ geo, focusIndex }: { geo: CircuitGeometry; focusIndex: number }) {
-  const edge = geo.edges[Math.min(focusIndex, geo.edges.length - 1)];
-  return (
-    <motion.circle
-      key={focusIndex}
-      r={5}
-      fill="var(--color-warning)"
-      style={{ offsetPath: `path("${edge.d}")` }}
-      initial={{ offsetDistance: "0%", opacity: 0 }}
-      animate={{ offsetDistance: "100%", opacity: [0, 1, 1, 0] }}
-      transition={{ duration: 1.1, ease: "easeInOut", repeat: Infinity, repeatDelay: 0.4 }}
-    />
-  );
-}
 
 function WalletNode({
   geo,
@@ -278,11 +266,11 @@ function WalletNode({
   const slot = geo.slots[0];
   const width = geo.walletWidth;
   const height = geo.walletHeight;
-  const done = view.focusIndex === null && !view.failed;
+  const done = view.complete && !view.failed;
 
   return (
     <motion.div
-      className="absolute flex flex-col items-center"
+      className="circuit-node absolute flex flex-col items-center"
       style={{ left: slot.center.x - width / 2, top: slot.center.y - height / 2, width }}
       onMouseEnter={() => onHover?.({ kind: "wallet", index: -1 })}
       onMouseLeave={() => onHover?.(null)}
@@ -336,7 +324,7 @@ function RouterNode({
   return (
     <motion.button
       type="button"
-      className="absolute flex flex-col items-center gap-1 focus:outline-none"
+      className="circuit-node absolute flex flex-col items-center gap-1 focus:outline-none"
       style={{ left: slot.center.x - s / 2, top: slot.center.y - s / 2, width: s }}
       initial={reduceMotion ? false : { opacity: 0, scale: 0.8 }}
       animate={{ opacity: 1, scale: 1 }}
@@ -461,7 +449,7 @@ function Sub({ children }: { children: ReactNode }) {
 }
 
 function StageBody({ view }: { view: CircuitView }) {
-  const done = view.focusIndex === null && !view.failed;
+  const done = view.complete && !view.failed;
   const tone = view.failed
     ? "var(--color-danger)"
     : done
@@ -472,7 +460,11 @@ function StageBody({ view }: { view: CircuitView }) {
     ? `Stopped at hop ${(view.focusIndex ?? 0) + 1} of ${view.routerCount + 1}`
     : done
       ? `${view.routerCount + 1} hops through ${view.routerCount} routers`
-      : `Hop ${(view.focusIndex ?? 0) + 1} of ${view.routerCount + 1}`;
+      : view.focusIndex === null
+        // Every hop has settled but the swap has not finished — the incoming contract is still
+        // being swept — so there is no hop to count.
+        ? `${view.routerCount + 1} hops settled`
+        : `Hop ${(view.focusIndex ?? 0) + 1} of ${view.routerCount + 1}`;
 
   return (
     <>
@@ -506,9 +498,11 @@ function StageBody({ view }: { view: CircuitView }) {
 }
 
 function NodeBody({ hop, view }: { hop: HopView; view: CircuitView }) {
-  // Only what is left to do, plus a count: the full list runs to 14 steps under legacy, which
-  // would push this card down over the router labels inside the ring.
-  const remaining = hop.milestones.filter((m) => !m.done);
+  // The per-maker protocol flags are deliberately not listed. There are eight of them under
+  // taproot and fourteen under legacy, the panel grew tall enough to sit over the router labels
+  // inside the ring, and the count could not move honestly anyway: taproot writes all five of a
+  // maker's exchange flags in one go after its confirmation wait, so "1 of 8" stood still for
+  // the longest stretch of the hop. The stage line above says the same thing in one phrase.
   return (
     <>
       <Heading tone={ROUTER_STROKE[hop.tone]}>{hop.label}</Heading>
@@ -518,25 +512,6 @@ function NodeBody({ hop, view }: { hop: HopView; view: CircuitView }) {
       <span className="mt-1 max-w-full break-all text-center font-mono text-[9px] text-muted">
         {hop.address}
       </span>
-      {hop.milestones.length > 0 && (
-        <div className="mt-2 w-full border-t border-line pt-2">
-          <Row
-            label="Steps"
-            value={`${hop.milestones.length - remaining.length} of ${hop.milestones.length} done`}
-          />
-          {remaining.slice(0, 3).map((m) => (
-            <div key={m.key} className="flex items-center gap-1 py-0.5">
-              <span className="text-subtle">◌</span>
-              <span className="font-mono text-[9px] text-subtle">{m.label}</span>
-            </div>
-          ))}
-          {remaining.length > 3 && (
-            <span className="font-mono text-[9px] text-subtle">
-              +{remaining.length - 3} more
-            </span>
-          )}
-        </div>
-      )}
       {hop.fee && (
         <div className="mt-1 w-full border-t border-line pt-2">
           <Row label="Fee" value={`${hop.fee.estimatedFeeSats.toLocaleString()} sats`} />

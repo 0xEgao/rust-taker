@@ -36,11 +36,6 @@ export interface BackendStatus {
   verificationProgress?: number;
 }
 
-export interface VersionInfo {
-  appVersion: string;
-  coinswapSource: string;
-}
-
 // bootstrapProgress is informational only — coinswap's own init doesn't gate on it.
 export interface TorStatus {
   reachable: boolean;
@@ -57,6 +52,7 @@ export interface TorStatus {
 /** Work a quit would interrupt rather than finish. Payload of `app://quit-blocked`. */
 export interface QuitBlockers {
   swapRunning: boolean;
+  recoveryRunning: boolean;
   runningRouters: string[];
 }
 
@@ -72,7 +68,6 @@ export interface InitConfig {
 export interface InitResult {
   walletName: string;
   dataDir: string;
-  recoveryPending: boolean;
 }
 
 export interface WalletInfo {
@@ -152,6 +147,8 @@ export type AddressType = "p2wpkh" | "p2tr";
 export interface NewAddress {
   address: string;
   addressType: string;
+  /** False for a re-offered cached address that hasn't been checked for payments yet. */
+  verified: boolean;
 }
 
 export interface AddressValidation {
@@ -369,13 +366,12 @@ export interface SwapSummary {
 }
 
 // Coarse in-memory lifecycle — for live per-router detail, see SwapTrackerProgress/getSwapTracker.
-export type SwapPhase = "prepared" | "running" | "recovering" | "finished" | "failed";
 
 export interface SwapProgress {
   swapId: string;
-  phase: SwapPhase;
   startedAt?: number;
-  error?: string;
+  /** Replayed so a remount can restore what only `prepareSwap` ever returned. */
+  summary: SwapSummary;
 }
 
 /** One of the crate's own per-maker flags, by field name — see `MILESTONE_LABEL` for the prose. */
@@ -424,23 +420,92 @@ export interface SwapTrackerProgress {
   routers: RouterProgress[];
 }
 
+/** How far a blocking `prepareSwap` has got, read off the crate's own tracker file. */
+export interface SwapPreparation {
+  phase: "routers_discovered" | "negotiated";
+  routerCount: number;
+  /** Routers that have agreed terms so far. */
+  negotiatedCount: number;
+}
+
+export type ContractResolution =
+  | "hashlock"
+  | "timelock"
+  | "key_path"
+  | "discarded"
+  | "unresolved";
+
+export type RecoveryPhase =
+  | "not_started"
+  | "preimage_stamped"
+  | "swapcoins_persisted"
+  | "incoming_recovered"
+  | "outgoing_recovered"
+  | "cleaned_up";
+
+/** A contract still holding funds, from the wallet's live UTXO set. */
+export interface RecoveryContract {
+  outpoint: Outpoint;
+  amountSats: number;
+  /** `hashlock` is spendable once confirmed; `timelock` waits out the refund delay. */
+  claimPath: "hashlock" | "timelock";
+  confirmations: number;
+  /** Blocks still to wait. Timelock only. */
+  blocksRemaining?: number;
+}
+
+/** A contract the recovery loop has already claimed back. */
+export interface RecoveredContract {
+  contractTxid: string;
+  resolution: ContractResolution;
+  spendingTxid?: string;
+}
+
 export interface RecoveryStatus {
-  recovering: boolean;
-  complete: boolean;
-  pendingContractCount: number;
+  active: boolean;
+  swapId?: string;
+  phase: RecoveryPhase;
+  failureReason?: string;
+  /** Where the swap stopped — decides whether there is an incoming leg at all. */
+  failedAtPhase?: TrackerPhase;
+  routerCount: number;
+  sendAmountSats: number;
+  /** Contracts still holding funds. */
+  pending: RecoveryContract[];
+  /** Contracts already claimed back. */
+  resolved: RecoveredContract[];
+  /** The longest wait left across every pending timelock contract. */
+  blocksRemaining?: number;
+  lockedSats: number;
+  updatedAt?: number;
 }
 
 // ---------------------------------------------------------------------------
 // Reports
 // ---------------------------------------------------------------------------
 
-export type SwapStatus = "success" | "recovery_hashlock" | "recovery_timelock" | "failed";
+/**
+ * The first four come from the report file. The last three are synthesised from the swap tracker
+ * for a swap that never got a report — the process died mid-swap, so `start_coinswap`'s failure
+ * arm never ran and `cleanup_incomplete` marked it Failed at the next launch without writing one.
+ */
+export type SwapStatus =
+  | "success"
+  | "recovery_hashlock"
+  | "recovery_timelock"
+  | "failed"
+  | "interrupted"
+  | "recovered"
+  | "unfinished";
 
 export interface SwapReportSummary {
   swapId: string;
   status: SwapStatus;
+  /** False when the row came from the tracker, so only its coarse figures are known. */
+  reported: boolean;
   startTimestamp: number;
-  endTimestamp: number;
+  /** Absent on a tracker-derived row: the swap has no recorded end, only a start. */
+  endTimestamp?: number;
   outgoingAmountSats: number;
   receivedAmountSats: number;
   feePaidSats: number;
@@ -484,12 +549,12 @@ export interface SwapReportDetail {
   routersCount: number;
   routerAddresses: string[];
   routerFeeInfo: ReportRouterFee[];
-  /** Amounts of the wallet coins this swap consumed; the report records no outpoint for them. */
-  inputUtxoSats: number[];
-  /** Amounts of the change coins the swap returned to the regular wallet. */
-  changeUtxoSats: number[];
   /** The exact outpoint verify_deniability checks on-chain. */
-  provenOutpoint: Outpoint | null;
+  /** The contract UTXO this wallet funded — an outpoint, since a Taproot contract output is not
+   *  necessarily vout 0. Absent for swaps whose report carries no deniability proof. */
+  outgoingContractOutpoint?: Outpoint;
+  /** The contract UTXO the route paid back; also the outpoint `verifyDeniability` checks. */
+  incomingContractOutpoint?: Outpoint;
   /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */
   deniabilityProof: Record<string, unknown> | null;
 }

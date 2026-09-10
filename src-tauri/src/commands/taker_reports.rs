@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use coinswap::bitcoin::{Address, Txid};
-use coinswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport};
+use coinswap::taker::swap_tracker::{RecoveryPhase, SwapPhase, SwapRecord};
+use coinswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport, UTXOSpendInfo};
 
 use crate::commands::chain_backend;
 use crate::error::{AppError, ErrorCode};
@@ -74,29 +75,98 @@ fn load_report_file(path: &PathBuf) -> Result<SwapReportFile, AppError> {
         .map_err(|e| AppError::internal(format!("failed to parse {}: {e}", path.display())))
 }
 
+/// Every record in `swap_tracker.cbor`, deserialised here rather than through `SwapTracker`.
+///
+/// Its own `incomplete_swaps()` is the only enumeration the crate exposes, and it deliberately
+/// excludes a swap that failed and was then recovered — which is exactly the case that has no
+/// report file entry either, so those swaps would be invisible in both places. The container is
+/// one field, and `SwapRecord` is public and `Deserialize`, so this reads the same bytes the
+/// crate wrote. A shape change upstream degrades to "report file only" rather than an error.
+fn tracker_records(data_dir: &Path) -> Vec<SwapRecord> {
+    #[derive(serde::Deserialize)]
+    struct TrackerFile {
+        swaps: std::collections::HashMap<String, SwapRecord>,
+    }
+    let path = data_dir.join("swap_tracker.cbor");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    match serde_cbor::from_slice::<TrackerFile>(&bytes) {
+        Ok(file) => file.swaps.into_values().collect(),
+        Err(error) => {
+            log::warn!("could not read {}: {error:?}", path.display());
+            Vec::new()
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn list_swap_reports(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<SwapReportSummary>, AppError> {
     let path = resolve_report_path(&state)?;
+    let data_dir = state
+        .data_dir
+        .read()?
+        .clone()
+        .ok_or_else(AppError::not_initialized)?;
     let file = tauri::async_runtime::spawn_blocking(move || load_report_file(&path))
         .await
         .map_err(AppError::internal)??;
 
-    Ok(file
+    let mut rows: Vec<SwapReportSummary> = file
         .taker
         .iter()
         .map(|r| SwapReportSummary {
             swap_id: r.swap_id.clone(),
             status: status_label(&r.status).to_string(),
+            reported: true,
             start_timestamp: r.start_timestamp,
-            end_timestamp: r.end_timestamp,
+            end_timestamp: Some(r.end_timestamp),
             outgoing_amount_sats: r.outgoing_amount,
             received_amount_sats: r.outgoing_amount.saturating_sub(r.fee_paid),
             fee_paid_sats: r.fee_paid,
             routers_count: r.makers_count,
         })
-        .collect())
+        .collect();
+
+    // A report only gets written from inside `start_coinswap`. A swap the process never returned
+    // from — the app was closed, or it crashed — is marked Failed by `cleanup_incomplete` at the
+    // next launch, which writes no report at all. Those swaps really happened and may still be
+    // holding funds, so listing only the report file understates what the wallet has done and
+    // reports "0 failed" while money sits in a contract.
+    let reported: std::collections::HashSet<String> =
+        rows.iter().map(|r| r.swap_id.clone()).collect();
+    for record in tracker_records(&data_dir) {
+        if reported.contains(&record.swap_id) {
+            continue;
+        }
+        let status = if record.phase == SwapPhase::Completed {
+            "success"
+        } else if record.phase == SwapPhase::Failed {
+            if record.recovery.phase >= RecoveryPhase::CleanedUp {
+                "recovered"
+            } else {
+                "interrupted"
+            }
+        } else {
+            "unfinished"
+        };
+        rows.push(SwapReportSummary {
+            swap_id: record.swap_id.clone(),
+            status: status.to_string(),
+            reported: false,
+            start_timestamp: record.created_at,
+            end_timestamp: None,
+            outgoing_amount_sats: record.send_amount_sat,
+            // The tracker keeps no fee figures, so nothing is invented for them.
+            received_amount_sats: 0,
+            fee_paid_sats: 0,
+            routers_count: record.maker_count,
+        });
+    }
+    rows.sort_by_key(|r| r.start_timestamp);
+    Ok(rows)
 }
 
 #[tauri::command]
@@ -133,13 +203,21 @@ pub async fn get_swap_report(
         })
         .collect();
 
-    let proven_outpoint = r.deniability_proof.as_ref().map(|p| {
-        let op = p.proven_outpoint();
-        Outpoint {
-            txid: op.txid.to_string(),
-            vout: op.vout,
-        }
-    });
+    // Both sides of the route as outpoints. `proven_outpoint` is the incoming contract — the one
+    // `verify_deniability` checks on-chain — and `outgoing_swapcoin` is what this wallet paid in.
+    let to_outpoint = |op: coinswap::bitcoin::OutPoint| Outpoint {
+        txid: op.txid.to_string(),
+        vout: op.vout,
+    };
+    let incoming_contract_outpoint = r
+        .deniability_proof
+        .as_ref()
+        .map(|p| to_outpoint(p.proven_outpoint()));
+    let outgoing_contract_outpoint = r
+        .deniability_proof
+        .as_ref()
+        .and_then(|p| p.outgoing_swapcoin)
+        .map(to_outpoint);
     // Raw pass-through — see the field's doc comment in types.rs for why this isn't hand-mirrored.
     let deniability_proof = r
         .deniability_proof
@@ -165,9 +243,8 @@ pub async fn get_swap_report(
         routers_count: r.makers_count,
         router_addresses: r.maker_addresses,
         router_fee_info,
-        input_utxo_sats: r.input_utxos,
-        change_utxo_sats: r.output_change_amounts,
-        proven_outpoint,
+        outgoing_contract_outpoint,
+        incoming_contract_outpoint,
         deniability_proof,
     })
 }
@@ -196,6 +273,10 @@ pub async fn verify_deniability(
 /// walks the chain instead — the sweep is the transaction spending the incoming contract
 /// outpoint, and its output is the coin. Costs a chain round-trip per candidate, so it is a
 /// separate on-demand command rather than part of `get_swap_report`.
+/// Chain round-trips this lookup is willing to spend; the closest-valued candidate is almost
+/// always the coin, so this only bounds a wallet that has accumulated many unspent sweeps.
+const MAX_SWEPT_CANDIDATES: usize = 8;
+
 #[tauri::command]
 pub async fn get_incoming_swap_utxo(
     state: tauri::State<'_, AppState>,
@@ -242,19 +323,29 @@ pub async fn get_incoming_swap_utxo(
             (None, None) => return Ok(None),
         };
 
-        // Carries the wallet's own `vout` so the receiving output is read, not guessed —
-        // a sweep's output index is not guaranteed to be 0.
+        // Deliberately not `get_transactions`: the incoming contract's script is watched
+        // (`Wallet::watch_script`), so Electrum values the sweep's input as spent-by-us, marks
+        // the whole transaction a send, and then skips its output back to us — the sweep is
+        // absent from wallet history entirely. The crate already tags the resulting coin
+        // `SweptCoin` in the local UTXO cache, which costs no round-trip at all.
         let (wallet_name, candidates) = {
             let w = wallet.read()?;
-            let txs = w.get_transactions(None, None)?;
-            // The sweep lands while the swap runs, so the whole wallet history is not worth
-            // fetching raw; `start_timestamp` bounds it to a handful of transactions.
-            let received: Vec<(Txid, u32)> = txs
+            // `fee_paid` includes the funding transaction's mining fee, which left the input
+            // rather than the contract, so the report's figure lands near the coin without
+            // equalling it. It only orders the candidates — the contract-outpoint check below
+            // is what identifies the coin.
+            let target = report.outgoing_amount.saturating_sub(report.fee_paid);
+            let mut swept: Vec<(u64, Txid, u32)> = w
+                .list_all_utxo_spend_info()
                 .into_iter()
-                .filter(|tx| tx.info.time >= report.start_timestamp)
-                .map(|tx| (tx.info.txid, tx.detail.vout))
+                .filter(|(_, info)| matches!(info, UTXOSpendInfo::SweptCoin { .. }))
+                .map(|(utxo, _)| (utxo.amount.to_sat().abs_diff(target), utxo.txid, utxo.vout))
                 .collect();
-            (w.get_name().to_string(), received)
+            swept.sort_unstable();
+            swept.truncate(MAX_SWEPT_CANDIDATES);
+            let ordered: Vec<(Txid, u32)> =
+                swept.into_iter().map(|(_, txid, vout)| (txid, vout)).collect();
+            (w.get_name().to_string(), ordered)
         };
 
         let backend = AnyBlockchain::from_config(&chain_backend::resolve_from(

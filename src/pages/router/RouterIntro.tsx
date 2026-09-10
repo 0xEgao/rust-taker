@@ -41,6 +41,13 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
   const malformed = trimmed.length > 0 && !ROUTER_ID_PATTERN.test(trimmed);
   const passwordError = validateNewPassword(password, passwordConfirm);
 
+  // Same reason as AddRouterPage: the button alone cannot say why it will not press.
+  const blockedReason = !trimmed
+    ? "Enter a router name to continue."
+    : malformed
+      ? "Fix the router name to continue."
+      : (passwordError ?? null);
+
   async function create() {
     if (!trimmed || malformed || passwordError) return;
     setStage("creating");
@@ -111,6 +118,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                 onKeyDown={(e) => e.key === "Enter" && void create()}
                 placeholder="my-router"
                 autoFocus
+                required
                 error={malformed ? "Letters, numbers, hyphens and underscores only." : undefined}
                 hint={malformed ? undefined : "Names the router and its wallet. Everything else can change later."}
               />
@@ -118,12 +126,14 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                 <PasswordField
                   label="Wallet password"
                   autoComplete="new-password"
+                  required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
                 <PasswordField
                   label="Confirm wallet password"
                   autoComplete="new-password"
+                  required
                   value={passwordConfirm}
                   onChange={(e) => setPasswordConfirm(e.target.value)}
                   error={password || passwordConfirm ? passwordError : undefined}
@@ -142,6 +152,9 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
               >
                 Create router
               </Button>
+              {blockedReason && (
+                <p className="mt-3 text-center text-[11.5px] text-subtle">{blockedReason}</p>
+              )}
             </div>
           </>
         ) : (

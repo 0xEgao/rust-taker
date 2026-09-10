@@ -7,15 +7,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::error::AppError;
-use crate::types::{TorStatus, VersionInfo};
-
-#[tauri::command]
-pub fn get_version_info(app: tauri::AppHandle) -> VersionInfo {
-    VersionInfo {
-        app_version: app.package_info().version.to_string(),
-        coinswap_source: format!("git {}", env!("PORTAL_COINSWAP_REV")),
-    }
-}
+use crate::types::TorStatus;
 
 /// Starts Portal's own Tor if it isn't up yet, then mirrors coinswap's control-port
 /// handshake against it. Bootstrap < 100% is informational only, not a failure.

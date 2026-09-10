@@ -1,12 +1,82 @@
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, RefreshCw, ScrollText, Server, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, LifeBuoy, Link2, RefreshCw, ScrollText, Server, X, XCircle } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { checkBackend, getChainBackend } from "../../api/commands";
 import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
+import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useSessionStore } from "../../store/session";
-import { useToastStore } from "../../store/toast";
+import { useToastStore, type Toast } from "../../store/toast";
 import { IconButton } from "../ui/display";
+
+/**
+ * Read-only, because the backend is adopted at the connection gate and held for the session.
+ * Past that gate nothing else in the app says what it is connected to, which is the half of the
+ * old Electron settings page that was actually missing.
+ */
+/** Signet and testnet coins are worthless; mainnet coins are not. Which chain you are on is the
+ *  most consequential fact about the session, so it leads and it is coloured. */
+const NETWORK_TONE: Record<string, string> = {
+  bitcoin: "border-success/40 bg-success/[0.08] text-success",
+  testnet: "border-warning/40 bg-warning/[0.08] text-warning",
+  testnet4: "border-warning/40 bg-warning/[0.08] text-warning",
+  signet: "border-warning/40 bg-warning/[0.08] text-warning",
+  regtest: "border-line-strong bg-white/[0.04] text-muted",
+};
+
+function ConnectionChip() {
+  const [network, setNetwork] = useState<string | null>(null);
+  const [backend, setBackend] = useState<string | null>(null);
+  const [detail, setDetail] = useState("");
+
+  useEffect(() => {
+    void getChainBackend()
+      .then((config) => {
+        // A node you run yourself has no Tor/clearnet axis, so only Electrum carries a route.
+        setBackend(
+          config.kind === "coreRpc"
+            ? "Bitcoin Core"
+            : `Electrum · ${config.electrum.useTor ? "Tor" : "Clearnet"}`,
+        );
+        setDetail(
+          config.kind === "coreRpc" && config.node
+            ? `${config.node.host}:${config.node.port}`
+            : config.electrum.url,
+        );
+      })
+      .catch(() => setBackend(null));
+    // Asked of the chain rather than inferred from the endpoint: the URL says nothing about
+    // which network the server is actually serving.
+    void checkBackend()
+      .then((status) => setNetwork(status.chain ?? null))
+      .catch(() => setNetwork(null));
+  }, []);
+
+  if (!network && !backend) return null;
+  return (
+    <span className="hidden items-center gap-1.5 md:inline-flex">
+      {network && (
+        <span
+          className={`rounded-pill border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest ${
+            NETWORK_TONE[network] ?? NETWORK_TONE.regtest
+          }`}
+        >
+          {network === "bitcoin" ? "mainnet" : network}
+        </span>
+      )}
+      {backend && (
+        <span
+          title={detail}
+          className="inline-flex items-center gap-1.5 rounded-pill border border-line bg-surface-raised px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-subtle"
+        >
+          <Link2 size={11} strokeWidth={2} />
+          {backend}
+        </span>
+      )}
+    </span>
+  );
+}
 
 const WALLET_NAV_ITEMS: { path: string; label: string; d: string }[] = [
   { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
@@ -69,6 +139,7 @@ function TopNav({
 }) {
   const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
   const refreshing = useHeaderActionsStore((s) => s.refreshing);
+  const recoveryActive = useRecoveryStore((s) => s.active);
   const [justRefreshed, setJustRefreshed] = useState(false);
   const wasRefreshing = useRef(refreshing);
 
@@ -165,6 +236,17 @@ function TopNav({
       {/* Wallet is the only page that registers a refresh handler, so both of these are
           wallet-only — a router reads its own log from its workspace instead. */}
       <div className="flex items-center justify-self-end gap-2">
+        {RECOVERY_UI_ENABLED && recoveryActive && (
+          <NavLink
+            to="/swap/recovery"
+            title="Funds are being recovered from a stopped swap"
+            className="lift flex items-center gap-1.5 rounded-control border border-warning/40 bg-warning/[0.09] px-3 py-1.5 text-[12px] font-semibold text-warning outline-none hover:border-warning/60 hover:bg-warning/[0.14] focus-visible:shadow-ring"
+          >
+            <LifeBuoy size={13} strokeWidth={2} />
+            Recovery
+          </NavLink>
+        )}
+        <ConnectionChip />
         {!routerMode && (
           <>
             <IconButton
@@ -196,49 +278,97 @@ function TopNav({
   );
 }
 
-// Stacks with a translateY(index*56px) offset, mirroring the old app's showToast.
-function ToastStack() {
-  const toasts = useToastStore((s) => s.toasts);
+const RECOVERY_POLL_MS = 30_000;
+
+const MAX_VISIBLE_TOASTS = 3;
+
+const TOAST_TONE: Record<
+  Toast["kind"],
+  { rail: string; icon: string; role: "status" | "alert" }
+> = {
+  success: { rail: "bg-success", icon: "text-success", role: "status" },
+  warning: { rail: "bg-warning", icon: "text-warning", role: "status" },
+  error: { rail: "bg-danger", icon: "text-danger", role: "alert" },
+};
+
+function ToastRow({ toast }: { toast: Toast }) {
   const dismiss = useToastStore((s) => s.dismiss);
+  const pause = useToastStore((s) => s.pause);
+  const resume = useToastStore((s) => s.resume);
+  const tone = TOAST_TONE[toast.kind];
+  const Icon =
+    toast.kind === "error" ? XCircle : toast.kind === "warning" ? AlertTriangle : CheckCircle2;
 
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-50">
-      <AnimatePresence>
-      {toasts.map((t, i) => (
-        <motion.div
-          key={t.id}
-          initial={{ opacity: 0, x: 18, scale: 0.98 }}
-          animate={{ opacity: 1, x: 0, scale: 1 }}
-          exit={{ opacity: 0, x: 12, scale: 0.98 }}
-          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-          style={{ top: i * 64 }}
-          className={`raised pointer-events-auto absolute right-0 flex w-[420px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-card border px-4 py-3.5 ${
-            t.kind === "error"
-              ? "border-danger/32 bg-danger/[0.18] text-foreground"
-              : t.kind === "warning"
-                ? "border-warning/35 bg-warning/[0.14] text-foreground"
-                : "border-success/32 bg-success/[0.14] text-foreground"
-          }`}
-        >
-          {t.kind === "error" ? (
-            <XCircle size={20} strokeWidth={2} className="mt-0.5 flex-none text-danger" />
-          ) : t.kind === "warning" ? (
-            <AlertTriangle size={20} strokeWidth={2} className="mt-0.5 flex-none text-warning" />
-          ) : (
-            <CheckCircle2 size={20} strokeWidth={2} className="mt-0.5 flex-none text-success" />
-          )}
-          <div className="min-w-0">
-            <strong className="block">
-              {t.kind === "error" ? "Error" : t.kind === "warning" ? "Heads up" : "Success"}
-            </strong>
-            <span className="mt-0.5 block break-words text-[13px] text-muted">{t.message}</span>
-          </div>
-          <button type="button" aria-label="Dismiss notification" onClick={() => dismiss(t.id)} className="ml-2 flex-none rounded-sm text-subtle outline-none hover:text-foreground focus-visible:shadow-ring active:translate-y-px">
-            <X size={14} strokeWidth={2} />
-          </button>
-        </motion.div>
-      ))}
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: 18, scale: 0.98 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 12, scale: 0.98 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      role={tone.role}
+      onMouseEnter={() => pause(toast.id)}
+      onMouseLeave={() => resume(toast.id)}
+      // Neutral surface with the status carried by the rail and the icon: a full-surface tint of
+      // the semantic colour turns the whole strip into a muddy slab at this opacity. The shadow
+      // is spelled out rather than using `raised`, whose accent-tinted layer would put a blue
+      // glow under a green toast (and a violet one on the router side).
+      className="pointer-events-auto relative flex w-[360px] max-w-[calc(100vw-2rem)] items-start gap-2.5 overflow-hidden rounded-control border border-line-strong bg-surface-raised py-3 pl-4 pr-3 shadow-[0_1px_2px_rgba(0,0,0,0.5),0_16px_32px_-16px_rgba(0,0,0,0.7)]"
+    >
+      <span className={`absolute inset-y-0 left-0 w-0.5 ${tone.rail}`} aria-hidden="true" />
+      <Icon size={16} strokeWidth={2} className={`mt-px flex-none ${tone.icon}`} />
+      <span
+        className="min-w-0 flex-1 break-words text-[12.5px] leading-5 text-foreground line-clamp-3"
+        title={toast.message}
+      >
+        {toast.message}
+      </span>
+      <button
+        type="button"
+        aria-label="Dismiss notification"
+        onClick={() => dismiss(toast.id)}
+        className="-mr-1 -mt-1 grid h-6 w-6 flex-none place-items-center rounded-control text-subtle outline-none hover:text-foreground focus-visible:shadow-ring active:translate-y-px"
+      >
+        <X size={13} strokeWidth={2} />
+      </button>
+      {/* Only a timed toast gets the bar, which is what distinguishes it from a warning that is
+          waiting on the user rather than on a clock. */}
+      {toast.dismissAfterMs !== null && (
+        <motion.span
+          initial={{ scaleX: 1 }}
+          animate={{ scaleX: 0 }}
+          transition={{ duration: toast.dismissAfterMs / 1000, ease: "linear" }}
+          style={{ transformOrigin: "left" }}
+          className={`absolute inset-x-0 bottom-0 h-px ${tone.rail} opacity-60`}
+          aria-hidden="true"
+        />
+      )}
+    </motion.div>
+  );
+}
+
+function ToastStack() {
+  const toasts = useToastStore((s) => s.toasts);
+  // Newest first, and capped: every failed command toasts, so a burst could otherwise fill the
+  // viewport. Positioned clear of the header so it never covers the refresh and logs buttons.
+  const visible = toasts.slice(-MAX_VISIBLE_TOASTS).reverse();
+  const hidden = toasts.length - visible.length;
+
+  return (
+    <div
+      className="pointer-events-none fixed right-4 top-[68px] z-50 flex flex-col items-end gap-2"
+      aria-live="polite"
+    >
+      <AnimatePresence initial={false}>
+        {visible.map((t) => (
+          <ToastRow key={t.id} toast={t} />
+        ))}
       </AnimatePresence>
+      {hidden > 0 && (
+        <span className="rounded-pill border border-line bg-surface-raised px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-subtle">
+          +{hidden} more
+        </span>
+      )}
     </div>
   );
 }
@@ -249,6 +379,21 @@ export function AppShell() {
   const routerMode = pathname.startsWith("/router");
   const atRouterRoot = pathname === "/router";
   const walletUnlocked = useSessionStore((s) => s.initialized);
+  const refreshRecovery = useRecoveryStore((s) => s.refresh);
+  const clearRecovery = useRecoveryStore((s) => s.clear);
+
+  // Recovery can take hours and outlives any one page, so the shell is what watches it. Slow
+  // cadence: the crate's own loop only retries once a minute, and this read is off disk.
+  useEffect(() => {
+    // Nothing reads the result while the entry points are hidden, so don't poll for it.
+    if (!RECOVERY_UI_ENABLED || !walletUnlocked) {
+      clearRecovery();
+      return;
+    }
+    void refreshRecovery();
+    const id = setInterval(() => void refreshRecovery(), RECOVERY_POLL_MS);
+    return () => clearInterval(id);
+  }, [walletUnlocked, refreshRecovery, clearRecovery]);
 
   useEffect(() => {
     let settleTimer: ReturnType<typeof setTimeout> | undefined;

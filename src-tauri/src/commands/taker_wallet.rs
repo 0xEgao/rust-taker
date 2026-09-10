@@ -16,7 +16,7 @@ use coinswap::taker::api::ConnectionType;
 use coinswap::taker::{Taker, TakerInitConfig};
 use coinswap::utill::get_taker_dir;
 use coinswap::wallet::{AddressType, Wallet};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use crate::commands::chain_backend;
@@ -28,7 +28,7 @@ use crate::state::PendingFileSelection;
 use crate::types::{
     AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
     InitResult, NewAddress, Outpoint, PriceEstimate, RestoreSelectionView, SendResult,
-    SwapLiquidity, TxSummary, UtxoEntry, WalletInfo,
+    TxSummary, UtxoEntry, WalletInfo,
 };
 
 const BTC_PRICE_CACHE_FILE: &str = "btc-price-cache.json";
@@ -113,20 +113,6 @@ pub(crate) fn get_wallet_handle(state: &AppState) -> Result<Arc<RwLock<Wallet>>,
         .read()?
         .clone()
         .ok_or_else(AppError::not_initialized)
-}
-
-/// Probes the on-disk format only — never decrypts, no password needed.
-#[tauri::command]
-pub async fn is_wallet_encrypted(
-    data_dir: Option<String>,
-    wallet_name: String,
-) -> Result<bool, AppError> {
-    validate_leaf_name(&wallet_name, "walletName")?;
-    let path = wallet_path(&resolve_data_dir(&data_dir)?, &wallet_name);
-    tauri::async_runtime::spawn_blocking(move || Wallet::is_wallet_encrypted(&path))
-        .await
-        .map_err(AppError::internal)?
-        .map_err(AppError::from)
 }
 
 /// Non-wallet files written into the same directory (crate's report/lock/temp, plus our own
@@ -217,12 +203,6 @@ pub async fn init_taker(
         .map_err(from_wallet_join_error)?
         .map_err(AppError::from)?;
 
-    let recovery_pending = taker
-        .get_wallet()
-        .read()
-        .map(|w| !w.list_live_contract_spend_info().is_empty())
-        .unwrap_or(false);
-
     // A previous `shutdown` latched this; re-arm so syncs on the new taker aren't
     // cancelled the moment they start.
     state.sync_cancel.store(false, Ordering::Relaxed);
@@ -236,7 +216,6 @@ pub async fn init_taker(
     Ok(InitResult {
         wallet_name,
         data_dir: data_dir.display().to_string(),
-        recovery_pending,
     })
 }
 
@@ -244,12 +223,12 @@ pub async fn init_taker(
 /// actually removed. Process-close callers may ignore an in-progress error,
 /// but interactive lock/reset must not reset its UI on that error.
 pub fn shutdown(state: &AppState) -> Result<(), AppError> {
-    if state.active_swap.lock()?.as_ref().is_some_and(|swap| {
-        matches!(
-            swap.phase,
-            crate::state::SwapLifecycle::Running | crate::state::SwapLifecycle::Recovering
-        )
-    }) {
+    if state
+        .active_swap
+        .lock()?
+        .as_ref()
+        .is_some_and(|swap| matches!(swap.phase, crate::state::SwapLifecycle::Running))
+    {
         return Err(AppError::swap_in_progress());
     }
     // Released before the handles below, so a sync already inside the crate's retry loop
@@ -274,11 +253,6 @@ pub fn shutdown(state: &AppState) -> Result<(), AppError> {
     state.pending_file_selections.lock()?.clear();
     *state.active_swap.lock()? = None;
     Ok(())
-}
-
-#[tauri::command]
-pub fn shutdown_taker(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
-    shutdown(&state)
 }
 
 #[tauri::command]
@@ -543,27 +517,6 @@ pub async fn get_balances(state: tauri::State<'_, AppState>) -> Result<BalancesD
     .map_err(AppError::internal)?
 }
 
-/// max_swappable = max(regular, swap) − 3000 sats dust buffer.
-#[tauri::command]
-pub async fn check_swap_liquidity(
-    state: tauri::State<'_, AppState>,
-) -> Result<SwapLiquidity, AppError> {
-    let wallet = get_wallet_handle(&state)?;
-    tauri::async_runtime::spawn_blocking(move || -> Result<SwapLiquidity, AppError> {
-        let b = wallet.read()?.get_balances()?;
-        let regular = b.regular.to_sat();
-        let swap = b.swap.to_sat();
-        Ok(SwapLiquidity {
-            spendable: b.spendable.to_sat(),
-            regular,
-            swap,
-            max_swappable: regular.max(swap).saturating_sub(3000),
-        })
-    })
-    .await
-    .map_err(AppError::internal)?
-}
-
 /// Last address issued per type, cached next to the wallet — the crate's
 /// `get_next_external_address` always derives+increments with no "peek" mode, so this is the only
 /// way to know what to re-offer instead of burning a fresh gap-limit index every call.
@@ -603,11 +556,20 @@ fn save_last_addresses(path: &Path, addrs: &LastAddresses) -> Result<(), AppErro
 }
 
 /// Recent transactions scanned to decide whether the last issued address has been paid.
-const USED_ADDRESS_LOOKBACK: usize = 50;
+///
+/// Only the last address issued is ever under test, so any payment to it is recent by
+/// construction. Kept small because the Electrum backend's `list_transactions` fetches every
+/// input of every transaction in the window, one round trip each — the window, not the wallet,
+/// is what makes that call expensive.
+const USED_ADDRESS_LOOKBACK: usize = 10;
 
 /// Reuses the last address issued for this type until it actually receives a payment, matching
 /// the old app and standard HD-wallet gap-limit-safe behavior — repeat calls (page reload,
 /// clicking Generate again) shouldn't advance the derivation index for no reason.
+///
+/// Deliberately asks the chain nothing: a cached address is handed back unverified so the
+/// receive panel can render immediately, and `verify_last_address` does the expensive part
+/// afterwards. Blocking address issuance on that check is what made Receive slow.
 #[tauri::command]
 pub async fn get_new_address(
     state: tauri::State<'_, AppState>,
@@ -615,22 +577,50 @@ pub async fn get_new_address(
 ) -> Result<NewAddress, AppError> {
     let wallet = get_wallet_handle(&state)?;
     let path = resolve_last_address_path(&state)?;
-    let (addr_type, label) = match address_type {
-        AddressTypeDto::P2wpkh => (AddressType::P2WPKH, "p2wpkh"),
-        AddressTypeDto::P2tr => (AddressType::P2TR, "p2tr"),
-    };
+    let (addr_type, label) = address_kind(address_type);
     tauri::async_runtime::spawn_blocking(move || -> Result<NewAddress, AppError> {
         let mut cached = load_last_addresses(&path);
-        let slot = match addr_type {
-            AddressType::P2WPKH => &mut cached.p2wpkh,
-            AddressType::P2TR => &mut cached.p2tr,
-        };
+        if let Some(existing) = address_slot(&mut cached, addr_type).clone() {
+            return Ok(NewAddress {
+                address: existing,
+                address_type: label.to_string(),
+                verified: false,
+            });
+        }
 
-        if let Some(existing) = slot.clone() {
-            // Bounded window, not the whole history: over Electrum `list_transactions` is
-            // rebuilt from watched-script history and pulls each transaction's inputs, so an
-            // unbounded count made handing out an address cost a full history fetch. The
-            // address under test is the last one issued, so any payment to it is recent.
+        let address = wallet
+            .write()?
+            .get_next_external_address(addr_type)?
+            .to_string();
+        *address_slot(&mut cached, addr_type) = Some(address.clone());
+        save_last_addresses(&path, &cached)?;
+        Ok(NewAddress {
+            address,
+            address_type: label.to_string(),
+            verified: true,
+        })
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+/// Confirms the cached address is still unpaid, issuing a fresh one if it isn't.
+///
+/// The slow half of address issuance, split out so it runs after the panel has already painted.
+/// Returns whatever address the user should be offering, always verified.
+#[tauri::command]
+pub async fn verify_last_address(
+    state: tauri::State<'_, AppState>,
+    address_type: AddressTypeDto,
+) -> Result<NewAddress, AppError> {
+    let wallet = get_wallet_handle(&state)?;
+    let path = resolve_last_address_path(&state)?;
+    let (addr_type, label) = address_kind(address_type);
+    tauri::async_runtime::spawn_blocking(move || -> Result<NewAddress, AppError> {
+        let mut cached = load_last_addresses(&path);
+        let existing = address_slot(&mut cached, addr_type).clone();
+
+        if let Some(existing) = existing {
             let used = wallet
                 .read()?
                 .get_transactions(Some(USED_ADDRESS_LOOKBACK), None)?
@@ -644,6 +634,7 @@ pub async fn get_new_address(
                 return Ok(NewAddress {
                     address: existing,
                     address_type: label.to_string(),
+                    verified: true,
                 });
             }
         }
@@ -652,15 +643,30 @@ pub async fn get_new_address(
             .write()?
             .get_next_external_address(addr_type)?
             .to_string();
-        *slot = Some(address.clone());
+        *address_slot(&mut cached, addr_type) = Some(address.clone());
         save_last_addresses(&path, &cached)?;
         Ok(NewAddress {
             address,
             address_type: label.to_string(),
+            verified: true,
         })
     })
     .await
     .map_err(AppError::internal)?
+}
+
+fn address_kind(dto: AddressTypeDto) -> (AddressType, &'static str) {
+    match dto {
+        AddressTypeDto::P2wpkh => (AddressType::P2WPKH, "p2wpkh"),
+        AddressTypeDto::P2tr => (AddressType::P2TR, "p2tr"),
+    }
+}
+
+fn address_slot(cached: &mut LastAddresses, addr_type: AddressType) -> &mut Option<String> {
+    match addr_type {
+        AddressType::P2WPKH => &mut cached.p2wpkh,
+        AddressType::P2TR => &mut cached.p2tr,
+    }
 }
 
 #[tauri::command]
@@ -749,8 +755,6 @@ pub async fn send_to_address(
         SensitiveOperation::SendTakerFunds,
     )?;
     let wallet = get_wallet_handle(&state)?;
-    let wallet_name = wallet.read()?.get_name().to_string();
-    let session_data_dir = state.data_dir.read()?.clone();
     let outpoints = outpoints
         .map(|list| {
             if list.len() > 10_000 {
@@ -774,51 +778,6 @@ pub async fn send_to_address(
         return Err(AppError::new(
             ErrorCode::InvalidInput,
             "selected inputs contain duplicates",
-        ));
-    }
-
-    let fee_label = fee_rate
-        .map(|rate| format!("{rate:.2} sat/vB"))
-        .unwrap_or_else(|| "wallet default (2 sat/vB)".to_string());
-    let input_label = outpoints
-        .as_ref()
-        .map(|items| {
-            items
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_else(|| "automatic coin selection".to_string());
-    let message = format!(
-        "Wallet: {wallet_name}\n\nRecipient:\n{address}\n\nAmount: {amount_sats} sats ({:.8} BTC)\nRequested fee rate: {fee_label}\nInputs:\n{input_label}\n\nThe final network fee is constructed by the wallet. Broadcast this transaction?",
-        amount_sats as f64 / 100_000_000.0
-    );
-    let dialog_window = window.clone();
-    let approved = tauri::async_runtime::spawn_blocking(move || {
-        dialog_window
-            .dialog()
-            .message(message)
-            .parent(&dialog_window)
-            .title("Confirm Bitcoin send")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "Broadcast".to_string(),
-                "Cancel".to_string(),
-            ))
-            .blocking_show()
-    })
-    .await
-    .map_err(AppError::internal)?;
-    if !approved {
-        return Err(AppError::user_cancelled("Bitcoin send was not approved"));
-    }
-    if state.data_dir.read()?.as_ref() != session_data_dir.as_ref()
-        || wallet.read()?.get_name() != wallet_name
-    {
-        return Err(AppError::new(
-            ErrorCode::WalletSessionChanged,
-            "wallet session changed while the send was awaiting approval",
         ));
     }
 

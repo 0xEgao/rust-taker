@@ -16,26 +16,24 @@ fn main() {
         .filter(|revision| revision.len() == 40)
         .expect("coinswap Cargo.lock source must end in a full git revision");
     println!("cargo:rustc-env=PORTAL_COINSWAP_REV={revision}");
+    // Every command in `lib.rs`'s `generate_handler!`, in the same order. A command absent
+    // here gets no generated permission, so `capabilities/default.json` cannot grant it and
+    // every call is rejected at the IPC boundary — see the sync test in `lib.rs`.
     const COMMANDS: &[&str] = &[
-        "check_core_zmq",
         "check_tor",
-        "get_version_info",
         "get_chain_backend",
         "set_chain_backend",
-        "reset_chain_backend",
         "check_backend",
-        "is_wallet_encrypted",
         "list_wallets",
         "init_taker",
-        "shutdown_taker",
         "get_wallet_info",
         "choose_restore_backup",
         "restore_wallet",
         "backup_wallet",
         "get_balances",
-        "check_swap_liquidity",
         "validate_address",
         "get_new_address",
+        "verify_last_address",
         "get_transactions",
         "list_utxos",
         "send_to_address",
@@ -51,10 +49,12 @@ fn main() {
         "start_swap",
         "get_swap_progress",
         "get_swap_tracker",
+        "get_swap_preparation",
         "recover_swap",
         "get_recovery_status",
         "list_swap_reports",
         "get_swap_report",
+        "get_incoming_swap_utxo",
         "verify_deniability",
         "get_logs",
         "init_maker",
@@ -80,6 +80,7 @@ fn main() {
         "get_suggested_maker_ports",
         "check_maker_ports",
         "get_maker_logs",
+        "quit_app",
     ];
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS));

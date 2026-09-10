@@ -43,6 +43,7 @@ export function QuitShutdown() {
 
   const running = [
     blockers.swapRunning ? "a coinswap" : null,
+    blockers.recoveryRunning ? "a recovery" : null,
     blockers.runningRouters.length === 1
       ? `the router ${blockers.runningRouters[0]}`
       : blockers.runningRouters.length > 1
@@ -73,6 +74,12 @@ export function QuitShutdown() {
           The swap is recorded at its last completed phase, so the next launch picks it up
           for recovery — but it cannot be resumed where it left off, and the funds stay in
           their timelocked contracts until recovery clears them.
+        </p>
+      )}
+      {blockers.recoveryRunning && (
+        <p className="text-[12.5px] leading-5 text-muted">
+          The claim transactions are built here, so quitting pauses recovery until the next
+          launch. The funds stay safe in their contracts either way — they just sit there longer.
         </p>
       )}
       {blockers.runningRouters.length > 0 && (

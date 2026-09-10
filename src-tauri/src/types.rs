@@ -83,13 +83,6 @@ pub struct BackendStatus {
     pub verification_progress: Option<f64>,
 }
 
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VersionInfo {
-    pub app_version: String,
-    pub coinswap_source: String,
-}
-
 /// bootstrapProgress is informational only — init doesn't gate on it.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +108,8 @@ pub struct TorStatus {
 #[serde(rename_all = "camelCase")]
 pub struct QuitBlockers {
     pub swap_running: bool,
+    /// Recovery only advances while the app is running, so quitting stalls it until next launch.
+    pub recovery_running: bool,
     pub running_makers: Vec<String>,
 }
 
@@ -141,8 +136,6 @@ pub struct InitConfig {
 pub struct InitResult {
     pub wallet_name: String,
     pub data_dir: String,
-    /// True if the wallet has live (unfinished) contract UTXOs after init.
-    pub recovery_pending: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -176,16 +169,6 @@ pub struct BalancesDto {
     pub spendable: u64,
 }
 
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SwapLiquidity {
-    pub spendable: u64,
-    pub regular: u64,
-    pub swap: u64,
-    /// max(regular, swap) minus a dust buffer, matching the old app's rule.
-    pub max_swappable: u64,
-}
-
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AddressTypeDto {
@@ -198,6 +181,9 @@ pub enum AddressTypeDto {
 pub struct NewAddress {
     pub address: String,
     pub address_type: String,
+    /// False for a re-offered cached address whose payment status has not been checked yet.
+    /// A freshly derived address is unused by construction, so it is always true.
+    pub verified: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -413,11 +399,9 @@ pub struct SwapSummaryDto {
 #[serde(rename_all = "camelCase")]
 pub struct SwapProgressDto {
     pub swap_id: String,
-    /// "prepared" | "running" | "finished" | "failed"
-    pub phase: String,
     pub started_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    /// Replayed so a remount can restore what only `prepare_swap` ever returned.
+    pub summary: SwapSummaryDto,
 }
 
 /// One of the crate's own per-maker boolean flags, carried by its field name so the UI can name
@@ -480,12 +464,84 @@ pub struct SwapTrackerDto {
     pub routers: Vec<RouterProgressDto>,
 }
 
+/// How far `prepare_swap` has got, for a progress readout while it blocks.
+///
+/// Read off `swap_tracker.cbor` rather than reported by the command: `prepare_coinswap` is one
+/// opaque call that holds the taker for its whole duration, but it persists the record as it
+/// goes, so the file is the only place its progress is visible from.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapPreparationDto {
+    /// "routers_discovered" | "negotiated"
+    pub phase: String,
+    pub router_count: usize,
+    /// Routers that have agreed terms so far.
+    pub negotiated_count: usize,
+}
+
+/// A contract still holding funds, from the wallet's own live UTXO set.
+///
+/// This — not the tracker — is what a recovery in progress actually looks like. The tracker's
+/// `recovery.incoming`/`recovery.outgoing` vectors stay **empty** until a sweep succeeds: nothing
+/// ever writes an `Unresolved` placeholder (`taker/background_services.rs`, `update_tracker_outcomes`
+/// only pushes on resolution). Driving the UI off them showed an empty page for the entire wait.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryContractDto {
+    pub outpoint: Outpoint,
+    pub amount_sats: u64,
+    /// "hashlock" — spendable as soon as it confirms, because this wallet holds the preimage.
+    /// "timelock" — this wallet's own funding, reclaimable only once the refund delay matures.
+    pub claim_path: String,
+    pub confirmations: u32,
+    /// Blocks still to wait. Timelock contracts only; `None` means nothing left to wait for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks_remaining: Option<u32>,
+}
+
+/// A contract the recovery loop has already spent back, as the tracker recorded it.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveredContractDto {
+    pub contract_txid: String,
+    /// "hashlock" | "timelock" | "key_path" | "discarded" | "unresolved"
+    pub resolution: String,
+    /// The transaction that claimed it back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spending_txid: Option<String>,
+}
+
+/// Read entirely from `swap_tracker.cbor` plus the cached wallet handle — never through the taker
+/// mutex, so it still answers while a swap holds the taker for hours.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryStatus {
-    pub recovering: bool,
-    pub complete: bool,
-    pub pending_contract_count: usize,
+    /// Any contract still unresolved, from disk — so it survives a reload.
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_id: Option<String>,
+    /// The crate's `RecoveryPhase`. In practice only three of the six are ever written:
+    /// "not_started" until something resolves, then "incoming_recovered"/"outgoing_recovered",
+    /// then "cleaned_up". The rest exist but are set only in the crate's own tests.
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    /// Where the swap got to before it stopped, which decides whether there is an incoming leg
+    /// at all: a swap that failed on its first hop never created one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_at_phase: Option<String>,
+    pub router_count: usize,
+    pub send_amount_sats: u64,
+    /// Contracts still holding funds.
+    pub pending: Vec<RecoveryContractDto>,
+    /// Contracts already claimed back.
+    pub resolved: Vec<RecoveredContractDto>,
+    /// The longest wait left across every pending timelock contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks_remaining: Option<u32>,
+    pub locked_sats: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -496,10 +552,19 @@ pub struct RecoveryStatus {
 #[serde(rename_all = "camelCase")]
 pub struct SwapReportSummary {
     pub swap_id: String,
-    /// "success" | "recovery_hashlock" | "recovery_timelock" | "failed"
+    /// From the report file: "success" | "recovery_hashlock" | "recovery_timelock" | "failed".
+    /// Synthesised from the tracker when no report was written: "interrupted" (the process died
+    /// mid-swap and nothing has reclaimed the funds yet), "recovered" (it did), or "unfinished".
     pub status: String,
+    /// False when this row came from the tracker because no report file entry exists — the swap
+    /// is real, but its numbers are only the ones the tracker kept.
+    pub reported: bool,
     pub start_timestamp: u64,
-    pub end_timestamp: u64,
+    /// `None` for a tracker-derived row. The tracker's `updated_at` is not an end time — the
+    /// crate re-stamps it every launch while re-marking an already-failed swap — so reporting
+    /// it as one made a dead swap climb back to the top of a newest-first list on each start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_timestamp: Option<u64>,
     pub outgoing_amount_sats: u64,
     /// outgoing_amount_sats - fee_paid_sats — the crate's own incoming_amount can be inconsistent
     /// for non-Success outcomes, so this is derived here rather than passed through.
@@ -548,6 +613,14 @@ pub struct SwapReportDetail {
     pub mining_fee_sats: u64,
     pub fee_percentage: f64,
     pub total_router_fees_sats: u64,
+    /// The contract UTXO this swap funded, not just its transaction: the deniability proof
+    /// records the exact outpoint, and a Taproot contract output is not necessarily vout 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outgoing_contract_outpoint: Option<Outpoint>,
+    /// The contract UTXO the route paid back, from the same proof.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incoming_contract_outpoint: Option<Outpoint>,
+    /// Kept for the swaps whose report predates the proof, where only the txid was recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outgoing_contract_txid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -556,14 +629,6 @@ pub struct SwapReportDetail {
     pub routers_count: usize,
     pub router_addresses: Vec<String>,
     pub router_fee_info: Vec<ReportRouterFee>,
-    /// Amounts of the wallet coins this swap consumed. The crate records these as bare
-    /// sats with no outpoint, so they can't be linked to a transaction.
-    pub input_utxo_sats: Vec<u64>,
-    /// Amounts of the change coins the swap returned to the regular wallet.
-    pub change_utxo_sats: Vec<u64>,
-    /// The exact outpoint `verify_deniability` checks on-chain — the one field of the proof the
-    /// UI reasons about, so it's typed rather than pulled out of the raw JSON below.
-    pub proven_outpoint: Option<Outpoint>,
     /// Raw pass-through of the crate's `DeniabilityProof` (already `Serialize`) rather than
     /// hand-mirrored types — the frontend renders whatever shape comes through generically.
     pub deniability_proof: Option<serde_json::Value>,

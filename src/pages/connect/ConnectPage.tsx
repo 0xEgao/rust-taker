@@ -9,6 +9,7 @@ import {
 } from "../../components/ui/display";
 import {
   Button,
+  CheckRow,
   PasswordField,
   SegmentedToggle,
   SummaryGroup,
@@ -39,6 +40,7 @@ export function ConnectPage() {
 
   const [kind, setKind] = useState<ChainBackendKind>("electrum");
   const [electrumUrl, setElectrumUrl] = useState("");
+  const [electrumUseTor, setElectrumUseTor] = useState(false);
   const [node, setNode] = useState<NodeBackend | null>(null);
 
   const [torProgress, setTorProgress] = useState<number | null>(null);
@@ -64,6 +66,7 @@ export function ConnectPage() {
       .then((config) => {
         setKind(config.kind);
         setElectrumUrl(config.electrum.url);
+        setElectrumUseTor(config.electrum.useTor);
         // The view deliberately omits the password, so it has to be reinstated before this
         // object can be sent back as a config. Empty means "keep the session's own", which
         // is what `merge_preserved_password` fills in on the Rust side.
@@ -74,7 +77,7 @@ export function ConnectPage() {
         // re-run a check the user has been looking at the result of.
         return probe({
           kind: config.kind,
-          electrum: { url: config.electrum.url.trim(), useTor: false },
+          electrum: { url: config.electrum.url.trim(), useTor: config.electrum.useTor },
           node,
         });
       })
@@ -130,8 +133,18 @@ export function ConnectPage() {
 
   const torReady = torProgress === 100;
 
+  // Rust forces Tor for an onion host whatever the flag says, so the toggle follows rather than
+  // contradicts it — a control that disagrees with the transport actually used is worse than none.
+  const electrumHost = electrumUrl.trim().split("://").pop() ?? "";
+  const onionElectrum = electrumHost.split(":")[0].endsWith(".onion");
+  const torForced = onionElectrum;
+
   function currentConfig(): ChainBackendConfig {
-    return { kind, electrum: { url: electrumUrl.trim(), useTor: false }, node };
+    return {
+      kind,
+      electrum: { url: electrumUrl.trim(), useTor: torForced || electrumUseTor },
+      node,
+    };
   }
 
   /** Resolves only when `config` answered a real chain query. */
@@ -236,18 +249,38 @@ export function ConnectPage() {
             </div>
 
             {kind === "electrum" ? (
-              <SummaryGroup title="Server">
-                <SummaryRow
-                  label="Server URL"
-                  value={electrumUrl}
-                  inputMode="text"
-                  hint="The default works out of the box"
-                  onCommit={(url) => {
-                    setElectrumUrl(url);
+              <>
+                <SummaryGroup title="Server">
+                  <SummaryRow
+                    label="Server URL"
+                    value={electrumUrl}
+                    inputMode="text"
+                    hint="The default works out of the box"
+                    onCommit={(url) => {
+                      setElectrumUrl(url);
+                      invalidate();
+                    }}
+                  />
+                </SummaryGroup>
+                <CheckRow
+                  checked={torForced || electrumUseTor}
+                  onToggle={(next) => {
+                    if (torForced) return;
+                    setElectrumUseTor(next);
                     invalidate();
                   }}
+                  primary="Reach this server over Tor"
+                  secondary={
+                    torForced
+                      ? "Always on for an onion address"
+                      : "Hides which server you ask, and costs some speed"
+                  }
                 />
-              </SummaryGroup>
+                <p className="text-[11.5px] leading-5 text-subtle">
+                  Off by default so the chain stays readable even when Tor is slow to bootstrap.
+                  Swap traffic always goes over Tor either way.
+                </p>
+              </>
             ) : (
               node && (
                 <>

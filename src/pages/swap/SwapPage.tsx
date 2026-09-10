@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   CheckCircle2,
   FileText,
+  LifeBuoy,
   Gauge,
   RefreshCw,
   ShieldAlert,
@@ -16,21 +17,20 @@ import {
   getBtcPrice,
   getLogs,
   getOffers,
-  getRecoveryStatus,
+  getSwapPreparation,
   getSwapProgress,
   getSwapTracker,
   prepareSwap,
-  recoverSwap,
   startSwap,
 } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type {
+  SwapPreparation,
   AppError,
   LogLine,
   Router,
   Outpoint,
   ProtocolVersion,
-  RecoveryStatus,
   SwapLiquidity,
   SwapFundingEstimate,
   SwapRequest,
@@ -51,6 +51,7 @@ import {
   SegmentedToggle,
   TextField,
 } from "../../components/ui/inputs";
+import { Checklist } from "../../components/ui/Checklist";
 import { SwapCircuit } from "./circuit/SwapCircuit";
 import { NowPanel, Vitals } from "./circuit/panels";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
@@ -69,6 +70,7 @@ import {
   unitStringToSats,
   type Unit,
 } from "../../lib/wallet-format";
+import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 
@@ -87,6 +89,9 @@ function EstimatedSats({
     <SatsAmount sats={sats} className={className} />
   );
 }
+
+// A blocking prepare takes tens of seconds; this only reads a local file.
+const PREPARATION_POLL_MS = 1_200;
 
 const ROUTER_COUNT_PRESETS = [2, 3, 4] as const;
 
@@ -144,6 +149,8 @@ export function SwapPage() {
   >("idle");
   // Bumped by the summary's Retry to re-arm the quote with a fresh attempt budget.
   const [fundingAttempt, setFundingAttempt] = useState(0);
+  // Compared against the quote's own rate rather than a literal 2: the protocol's fixed rate
+  // lives in the crate, and hardcoding it here would go stale silently.
 
   const [unit, setUnit] = useState<Unit>("sats");
   const [amountInput, setAmountInput] = useState("");
@@ -159,17 +166,22 @@ export function SwapPage() {
   const [swapId, setSwapId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [failure, setFailure] = useState<AppError | null>(null);
-  const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(
-    null,
-  );
   const [tracker, setTracker] = useState<SwapTrackerProgress | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [recovering, setRecovering] = useState(false);
+  const [preparingSince, setPreparingSince] = useState<number | null>(null);
+  const [preparation, setPreparation] = useState<SwapPreparation | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [swapLogs, setSwapLogs] = useState<LogLine[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
 
-  const circuit = useSwapCircuit(tracker, summary, phase === "failed");
+  const recoveryActive = useRecoveryStore((s) => s.active);
+
+  const circuit = useSwapCircuit(
+    tracker,
+    summary,
+    phase === "failed",
+    phase === "finished",
+  );
 
   const loadReference = useCallback(async () => {
     const nextOffers = await getOffers();
@@ -177,12 +189,18 @@ export function SwapPage() {
   }, []);
 
   useEffect(() => {
-    void loadReference().catch((e) =>
+    // A warning, not an error: arriving here before the offerbook has synced is the normal
+    // first-launch state, the page still works, and the router list fills in on its own.
+    // Silent for SWAP_IN_PROGRESS, which is not a fault at all: `get_offers` needs the taker,
+    // a running swap holds it for hours, and the router list is not what the user is here for
+    // while that is true.
+    void loadReference().catch((e) => {
+      if (isAppError(e) && e.code === "SWAP_IN_PROGRESS") return;
       pushToast(
-        "error",
-        isAppError(e) ? e.message : "Failed to load swap data.",
-      ),
-    );
+        "warning",
+        isAppError(e) ? e.message : "Router list is not available yet.",
+      );
+    });
     // BTC/USD price is best-effort, same as Send — leave the USD unit disabled rather than toast.
     void getBtcPrice()
       .then((p) => {
@@ -194,21 +212,17 @@ export function SwapPage() {
         setBtcPriceCached(false);
       });
 
-    // Reconcile a swap already in flight (app restart mid-swap, or navigating back here).
+    // Reconcile a swap already in flight (app restart mid-swap, or navigating back here). Only a
+    // running swap is ever reported: a terminal phase is stale by definition, and recovery lives
+    // on its own page, so an answer here means "still running" and nothing else.
     void getSwapProgress().then((progress) => {
       if (!progress) return;
       setSwapId(progress.swapId);
       setStartedAt(progress.startedAt ?? null);
-      if (progress.phase === "finished") setPhase("finished");
-      else if (progress.phase === "running" || progress.phase === "recovering")
-        setPhase("running");
-      else if (progress.phase === "failed") {
-        setFailure(
-          progress.error ? { code: "INTERNAL", message: progress.error } : null,
-        );
-        setPhase("failed");
-      }
-      // "prepared" has no cached SwapSummary to show on a confirm screen — leave on configure.
+      // Router fees live only in the prepared quote, so without replaying it the circuit's
+      // per-hop amounts silently stop descending after a remount.
+      setSummary(progress.summary);
+      setPhase("running");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -216,21 +230,35 @@ export function SwapPage() {
   useEffect(() => {
     let unlistenFinished: (() => void) | undefined;
     let unlistenFailed: (() => void) | undefined;
+    let unlistenRecovering: (() => void) | undefined;
     void listen<string>("swap://finished", () => setPhase("finished")).then(
       (fn) => {
         unlistenFinished = fn;
       },
     );
+    // Only fires for a failure with nothing on-chain, which is a plain error with nothing to
+    // recover. Anything past the funding broadcast arrives as swap://recovering instead.
     void listen<AppError>("swap://failed", (e) => {
       setFailure(e.payload);
       setPhase("failed");
     }).then((fn) => {
       unlistenFailed = fn;
     });
+    // The funds are in contracts and the crate is already claiming them back, so this page hands
+    // itself back for the next swap and the recovery page takes over.
+    void listen("swap://recovering", () => {
+      resetWizard();
+      pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
+      navigate("/swap/recovery");
+    }).then((fn) => {
+      unlistenRecovering = fn;
+    });
     return () => {
       unlistenFinished?.();
       unlistenFailed?.();
+      unlistenRecovering?.();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Live per-router detail straight off swap_tracker.cbor — same 2s poll cadence the old Electron
@@ -283,13 +311,6 @@ export function SwapPage() {
       if (id) clearInterval(id);
     };
   }, [phase, logsOpen]);
-
-  useEffect(() => {
-    if (phase !== "failed") return;
-    void getRecoveryStatus()
-      .then(setRecoveryStatus)
-      .catch(() => {});
-  }, [phase]);
 
   function changeUnit(nextUnit: Unit) {
     const sats = unitStringToSats(amountInput, unit, btcPrice);
@@ -560,14 +581,39 @@ export function SwapPage() {
 
   // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
   // dialog, bound to the authoritative prepared summary; there is no second renderer modal.
+  // Only while `submitting`: this is the one window where the taker mutex is held by a call that
+  // reports nothing, so the tracker file is the only progress signal there is.
+  useEffect(() => {
+    if (!submitting || preparingSince === null) {
+      setPreparation(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      void getSwapPreparation(preparingSince)
+        .then((next) => {
+          if (!cancelled) setPreparation(next);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, PREPARATION_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [submitting, preparingSince]);
+
   async function handleStartSwap() {
     if (useWalletCacheStore.getState().syncStatus !== "synced") {
+      // Not a fault: the sync is expected to be in progress on arrival, and it clears on its own.
       pushToast(
-        "error",
-        "Wait for wallet synchronization before starting a swap.",
+        "warning",
+        "Wait for the wallet sync to finish before starting a swap.",
       );
       return;
     }
+    setPreparingSince(Math.floor(Date.now() / 1000));
     setSubmitting(true);
     try {
       const request: SwapRequest = {
@@ -591,9 +637,7 @@ export function SwapPage() {
       setPhase("running");
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      if (err?.code !== "AUTHORIZATION_DENIED" && err?.code !== "USER_CANCELLED") {
-        pushToast("error", err?.message ?? "Failed to start swap.");
-      }
+      pushToast("error", err?.message ?? "Failed to start swap.");
     } finally {
       setSubmitting(false);
     }
@@ -605,7 +649,6 @@ export function SwapPage() {
     setSwapId(null);
     setStartedAt(null);
     setFailure(null);
-    setRecoveryStatus(null);
     setTracker(null);
     setAmountInput("");
     setSelectedOutpoints([]);
@@ -613,18 +656,43 @@ export function SwapPage() {
     void loadReference().catch(() => {});
   }
 
-  async function handleRecover() {
-    setRecovering(true);
-    try {
-      await recoverSwap();
-      pushToast("success", "Recovery started.");
-      setRecoveryStatus(await getRecoveryStatus());
-    } catch (e) {
-      const err = isAppError(e) ? e : null;
-      pushToast("error", err?.message ?? "Recovery failed to start.");
-    } finally {
-      setRecovering(false);
-    }
+  if (submitting) {
+    // Every step here is real: no record on disk yet means the crate is still refreshing the
+    // marketplace, a record means routers are picked, and the per-router `negotiated` flags are
+    // where the count comes from. Nothing is faked forward on a timer.
+    const discovered = preparation !== null;
+    const negotiated = discovered && preparation.negotiatedCount >= preparation.routerCount;
+    const negotiating = discovered && !negotiated;
+    return (
+      <div className="grid h-full place-items-center px-8 py-10">
+        <Card className="flex w-full max-w-md flex-col gap-5 border-line-strong p-7">
+          <div>
+            <h1 className="font-header text-[19px] font-bold text-foreground">
+              Starting your swap
+            </h1>
+            <p className="mt-1 text-[12.5px] leading-5 text-muted">
+              No funds have moved yet. Every router has to agree terms over its own Tor circuit
+              first, one after another, which is what takes the time.
+            </p>
+          </div>
+          <Checklist
+            steps={[
+              {
+                label: "Refreshing the marketplace",
+                state: discovered ? "passed" : "running",
+              },
+              {
+                label: discovered
+                  ? `Agreeing terms · ${preparation.negotiatedCount} of ${preparation.routerCount} routers`
+                  : "Agreeing terms with the routers",
+                state: negotiated ? "passed" : negotiating ? "running" : "idle",
+              },
+              { label: "Funding the route", state: negotiated ? "running" : "idle" },
+            ]}
+          />
+        </Card>
+      </div>
+    );
   }
 
   if (phase === "running" || phase === "finished" || phase === "failed") {
@@ -729,28 +797,6 @@ export function SwapPage() {
                         "Something went wrong.")}
                   </span>
                 </div>
-                {recoveryStatus &&
-                  (recoveryStatus.recovering ||
-                    recoveryStatus.pendingContractCount > 0) && (
-                    <div className="flex items-center justify-between text-[11.5px] text-subtle">
-                      <span>
-                        {recoveryStatus.complete
-                          ? "Recovery complete."
-                          : `Recovering ${recoveryStatus.pendingContractCount} pending contract${recoveryStatus.pendingContractCount === 1 ? "" : "s"}...`}
-                      </span>
-                      {!recoveryStatus.complete &&
-                        !recoveryStatus.recovering && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => void handleRecover()}
-                            loading={recovering}
-                          >
-                            Recover Now
-                          </Button>
-                        )}
-                    </div>
-                  )}
               </div>
             )}
 
@@ -794,14 +840,27 @@ export function SwapPage() {
             Route a private Bitcoin swap through multiple routers over Tor.
           </p>
         </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => navigate("/swap/reports")}
-        >
-          <FileText size={14} strokeWidth={2} />
-          Swap Reports
-        </Button>
+        <div className="flex items-center gap-2">
+          {RECOVERY_UI_ENABLED && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => navigate("/swap/recovery")}
+              className={recoveryActive ? "border-warning/50 text-warning" : ""}
+            >
+              <LifeBuoy size={14} strokeWidth={2} />
+              Recovery
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => navigate("/swap/reports")}
+          >
+            <FileText size={14} strokeWidth={2} />
+            Swap Reports
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -942,8 +1001,8 @@ export function SwapPage() {
               </span>
             </div>
             <p className="text-[11.5px] text-subtle">
-              The protocol funds the route and signs every contract at this one rate, so a swap
-              can't be sped up by paying more.
+              Every hop signs the same contract transactions in advance, so all of them have to
+              agree on one rate before any funds move.
             </p>
           </div>
 
@@ -1100,11 +1159,6 @@ export function SwapPage() {
           >
             Start Swap
           </Button>
-          {submitting && (
-            <p className="-mt-2 text-center text-[11.5px] text-subtle">
-              Negotiating with routers over Tor — this can take up to a minute.
-            </p>
-          )}
         </Card>
 
         <div className="flex flex-col gap-4">

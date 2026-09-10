@@ -13,6 +13,7 @@ import { RouterSwapReportPage } from "./pages/router/RouterSwapReportPage";
 import { MarketPage } from "./pages/market/MarketPage";
 import { SendPage } from "./pages/send/SendPage";
 import { SetupPage } from "./pages/setup/SetupPage";
+import { RecoveryPage } from "./pages/swap/RecoveryPage";
 import { SwapPage } from "./pages/swap/SwapPage";
 import { SwapReportPage } from "./pages/swap/SwapReportPage";
 import { SwapReportsPage } from "./pages/swap/SwapReportsPage";
@@ -78,6 +79,7 @@ function App() {
               <Route path="/market" element={<MarketPage />} />
               <Route path="/send" element={<SendPage />} />
               <Route path="/swap" element={<SwapPage />} />
+              <Route path="/swap/recovery" element={<RecoveryPage />} />
               <Route path="/swap/reports" element={<SwapReportsPage />} />
               <Route path="/swap/reports/:swapId" element={<SwapReportPage />} />
               <Route path="/logs" element={<LogsPage />} />

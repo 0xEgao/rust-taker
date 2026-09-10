@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  SwapPreparation,
   AddressType,
   AddressValidation,
   Balances,
@@ -25,7 +26,6 @@ import type {
   RecoveryStatus,
   RestoreSelection,
   SendResult,
-  SwapLiquidity,
   SwapFundingEstimate,
   SwapProgress,
   SwapReportDetail,
@@ -38,7 +38,6 @@ import type {
   TorStatus,
   TxSummary,
   UtxoEntry,
-  VersionInfo,
   WalletInfo,
 } from "./types";
 
@@ -68,27 +67,12 @@ export function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
 
-export function getVersionInfo(): Promise<VersionInfo> {
-  return invoke("get_version_info");
-}
-
-export function isWalletEncrypted(
-  walletName: string,
-  dataDir?: string,
-): Promise<boolean> {
-  return invoke("is_wallet_encrypted", { dataDir, walletName });
-}
-
 export function listWallets(dataDir?: string): Promise<string[]> {
   return invoke("list_wallets", { dataDir });
 }
 
 export function initWallet(config: InitConfig): Promise<InitResult> {
   return invoke("init_taker", { config });
-}
-
-export function shutdownWallet(): Promise<void> {
-  return invoke("shutdown_taker");
 }
 
 export function getWalletInfo(): Promise<WalletInfo> {
@@ -129,10 +113,6 @@ export function getBalances(): Promise<Balances> {
   return invoke("get_balances");
 }
 
-export function checkSwapLiquidity(): Promise<SwapLiquidity> {
-  return invoke("check_swap_liquidity");
-}
-
 export async function estimateSwapFunding(
   amountSats: number,
   protocol: ProtocolVersion,
@@ -143,6 +123,11 @@ export async function estimateSwapFunding(
 
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {
   return invoke("get_new_address", { addressType });
+}
+
+/** The chain-querying half of address issuance; slow, so it runs after the panel has painted. */
+export function verifyLastAddress(addressType: AddressType): Promise<NewAddress> {
+  return invoke("verify_last_address", { addressType });
 }
 
 export function validateAddress(address: string): Promise<AddressValidation> {
@@ -318,8 +303,17 @@ export function getSwapProgress(): Promise<SwapProgress | null> {
 
 // Live per-router detail read straight from swap_tracker.cbor — poll this every couple seconds
 // while a swap is running, same cadence as the old Electron app's disk-read poll.
-export function getSwapTracker(): Promise<SwapTrackerProgress | null> {
-  return invoke("get_swap_tracker");
+/**
+ * Progress for a `prepareSwap` still in flight. Safe to poll while it blocks — it reads the
+ * tracker file, not the taker. `since` is the unix second preparation began.
+ */
+export function getSwapPreparation(since: number): Promise<SwapPreparation | null> {
+  return invoke("get_swap_preparation", { since });
+}
+
+/** Omit `swapId` for the running swap; pass one to read a swap the app has already released. */
+export function getSwapTracker(swapId?: string): Promise<SwapTrackerProgress | null> {
+  return invoke("get_swap_tracker", { swapId: swapId ?? null });
 }
 
 export function recoverSwap(): Promise<void> {

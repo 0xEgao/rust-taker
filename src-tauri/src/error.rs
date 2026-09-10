@@ -107,10 +107,6 @@ impl AppError {
         Self::new(ErrorCode::UserCancelled, message)
     }
 
-    /// Reports a denied operation that was not an ordinary user cancellation.
-    pub fn authorization_denied(message: impl Into<String>) -> Self {
-        Self::new(ErrorCode::AuthorizationDenied, message)
-    }
 }
 
 impl From<TakerError> for AppError {

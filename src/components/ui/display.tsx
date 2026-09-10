@@ -10,6 +10,7 @@ import {
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { HTMLAttributes, ReactNode } from "react";
 import type { LogLine } from "../../api/types";
@@ -174,7 +175,11 @@ export function Modal({ title, children, footer, onClose }: ModalProps) {
     };
   }, [onClose]);
 
-  return (
+  // Portalled to the body because `AppShell` animates each route inside a wrapper that keeps a
+  // `transform` and a `filter`, and either one makes that wrapper the containing block for
+  // `position: fixed` — which left a modal opened from a page off-centre with its backdrop
+  // covering only that subtree.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
       <motion.div
         ref={panelRef}
@@ -192,61 +197,8 @@ export function Modal({ title, children, footer, onClose }: ModalProps) {
         <div className="mt-4 flex flex-col gap-3">{children}</div>
         {footer && <div className="mt-6 flex justify-end gap-3">{footer}</div>}
       </motion.div>
-    </div>
-  );
-}
-
-export function IconBadge({
-  children,
-  variant = "solid",
-}: {
-  children: ReactNode;
-  variant?: "solid" | "outline";
-}) {
-  if (variant === "outline") {
-    return (
-      <div className="flex h-14 w-14 items-center justify-center rounded-full border border-primary/40 bg-surface-raised text-primary">
-        {children}
-      </div>
-    );
-  }
-  return (
-    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary font-bold text-on-primary">
-      {children}
-    </div>
-  );
-}
-
-const cardButtonBase =
-  "lift relative flex flex-col items-center gap-3 rounded-card border px-6 py-8 text-center outline-none focus-visible:border-primary/60 focus-visible:shadow-ring";
-
-export function SelectableCard({
-  icon,
-  title,
-  description,
-  selected,
-  onClick,
-}: {
-  icon: ReactNode;
-  title: string;
-  description: string;
-  selected?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`${cardButtonBase} ${
-        selected
-          ? "border-primary bg-primary/5"
-          : "border-line hover:border-line-strong hover:bg-[var(--color-hover)]"
-      }`}
-    >
-      <IconBadge variant="outline">{icon}</IconBadge>
-      <span className="text-[15px] font-semibold text-foreground">{title}</span>
-      <span className="text-[12.5px] text-muted">{description}</span>
-    </button>
+    </div>,
+    document.body,
   );
 }
 
