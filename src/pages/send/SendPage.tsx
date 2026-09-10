@@ -1,10 +1,10 @@
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } from "lucide-react";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress, verifyLastAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
-import { Card, SatsAmount } from "../../components/ui/display";
+import { Card, Modal, SatsAmount } from "../../components/ui/display";
 import { Button, PresetTile, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import {
   classifySpendType,
@@ -16,9 +16,16 @@ import {
   type Unit,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
+import { refreshWalletCache } from "../../lib/wallet-sync";
+import { usePendingSendsStore } from "../../store/pending-sends";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 
-type FeeKey = "low" | "mid" | "high" | "custom";
+/** Fixed, always-distinct choices. The mempool quote informs the hint below them, not the tiles
+ *  themselves — API-derived tiers collapse to the same number on a quiet mempool. */
+const FEE_PRESETS = [1, 2, 3] as const;
+const MAX_PRESET = FEE_PRESETS[FEE_PRESETS.length - 1];
+
+type FeeKey = (typeof FEE_PRESETS)[number] | "custom";
 
 function SendPanel() {
   const pushToast = useToastStore((s) => s.push);
@@ -28,6 +35,7 @@ function SendPanel() {
   const [balances, setBalances] = useState<Balances | null>(null);
   const [utxos, setUtxos] = useState<UtxoEntry[]>([]);
   const [fees, setFees] = useState<FeeEstimate | null>(null);
+  const [feesFailed, setFeesFailed] = useState(false);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [btcPriceCached, setBtcPriceCached] = useState(false);
 
@@ -36,20 +44,34 @@ function SendPanel() {
   const [recipientError, setRecipientError] = useState<string | undefined>();
   const [unit, setUnit] = useState<Unit>("sats");
   const [amountInput, setAmountInput] = useState("");
-  const [feeKey, setFeeKey] = useState<FeeKey>("mid");
+  const [feeKey, setFeeKey] = useState<FeeKey>(2);
   const [customFeeRate, setCustomFeeRate] = useState("");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [sending, setSending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const recordSend = usePendingSendsStore((s) => s.record);
 
   const load = useCallback(async () => {
-    const [nextBalances, nextUtxos, nextFees] = await Promise.all([getBalances(), listUtxos(), estimateFees()]);
+    const [nextBalances, nextUtxos] = await Promise.all([getBalances(), listUtxos()]);
     setBalances(nextBalances);
     setUtxos(nextUtxos);
-    setFees(nextFees);
+  }, []);
+
+  // Kept out of `load`: this one leaves the wallet entirely and asks mempool.space, so a
+  // third-party outage must not take the balance and UTXO picker down with it.
+  const loadFees = useCallback(() => {
+    setFeesFailed(false);
+    void estimateFees()
+      .then(setFees)
+      .catch(() => {
+        setFees(null);
+        setFeesFailed(true);
+      });
   }, []);
 
   useEffect(() => {
     void load().catch((e) => pushFailure(e, "Failed to load wallet data."));
+    loadFees();
     // BTC/USD price is best-effort — sats/BTC still work fine without it, so its own failure
     // shouldn't toast an error, just leave the USD option disabled.
     void getBtcPrice()
@@ -76,11 +98,17 @@ function SendPanel() {
   );
   const otherUnits = useMemo(() => (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit), [unit]);
 
-  const feeRate = useMemo(() => {
-    if (feeKey === "custom") return Number(customFeeRate) || 0;
-    if (!fees) return 0;
-    return fees[feeKey];
-  }, [feeKey, customFeeRate, fees]);
+  // The mempool quote as one whole number: the midpoint of the range it gives, rounded, because
+  // a rate is only ever chosen in whole sats/vB here. 2-2 reads 2, 2-4 reads 3.
+  const mempoolRate = useMemo(
+    () => (fees === null ? null : Math.round((fees.low + fees.high) / 2)),
+    [fees],
+  );
+
+  const feeRate = useMemo(
+    () => (feeKey === "custom" ? Number(customFeeRate) || 0 : feeKey),
+    [feeKey, customFeeRate],
+  );
 
   const spendableUtxos = useMemo(() => utxos.filter((u) => u.spendable && u.solvable), [utxos]);
   const selectedTotal = useMemo(() => {
@@ -133,27 +161,45 @@ function SendPanel() {
 
   async function submitSend() {
     if (useWalletCacheStore.getState().syncStatus !== "synced") {
-      pushToast("error", "Wait for wallet synchronization before sending.");
+      // Not a fault: the sync runs on arrival and clears on its own.
+      pushToast("warning", "Wait for the wallet sync to finish before sending.");
       return;
     }
+    setConfirming(false);
     setSending(true);
     try {
+      const to = recipient.trim();
       const result = await sendToAddress(
-        recipient.trim(),
+        to,
         amountSats,
         feeRate,
         selectedOutpoints.length > 0 ? selectedOutpoints : undefined,
       );
-      pushToast("success", `Broadcast: ${truncateMiddle(result.txid, 10, 8)}`);
+      // Recorded before anything else: this is the only place the txid is known for certain, and
+      // the wallet's own history cannot be relied on to show the transaction — see the note in
+      // `store/pending-sends.ts`.
+      recordSend({
+        txid: result.txid,
+        walletPath: useWalletCacheStore.getState().info?.walletPath ?? "",
+        address: to,
+        amountSats,
+        feeRate,
+        createdAt: Math.floor(Date.now() / 1000),
+      });
+      pushToast(
+        "success",
+        "Broadcast. The payment is in the mempool, waiting to be mined.",
+      );
       setRecipient("");
       setAmountInput("");
       setSelectedOutpoints([]);
       await load();
+      // The shared cache is what the Wallet page reads, and it otherwise only refreshes on a
+      // two-minute interval — long enough that a send looks like it did nothing.
+      void refreshWalletCache().catch(() => {});
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      if (err?.code !== "USER_CANCELLED") {
-        pushToast("error", err?.message ?? "Send failed.");
-      }
+      pushToast("error", err?.message ?? "Send failed.");
     } finally {
       setSending(false);
     }
@@ -238,13 +284,12 @@ function SendPanel() {
       <div className="flex flex-col gap-2">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Fee Rate</span>
         <div className="grid grid-cols-4 gap-2">
-          {(["low", "mid", "high"] as const).map((key) => (
+          {FEE_PRESETS.map((rate) => (
             <PresetTile
-              key={key}
-              onClick={() => setFeeKey(key)}
-              selected={feeKey === key}
-              label={key === "mid" ? "Medium" : key}
-              value={fees ? `${formatFeeRate(fees[key])} s/vB` : "…"}
+              key={rate}
+              onClick={() => setFeeKey(rate)}
+              selected={feeKey === rate}
+              label={`${rate} s/vB`}
               size="sm"
             />
           ))}
@@ -255,6 +300,23 @@ function SendPanel() {
             size="sm"
           />
         </div>
+        {/* The presets cover a normal mempool; this is the line that tells you when it isn't one,
+            so a spike doesn't silently leave every preset too low to confirm. */}
+        {mempoolRate !== null && (
+          <p className={`text-[11.5px] ${mempoolRate > MAX_PRESET ? "text-warning" : "text-subtle"}`}>
+            {mempoolRate > MAX_PRESET
+              ? `The mempool is asking about ${mempoolRate} s/vB — use Custom, or these will be slow to confirm.`
+              : `Mempool right now: ${mempoolRate} s/vB.`}
+          </p>
+        )}
+        {feesFailed && (
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[11.5px] text-subtle">Could not read the mempool.</span>
+            <Button size="sm" variant="ghost" onClick={loadFees}>
+              Try again
+            </Button>
+          </div>
+        )}
         {feeKey === "custom" && (
           <TextField
             label="Custom rate (sats/vB)"
@@ -305,46 +367,168 @@ function SendPanel() {
 
       <div className="flex-1" />
 
-      <Button size="md" disabled={!canSend} loading={sending} onClick={() => void submitSend()}>
+      <Button
+        size="md"
+        disabled={!canSend}
+        loading={sending}
+        onClick={() => setConfirming(true)}
+      >
         Send
       </Button>
+
+      {confirming && (
+        <Modal
+          title="Confirm this payment"
+          onClose={() => setConfirming(false)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+              <Button onClick={() => void submitSend()} loading={sending}>
+                Broadcast
+              </Button>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-2.5 rounded-control border border-line bg-surface-raised px-3.5 py-3">
+            <span className="flex flex-col gap-1">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                To
+              </span>
+              <span className="break-all font-mono text-[12px] text-foreground">
+                {recipient.trim()}
+              </span>
+            </span>
+            <span className="flex items-baseline justify-between gap-3 border-t border-line pt-2.5">
+              <span className="text-[12px] text-muted">Amount</span>
+              <strong className="font-numeric text-[13.5px] text-foreground">
+                <SatsAmount sats={amountSats} />
+              </strong>
+            </span>
+            <span className="flex items-baseline justify-between gap-3">
+              <span className="text-[12px] text-muted">Fee rate</span>
+              <span className="font-numeric text-[12.5px] text-foreground">
+                {formatFeeRate(feeRate)} s/vB
+              </span>
+            </span>
+            <span className="flex items-baseline justify-between gap-3">
+              <span className="text-[12px] text-muted">Inputs</span>
+              <span className="text-[12.5px] text-foreground">
+                {selectedOutpoints.length > 0
+                  ? `${selectedOutpoints.length} chosen by hand`
+                  : "Chosen automatically"}
+              </span>
+            </span>
+          </div>
+          <p className="text-[11.5px] leading-5 text-subtle">
+            The wallet builds the final network fee from this rate. Broadcasting cannot be undone.
+          </p>
+        </Modal>
+      )}
     </Card>
   );
 }
 
+// The Recent Addresses disclosure lists at most 8 entries, and every extra transaction in this
+// window costs Electrum an input fetch.
+const RECENT_ADDRESS_TX_WINDOW = 25;
+
 function ReceivePanel() {
   const pushToast = useToastStore((s) => s.push);
   const [addressType, setAddressType] = useState<AddressType>("p2wpkh");
-  const [current, setCurrent] = useState<NewAddress | null>(null);
+  // Kept per type: an unissued address stays valid until it is paid, so switching
+  // SegWit/Taproot and back is a lookup instead of another round trip to the wallet.
+  const [issued, setIssued] = useState<Partial<Record<AddressType, NewAddress>>>({});
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
+  const [pendingType, setPendingType] = useState<AddressType | null>(null);
   const [transactions, setTransactions] = useState<TxSummary[]>([]);
+  const current = issued[addressType] ?? null;
+
+  // A ref, not `pendingType`: this has to reject a duplicate synchronously, before the state
+  // update lands, or toggling the two types quickly issues two requests for the same one.
+  const inFlight = useRef<Set<AddressType>>(new Set());
+  // Swapping an address out from under a copy would leave the user pasting one thing while the
+  // panel shows another, so a copied address is only ever replaced on request.
+  const copied = useRef<Set<string>>(new Set());
 
   const generate = useCallback(
     async (type: AddressType) => {
-      setGenerating(true);
+      if (inFlight.current.has(type)) return;
+      inFlight.current.add(type);
+      setPendingType(type);
       try {
-        const next = await getNewAddress(type);
-        setCurrent(next);
+        const next = await verifyLastAddress(type);
+        setIssued((prev) => ({ ...prev, [type]: next }));
       } catch (e) {
         pushToast("error", (e as { message?: string })?.message ?? "Failed to generate address.");
       } finally {
-        setGenerating(false);
+        inFlight.current.delete(type);
+        setPendingType((p) => (p === type ? null : p));
       }
     },
     [pushToast],
   );
 
   useEffect(() => {
-    void generate(addressType);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addressType]);
+    if (issued[addressType]) return;
+    if (inFlight.current.has(addressType)) return;
+    inFlight.current.add(addressType);
+    setPendingType(addressType);
+    void getNewAddress(addressType)
+      .then((next) => setIssued((prev) => ({ ...prev, [addressType]: next })))
+      .catch((e) =>
+        pushToast("error", (e as { message?: string })?.message ?? "Failed to generate address."),
+      )
+      .finally(() => {
+        inFlight.current.delete(addressType);
+        setPendingType((p) => (p === addressType ? null : p));
+      });
+  }, [addressType, issued, pushToast]);
+
+  // The chain check the fast path skipped. Runs once per type, after the address is on screen;
+  // if the cached address turns out to have been paid, the fresh one replaces it silently —
+  // unless the user has already copied it, in which case they are told instead.
+  const verified = useRef<Set<AddressType>>(new Set());
+  useEffect(() => {
+    const current = issued[addressType];
+    if (!current || current.verified || verified.current.has(addressType)) return;
+    verified.current.add(addressType);
+    void verifyLastAddress(addressType)
+      .then((next) => {
+        if (next.address === current.address) {
+          setIssued((prev) => ({ ...prev, [addressType]: next }));
+          return;
+        }
+        if (copied.current.has(current.address)) {
+          pushToast(
+            "warning",
+            "The address you copied has been paid. Generate a new address before reusing it.",
+          );
+          return;
+        }
+        setIssued((prev) => ({ ...prev, [addressType]: next }));
+      })
+      .catch(() => {
+        // A failed check leaves the address on offer: it is the last one issued and almost
+        // certainly still unused, and refusing to show one would be worse than not confirming it.
+        verified.current.delete(addressType);
+      });
+  }, [addressType, issued, pushToast]);
+
+  // Deferred behind the first address, and only ever fetched once: both calls take the wallet's
+  // read lock, and this one feeds a disclosure the user has to open before it is even visible.
+  const historyRequested = useRef(false);
+  useEffect(() => {
+    if (!current || historyRequested.current) return;
+    historyRequested.current = true;
+    void getTransactions(RECENT_ADDRESS_TX_WINDOW, 0).then(setTransactions).catch(() => {});
+  }, [current]);
 
   useEffect(() => {
-    void getTransactions(100, 0).then(setTransactions);
-  }, []);
-
-  useEffect(() => {
+    // Cleared, not left standing: the panel is labelled with the selected type, so holding the
+    // previous type's QR while a new address loads offers the wrong address to copy.
+    setQrDataUrl(null);
     if (!current) return;
     let cancelled = false;
     void QRCode.toDataURL(current.address, { width: 184, margin: 1 }).then((url) => {
@@ -366,6 +550,7 @@ function ReceivePanel() {
 
   function copyAddress() {
     if (!current) return;
+    copied.current.add(current.address);
     void navigator.clipboard.writeText(current.address);
     pushToast("success", "Address copied.");
   }
@@ -403,7 +588,15 @@ function ReceivePanel() {
       />
 
       <div className="flex justify-center py-1">
-        <div className="grid h-[212px] w-[212px] place-items-center rounded-card bg-white p-3.5 shadow-[0_0_0_1px_rgba(255,255,255,0.16)]">
+        {/* The white plate only appears with the QR on it: a 212px white slab waiting on a dark
+            page reads as a broken image rather than as something loading. */}
+        <div
+          className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
+            qrDataUrl
+              ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
+              : "border border-line bg-surface-raised"
+          }`}
+        >
           {qrDataUrl ? (
             <img src={qrDataUrl} alt="Receive address QR code" width={184} height={184} />
           ) : (
@@ -416,7 +609,11 @@ function ReceivePanel() {
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Your Address</span>
         <div className="flex h-[46px] items-center justify-between gap-2 rounded-control border border-line-strong bg-surface-raised px-3.5">
           <span className="truncate font-mono text-[12.5px] text-muted" title={current?.address}>
-            {current ? truncateMiddle(current.address, 14, 10) : generating ? "Generating…" : "—"}
+            {current
+              ? truncateMiddle(current.address, 14, 10)
+              : pendingType === addressType
+                ? "Generating…"
+                : "—"}
           </span>
           <button
             type="button"
@@ -429,7 +626,13 @@ function ReceivePanel() {
         </div>
       </label>
 
-      <Button variant="secondary" onClick={() => void generate(addressType)} loading={generating}>
+      {/* Bypasses the per-type cache: this is the one control that asks the wallet whether the
+          address it issued has been paid, and hands over a fresh one if it has. */}
+      <Button
+        variant="secondary"
+        onClick={() => void generate(addressType)}
+        loading={pendingType !== null}
+      >
         Generate New Address
       </Button>
 

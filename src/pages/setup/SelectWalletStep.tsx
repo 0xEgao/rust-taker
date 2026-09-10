@@ -3,13 +3,14 @@ import { dirname } from "@tauri-apps/api/path";
 import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { chooseRestoreBackup, initTaker, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { chooseRestoreBackup, initWallet, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { IntroStage } from "../../components/ui/IntroStage";
+import { MIN_WALLET_PASSWORD_LENGTH } from "../../lib/password-policy";
 import { withMinDelay } from "../../lib/timing";
 import { walletIdentity } from "../../lib/wallet-identity";
 import {
@@ -52,7 +53,6 @@ function basename(path: string) {
 const MIN_STEP_MS = 900;
 
 // The crate refuses to create an unencrypted wallet, so this is a floor, not a style rule.
-const MIN_PASSWORD = 8;
 
 const CAPTIONS: Record<ViewMode, string> = {
   grid: "Select your wallet",
@@ -154,7 +154,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   // Validated as the user types so the submit stays disabled, rather than accepting the click
   // and reporting what's wrong afterwards.
   const canCreate =
-    createName.trim().length > 0 && createPassword.length >= MIN_PASSWORD && createPassword === createConfirm;
+    createName.trim().length > 0 && createPassword.length >= MIN_WALLET_PASSWORD_LENGTH && createPassword === createConfirm;
 
   function submitCreate() {
     if (!canCreate) return;
@@ -189,7 +189,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           if (wallet.mode === "restore") {
             await restoreWallet(wallet.walletName, undefined, wallet.selectionId, wallet.password, dataDir);
           }
-          return initTaker({
+          return initWallet({
             walletName: wallet.walletName,
             walletPassword: wallet.password,
             connectionType: "tor",
@@ -200,7 +200,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       );
       setSteps({ verify: "passed", init: "passed" });
       // Kick off a real offerbook sync now, in the background, so the Market page has fresh
-      // maker data by the time the user looks at it — not just whatever offerbook.json had from
+      // router data by the time the user looks at it — not just whatever offerbook.json had from
       // the last session. Not awaited: this can take 30-60s+ and shouldn't block navigation.
       void syncOfferbook().catch(() => {});
       // restore_wallet completes its own sync_and_save before init_taker, so a
@@ -246,22 +246,24 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     <div className="flex flex-col gap-5 text-left">
       <TextField
         label="Wallet name"
+        required
         value={createName}
         onChange={(e) => setCreateName(e.target.value)}
-        error={createName.trim() ? undefined : "Wallet name is required."}
       />
       <PasswordField
         label="Password"
+        required
         value={createPassword}
         onChange={(e) => setCreatePassword(e.target.value)}
         hint={
-          createPassword.length > 0 && createPassword.length < MIN_PASSWORD
-            ? "At least 8 characters. An unencrypted wallet is not permitted — losing this password means losing access to funds."
+          createPassword.length > 0 && createPassword.length < MIN_WALLET_PASSWORD_LENGTH
+            ? `At least ${MIN_WALLET_PASSWORD_LENGTH} characters. An unencrypted wallet is not permitted — losing this password means losing access to funds.`
             : undefined
         }
       />
       <PasswordField
         label="Confirm password"
+        required
         value={createConfirm}
         onChange={(e) => setCreateConfirm(e.target.value)}
         onKeyDown={onEnter(submitCreate)}
@@ -310,7 +312,9 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     <Checklist
       steps={[
         { label: "Verifying wallet password", state: steps.verify },
-        { label: "Initializing taker", state: steps.init },
+        // `Taker::init` runs any outstanding recovery inline before it returns, so this step
+        // covers a chain round trip per unresolved contract and can sit here for a while.
+        { label: "Initializing wallet and resuming any recovery", state: steps.init },
       ]}
     />
   );

@@ -21,12 +21,12 @@ use crate::types::{
 /// mutex — same reasoning as `commands::taker_wallet::get_wallet_handle`.
 fn get_maker_wallet_handle(
     state: &AppState,
-    maker_id: &str,
+    router_id: &str,
 ) -> Result<Arc<RwLock<Wallet>>, AppError> {
     let makers = state.makers.lock()?;
     let entry = makers
-        .get(maker_id)
-        .ok_or_else(|| AppError::maker_not_found(maker_id))?;
+        .get(router_id)
+        .ok_or_else(|| AppError::maker_not_found(router_id))?;
     entry
         .runtime
         .as_ref()
@@ -37,9 +37,9 @@ fn get_maker_wallet_handle(
 #[tauri::command]
 pub async fn get_maker_balances(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<BalancesDto, AppError> {
-    let wallet = get_maker_wallet_handle(&state, &maker_id)?;
+    let wallet = get_maker_wallet_handle(&state, &router_id)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<BalancesDto, AppError> {
         let b = wallet.read()?.get_balances()?;
         Ok(BalancesDto {
@@ -57,13 +57,13 @@ pub async fn get_maker_balances(
 #[tauri::command]
 pub async fn list_maker_utxos(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<Vec<UtxoEntry>, AppError> {
-    let wallet = get_maker_wallet_handle(&state, &maker_id)?;
+    let wallet = get_maker_wallet_handle(&state, &router_id)?;
     let socks_port = state
         .makers
         .lock()?
-        .get(&maker_id)
+        .get(&router_id)
         .map(|maker| maker.settings.socks_port);
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<UtxoEntry>, AppError> {
         let utxos = wallet.read()?.list_all_utxo_spend_info();
@@ -88,11 +88,11 @@ pub async fn list_maker_utxos(
 #[tauri::command]
 pub async fn get_maker_transactions(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
     count: Option<usize>,
     skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
-    let wallet = get_maker_wallet_handle(&state, &maker_id)?;
+    let wallet = get_maker_wallet_handle(&state, &router_id)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<TxSummary>, AppError> {
         let txs = wallet.read()?.get_transactions(count, skip)?;
         Ok(txs
@@ -118,10 +118,10 @@ pub async fn get_maker_transactions(
 #[tauri::command]
 pub async fn get_maker_new_address(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    let wallet = get_maker_wallet_handle(&state, &maker_id)?;
+    let wallet = get_maker_wallet_handle(&state, &router_id)?;
     let (addr_type, label) = match address_type {
         AddressTypeDto::P2wpkh => (AddressType::P2WPKH, "p2wpkh"),
         AddressTypeDto::P2tr => (AddressType::P2TR, "p2tr"),
@@ -134,6 +134,8 @@ pub async fn get_maker_new_address(
         Ok(NewAddress {
             address,
             address_type: label.to_string(),
+            // Always freshly derived here, so there is nothing to check.
+            verified: true,
         })
     })
     .await
@@ -143,15 +145,15 @@ pub async fn get_maker_new_address(
 #[tauri::command]
 pub async fn sync_maker_wallet(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<(), AppError> {
     // Holds the server (not just the wallet) so stopping the maker aborts an
     // in-flight sync instead of leaving it to run out its backend retries.
     let server = {
         let makers = state.makers.lock()?;
         makers
-            .get(&maker_id)
-            .ok_or_else(|| AppError::maker_not_found(&maker_id))?
+            .get(&router_id)
+            .ok_or_else(|| AppError::maker_not_found(&router_id))?
             .runtime
             .as_ref()
             .map(|runtime| runtime.server.clone())
@@ -170,9 +172,9 @@ pub async fn sync_maker_wallet(
 #[tauri::command]
 pub async fn list_maker_fidelity_bonds(
     state: tauri::State<'_, AppState>,
-    maker_id: String,
+    router_id: String,
 ) -> Result<Vec<FidelityBondDto>, AppError> {
-    let wallet = get_maker_wallet_handle(&state, &maker_id)?;
+    let wallet = get_maker_wallet_handle(&state, &router_id)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FidelityBondDto>, AppError> {
         let wallet = wallet.read()?;
         let (tip_height, tip_time) = wallet.chain_tip()?;

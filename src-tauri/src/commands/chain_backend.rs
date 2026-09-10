@@ -83,7 +83,9 @@ pub fn remove_legacy_config() {
 /// This session's backend, seeded from the code defaults on first read.
 pub(crate) fn load() -> ChainBackendConfig {
     let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-    session.get_or_insert_with(ChainBackendConfig::default).clone()
+    session
+        .get_or_insert_with(ChainBackendConfig::default)
+        .clone()
 }
 
 fn store(config: ChainBackendConfig) {
@@ -219,24 +221,6 @@ pub(crate) fn fingerprint(config: &ChainBackendConfig, socks_port: Option<u16>) 
         ChainBackendKind::CoreRpc => config.node.as_ref().map_or_else(
             || "core|missing".to_string(),
             |node| format!("core|{}|{}|{}", node.host, node.port, node.zmq_port),
-        ),
-    }
-}
-
-/// Human-readable route disclosure without returning credentials to the renderer.
-pub(crate) fn route_description(config: &ChainBackendConfig, socks_port: Option<u16>) -> String {
-    match config.kind {
-        ChainBackendKind::Electrum if electrum_needs_tor(&config.electrum) => format!(
-            "Electrum {} through Tor SOCKS 127.0.0.1:{}",
-            config.electrum.url,
-            live_socks_port(socks_port).unwrap_or_default()
-        ),
-        ChainBackendKind::Electrum => {
-            format!("Electrum {} directly (without Tor)", config.electrum.url)
-        }
-        ChainBackendKind::CoreRpc => config.node.as_ref().map_or_else(
-            || "Bitcoin Core (configuration missing)".to_string(),
-            |node| format!("Bitcoin Core RPC {}:{}", node.host, node.port),
         ),
     }
 }
@@ -481,6 +465,3 @@ mod tests {
         assert!(validate(&config).is_err());
     }
 }
-
-
-

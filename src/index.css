@@ -90,31 +90,31 @@
   --color-muted: #a2a9b8;
   --color-subtle: #72798a;
 
-  /* Azure, not blue. Two measured reasons the previous blue never sat right beside the maker
+  /* Azure, not blue. Two measured reasons the previous blue never sat right beside the router
      violet (h 299.5): it was only 38 degrees away in hue, so it read as a desaturated violet
      rather than its own colour, and blue cannot hold the violet's chroma at a matching
      lightness in sRGB. Azure at h 232 is 68 degrees clear of the violet and still 86 clear of
      the success green, and it holds C 0.148 at L 0.755 — brighter than the violet with all but
      0.012 of its chroma. */
   /* Azure-blue. Three constraints, in priority order:
-     hue 244 keeps 56 degrees clear of the maker violet (h 299.5) — the previous #5a8cff/#679cff
+     hue 244 keeps 56 degrees clear of the router violet (h 299.5) — the previous #5a8cff/#679cff
      sat at 262-264, only 35-38 degrees away, which is why it read as a washed-out violet rather
      than its own colour; lightness 0.715 is deliberately below the earlier azure's 0.755, which
      read too bright; and chroma 0.156 is the most this hue holds there, above both the violet's
      0.160-at-0.736 neighbourhood and the earlier azure's 0.148.
-     A purple trial on this side was rejected — with the maker violet running on both, the two
+     A purple trial on this side was rejected — with the router violet running on both, the two
      roles lost their only colour cue and it still did not fix the real problem, which is that
-     the taker's panels cover the background the gradient paints on. */
+     the wallet's panels cover the background the gradient paints on. */
   --color-primary: #36abfc;
-  /* Same delta the maker pair uses: +0.046 lightness, -0.030 chroma. */
+  /* Same delta the router pair uses: +0.046 lightness, -0.030 chroma. */
   --color-primary-hover: #65bafb;
   /* Readable ink for a filled accent surface — a token because both accents are light enough
      that white on them fails contrast. White on #36abfc is 2.34:1; this is 8.48:1. */
   --color-on-primary: #0b0e13;
-  /* Maker-side accent. Distinct from primary so operating a service never looks like spending
+  /* Router-side accent. Distinct from primary so operating a service never looks like spending
      your own coins, and clear of success/warning/danger. Same purple as the Taproot pill. */
-  --color-maker: #b990ff;
-  --color-maker-hover: #c5a4ff;
+  --color-router: #b990ff;
+  --color-router-hover: #c5a4ff;
   --color-success: #31d158;
   --color-warning: #f5c451;
   --color-danger: #ff5a5f;
@@ -153,11 +153,11 @@ body {
 /* Re-points the accent for a whole subtree. Every shared atom already paints with the primary
    tokens through `var()`, so a section turns violet here rather than by teaching each atom a
    second variant — and anything added later is tinted correctly for free. */
-[data-accent="maker"] {
-  --color-primary: var(--color-maker);
-  --color-primary-hover: var(--color-maker-hover);
-  /* --color-on-primary needs no override: the base is already dark ink, because the taker
-     accent is now as light as the maker one. */
+[data-accent="router"] {
+  --color-primary: var(--color-router);
+  --color-primary-hover: var(--color-router-hover);
+  /* --color-on-primary needs no override: the base is already dark ink, because the wallet
+     accent is now as light as the router one. */
 }
 
 /* Tailwind's preflight sets -webkit-appearance: button (not none), so WebKit still
@@ -306,9 +306,9 @@ button {
   }
 }
 
-/* The panel elevation stack, plus the hover glow the maker cards get from `lift`.
+/* The panel elevation stack, plus the hover glow the router cards get from `lift`.
    It lives on `box-shadow` rather than an `::after` layer because `Card` is `overflow-hidden`,
-   which would clip an outer glow painted on a pseudo-element — the maker's `<article>` has no
+   which would clip an outer glow painted on a pseudo-element — the router's `<article>` has no
    such clip, which is why `lift` can use one there. An element's own box-shadow is not clipped
    by its own overflow. */
 @utility card-lit {
@@ -319,7 +319,7 @@ button {
     0 18px 40px -28px rgba(0, 0, 0, 0.9),
     0 0 30px -18px color-mix(in oklab, var(--color-primary) 28%, transparent);
 
-  /* Same 45% accent at -6px spread `lift` uses, so hovering a taker panel and a maker card
+  /* Same 45% accent at -6px spread `lift` uses, so hovering a wallet panel and a router card
      produce the same amount of light. */
   &:hover {
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18),
@@ -327,5 +327,59 @@ button {
       0 1px 2px rgba(0, 0, 0, 0.45),
       0 18px 40px -26px rgba(0, 0, 0, 0.9),
       0 0 22px -6px color-mix(in oklab, var(--color-primary) 45%, transparent);
+  }
+}
+
+/* Marching ants on a swap circuit edge — the one sustained loop in the circuit, and the one
+   place CSS beats Motion: it never needs to interrupt mid-flight, and animation-play-state
+   stops it cleanly on confirmation without snapping the dash phase. */
+@keyframes circuit-ants {
+  to {
+    stroke-dashoffset: -32;
+  }
+}
+
+.circuit-edge-flowing,
+.circuit-edge-confirming {
+  stroke-dasharray: 6 10;
+  animation: circuit-ants 900ms linear infinite;
+}
+
+/* Slows as the transaction nears confirmation, so "nearly there" is legible without a number. */
+.circuit-edge-confirming {
+  animation-duration: 2200ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .circuit-edge-flowing,
+  .circuit-edge-confirming {
+    animation: none;
+  }
+}
+
+/* Finalizing: keys are travelling around a route that is already fully funded, so nothing is
+   moving along any one leg. The whole circuit beats instead. Driven from one class on the
+   container so every edge and node starts its animation in the same commit and stays in phase;
+   opacity only, because `buildCircuit` sizes the ring to avoid node collisions and scaling it
+   would reintroduce them. */
+@keyframes circuit-heartbeat {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.42;
+  }
+}
+
+.circuit-heartbeat svg path,
+.circuit-heartbeat .circuit-node {
+  animation: circuit-heartbeat 1500ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .circuit-heartbeat svg path,
+  .circuit-heartbeat .circuit-node {
+    animation: none;
   }
 }

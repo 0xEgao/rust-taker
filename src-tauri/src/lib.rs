@@ -51,25 +51,22 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // setup / connectivity
             setup::check_tor,
-            setup::get_version_info,
             // chain backend selection
             chain_backend::get_chain_backend,
             chain_backend::set_chain_backend,
             chain_backend::check_backend,
             // taker wallet lifecycle
-            taker_wallet::is_wallet_encrypted,
             taker_wallet::list_wallets,
             taker_wallet::init_taker,
-            taker_wallet::shutdown_taker,
             taker_wallet::get_wallet_info,
             taker_wallet::choose_restore_backup,
             taker_wallet::restore_wallet,
             taker_wallet::backup_wallet,
             // taker wallet operations
             taker_wallet::get_balances,
-            taker_wallet::check_swap_liquidity,
             taker_wallet::validate_address,
             taker_wallet::get_new_address,
+            taker_wallet::verify_last_address,
             taker_wallet::get_transactions,
             taker_wallet::list_utxos,
             taker_wallet::send_to_address,
@@ -87,11 +84,13 @@ pub fn run() {
             taker_swap::start_swap,
             taker_swap::get_swap_progress,
             taker_swap::get_swap_tracker,
+            taker_swap::get_swap_preparation,
             taker_swap::recover_swap,
             taker_swap::get_recovery_status,
             // taker reports
             taker_reports::list_swap_reports,
             taker_reports::get_swap_report,
+            taker_reports::get_incoming_swap_utxo,
             taker_reports::verify_deniability,
             // taker logs
             logs::get_logs,
@@ -214,4 +213,70 @@ pub fn run() {
             } => show_main_window(app),
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+        text.split_once(start)
+            .and_then(|(_, rest)| rest.split_once(end))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("{start} … {end} not found"))
+    }
+
+    /// The `command` half of every `module::command` path, ignoring comment lines — the bodies
+    /// being scanned carry prose that would otherwise parse as command names.
+    fn registered(body: &str) -> BTreeSet<String> {
+        let ident = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        body.lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.starts_with("//"))
+            .flat_map(|line| line.split(',').map(str::trim).collect::<Vec<_>>())
+            .filter_map(|token| token.split_once("::"))
+            .map(|(_, command)| command.trim().to_string())
+            .filter(|command| ident(command))
+            .collect()
+    }
+
+    /// Three hand-maintained lists have to name the same commands: `build.rs` generates one
+    /// permission per entry, `generate_handler!` registers the implementations, and the
+    /// capability grants them. A command missing from `build.rs` has no permission for the
+    /// capability to grant, and one missing from the capability is rejected at the IPC
+    /// boundary before it reaches Rust — surfacing in the UI as whatever the caller's `catch`
+    /// happens to say. Both drift silently past the compiler, so they are asserted here.
+    #[test]
+    fn command_permissions_match_registered_commands() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        let lib = read(&root.join("src/lib.rs"));
+        let handler = registered(between(&lib, "tauri::generate_handler![", "])"));
+        assert!(handler.len() > 50, "parsed too few commands: {handler:?}");
+
+        let build = read(&root.join("build.rs"));
+        let generated: BTreeSet<String> = between(&build, "const COMMANDS: &[&str] = &[", "];")
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            handler, generated,
+            "build.rs COMMANDS and generate_handler! disagree"
+        );
+
+        let capability = read(&root.join("capabilities/default.json"));
+        let missing: Vec<String> = handler
+            .iter()
+            .map(|c| format!("allow-{}", c.replace('_', "-")))
+            .filter(|p| !capability.contains(&format!("\"{p}\"")))
+            .collect();
+        assert!(missing.is_empty(), "capability is missing: {missing:?}");
+    }
 }

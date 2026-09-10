@@ -114,7 +114,7 @@ export function IntroStage({
           transition={{ duration: 0.5, ease: "easeOut" }}
           className="absolute left-8 top-5 z-10"
         >
-          {/* The shell's maker-mode logo, repeated: leaving a side of the app is the same
+          {/* The shell's router-mode logo, repeated: leaving a side of the app is the same
               control wherever the user meets it. */}
           <Link
             to={back.to}

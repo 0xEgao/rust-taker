@@ -1,11 +1,12 @@
-import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight } from "lucide-react";
+import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight, Clock } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Card, ExternalLinkButton, SatsAmount, StatStrip } from "../../components/ui/display";
+import { Card, ExternalLinkButton, SatsAmount, StatStrip, StatusChip } from "../../components/ui/display";
 import { LinkButton, SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
 import { WalletFooterCard } from "./WalletBackupCard";
 import { useHeaderActionsStore } from "../../store/header-actions";
+import { sendConfirmations, usePendingSendsStore } from "../../store/pending-sends";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 import {
   classifySpendType,
@@ -22,7 +23,7 @@ type TxSortKey = "newest" | "amount";
 type SortDir = "asc" | "desc";
 
 const SCRIPT_PILL_CLASS: Record<string, string> = {
-  Taproot: "text-maker border-maker/35 bg-maker/10",
+  Taproot: "text-router border-router/35 bg-router/10",
   SegWit: "text-primary border-primary/35 bg-primary/[0.12]",
 };
 
@@ -49,6 +50,13 @@ export function WalletPage() {
   const syncError = useWalletCacheStore((s) => s.syncError);
   const lastSuccessfulSyncAt = useWalletCacheStore((s) => s.lastSuccessfulSyncAt);
   const historyStatus = useWalletCacheStore((s) => s.historyStatus);
+  const allPendingSends = usePendingSendsStore((s) => s.sends);
+  const reconcileSends = usePendingSendsStore((s) => s.reconcile);
+  const walletPath = info?.walletPath ?? null;
+  const pendingSends = useMemo(
+    () => allPendingSends.filter((x) => x.walletPath === walletPath),
+    [allPendingSends, walletPath],
+  );
   const historyError = useWalletCacheStore((s) => s.historyError);
 
   const refreshing = syncStatus === "syncing";
@@ -92,6 +100,17 @@ export function WalletPage() {
     useHeaderActionsStore.getState().register(() => void refresh());
     return () => useHeaderActionsStore.getState().register(null);
   }, [refresh]);
+
+  // A recorded send stops being pending once the chain agrees: either an output of it is
+  // confirmed, or it turned up in the wallet's own history.
+  useEffect(() => {
+    if (!walletPath) return;
+    reconcileSends(
+      walletPath,
+      utxos,
+      transactions.map((tx) => tx.txid),
+    );
+  }, [walletPath, utxos, transactions, reconcileSends]);
 
   useEffect(() => {
     useHeaderActionsStore.getState().setRefreshing(refreshing);
@@ -246,7 +265,7 @@ export function WalletPage() {
           },
           { label: "Swaps", value: <SatsAmount sats={balances?.swap ?? 0} />, detail: "received by swap txs" },
           { label: "Regular", value: <SatsAmount sats={balances?.regular ?? 0} />, detail: "received by regular txs" },
-          { label: "Contracts", value: <SatsAmount sats={balances?.contract ?? 0} />, detail: "stuck in HTLC" },
+          { label: "Contracts", value: <SatsAmount sats={balances?.contract ?? 0} />, detail: "held in a swap contract" },
         ]}
       />
 
@@ -311,7 +330,7 @@ export function WalletPage() {
             <div className="flex items-baseline gap-3">
               <h3 className="font-header text-[15px] font-bold text-foreground">Recent transactions</h3>
               <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                {transactions.length} total
+                {transactions.length + pendingSends.length} total
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -330,7 +349,37 @@ export function WalletPage() {
             </div>
           </header>
           <div className="flex min-h-0 flex-1 flex-col divide-y divide-line overflow-y-auto px-3.5">
-            {filteredTx.length === 0 && (
+            {/* Above the history, and outside the filters, because these are the transactions the
+                user just made and most wants to see land. */}
+            {pendingSends.map((send) => {
+              const confirmations = sendConfirmations(send.txid, utxos);
+              return (
+                <div key={send.txid} className="flex items-center gap-3 px-3 py-3">
+                  <StatusChip tone="warning" shape="tile" className="h-[34px] w-[34px] justify-center px-0">
+                    <Clock size={16} strokeWidth={2} />
+                  </StatusChip>
+                  <span className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="truncate font-mono text-[12px] text-muted" title={send.txid}>
+                      {truncateMiddle(send.txid, 12, 8)}
+                    </span>
+                    <StatusChip tone="warning" className="self-start">
+                      {confirmations === null
+                        ? "Broadcast — waiting for the mempool"
+                        : confirmations === 0
+                          ? "In the mempool — waiting for a block"
+                          : `${confirmations} confirmation${confirmations === 1 ? "" : "s"}`}
+                    </StatusChip>
+                  </span>
+                  <span className="flex flex-none items-center gap-2">
+                    <span className="font-numeric text-[12.5px] text-danger">
+                      −<SatsAmount sats={send.amountSats} />
+                    </span>
+                    <ExternalLinkButton txid={send.txid} />
+                  </span>
+                </div>
+              );
+            })}
+            {filteredTx.length === 0 && pendingSends.length === 0 && (
               <p className="px-3 py-6 text-center text-[13px] text-subtle">
                 {historyStatus === "loading" || refreshing
                   ? "Loading recent transaction history from Electrum…"

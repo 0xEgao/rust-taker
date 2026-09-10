@@ -76,7 +76,7 @@ impl AppError {
 
     /// Reports that a command requires an initialized taker session.
     pub fn not_initialized() -> Self {
-        Self::new(ErrorCode::NotInitialized, "taker is not initialized")
+        Self::new(ErrorCode::NotInitialized, "wallet is not initialized")
     }
 
     #[allow(dead_code)]
@@ -87,18 +87,18 @@ impl AppError {
     pub fn maker_busy() -> Self {
         Self::new(
             ErrorCode::MakerBusy,
-            "a maker start/stop operation is already in progress",
+            "a router start/stop operation is already in progress",
         )
     }
 
     pub fn maker_not_initialized() -> Self {
-        Self::new(ErrorCode::MakerNotInitialized, "maker is not initialized")
+        Self::new(ErrorCode::MakerNotInitialized, "router is not initialized")
     }
 
-    pub fn maker_not_found(maker_id: &str) -> Self {
+    pub fn maker_not_found(router_id: &str) -> Self {
         Self::new(
             ErrorCode::MakerNotFound,
-            format!("maker '{maker_id}' is not registered"),
+            format!("router '{router_id}' is not registered"),
         )
     }
 
@@ -107,10 +107,6 @@ impl AppError {
         Self::new(ErrorCode::UserCancelled, message)
     }
 
-    /// Reports a denied operation that was not an ordinary user cancellation.
-    pub fn authorization_denied(message: impl Into<String>) -> Self {
-        Self::new(ErrorCode::AuthorizationDenied, message)
-    }
 }
 
 impl From<TakerError> for AppError {

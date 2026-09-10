@@ -1,4 +1,4 @@
-import { ArrowRight, Eye, EyeOff } from "lucide-react";
+import { ArrowRight, Check, Eye, EyeOff } from "lucide-react";
 import { motion } from "framer-motion";
 import { Link, type LinkProps } from "react-router-dom";
 import {
@@ -252,13 +252,23 @@ export function CheckRow({
       className={`flex cursor-pointer items-center justify-between gap-3 rounded-control border px-3 py-2 outline-none transition-colors focus-within:shadow-ring ${checked ? "border-primary/45 bg-primary/[0.06]" : "border-line bg-surface-raised hover:bg-[var(--color-hover)]"}`}
     >
       <span className="flex min-w-0 items-center gap-3">
-        <input
-          id={id}
-          type="checkbox"
-          checked={checked}
-          onChange={(e) => onToggle(e.target.checked)}
-          className="h-4 w-4 accent-primary"
-        />
+        {/* The native control is kept for semantics and keyboard handling but taken out of the
+            paint: WebKit ignores `accent-color` on an unchecked box and fills it white, which on
+            this dark surface reads as a broken control rather than an empty one. */}
+        <span className="relative grid h-4 w-4 flex-none place-items-center">
+          <input
+            id={id}
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => onToggle(e.target.checked)}
+            className="peer absolute inset-0 h-4 w-4 cursor-pointer appearance-none rounded-[4px] border border-line-strong bg-surface outline-none checked:border-primary checked:bg-primary focus-visible:shadow-ring"
+          />
+          <Check
+            size={11}
+            strokeWidth={3}
+            className="pointer-events-none relative hidden text-on-primary peer-checked:block"
+          />
+        </span>
         <span className="min-w-0">
           <strong className="block truncate text-[12px] text-foreground">
             {primary}
@@ -281,22 +291,43 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   hint?: string;
 }
 
+function FieldLabel({
+  htmlFor,
+  label,
+  required,
+}: {
+  htmlFor: string;
+  label: string;
+  required?: boolean;
+}) {
+  return (
+    <label htmlFor={htmlFor} className="text-[12.5px] font-medium text-muted">
+      {label}
+      {required && (
+        <span className="ml-1 text-danger" aria-hidden="true">
+          *
+        </span>
+      )}
+    </label>
+  );
+}
+
 export function TextField({
   label,
   error,
   hint,
   id,
+  required,
   className = "",
   ...props
 }: TextFieldProps) {
   const inputId = id ?? useId();
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={inputId} className="text-[12.5px] font-medium text-muted">
-        {label}
-      </label>
+      <FieldLabel htmlFor={inputId} label={label} required={required} />
       <input
         id={inputId}
+        required={required}
         className={`h-10 rounded-control border bg-surface-raised px-3 text-[13px] text-foreground outline-none transition-colors duration-200 placeholder:text-subtle ${
           error
             ? "border-danger bg-danger/5"
@@ -324,6 +355,7 @@ export function PasswordField({
   error,
   hint,
   id,
+  required,
   className = "",
   ...props
 }: PasswordFieldProps) {
@@ -332,12 +364,11 @@ export function PasswordField({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={inputId} className="text-[12.5px] font-medium text-muted">
-        {label}
-      </label>
+      <FieldLabel htmlFor={inputId} label={label} required={required} />
       <div className="relative">
         <input
           id={inputId}
+          required={required}
           type={visible ? "text" : "password"}
           className={`h-10 w-full rounded-control border bg-surface-raised px-3 pr-10 text-[13px] text-foreground outline-none transition-colors duration-200 placeholder:text-subtle ${
             error
@@ -364,28 +395,6 @@ export function PasswordField({
       ) : hint ? (
         <span className="text-[11.5px] text-subtle">{hint}</span>
       ) : null}
-    </div>
-  );
-}
-
-interface FieldChipProps extends Omit<
-  InputHTMLAttributes<HTMLInputElement>,
-  "size"
-> {
-  label: string;
-}
-
-/** Compact "LABEL: value" input for tight spaces; use TextField when a hint/error row is needed. */
-export function FieldChip({ label, className = "", ...props }: FieldChipProps) {
-  return (
-    <div className="flex items-center gap-1.5 rounded-control border border-line bg-surface-raised px-3 py-2 transition-colors duration-200 focus-within:border-primary focus-within:shadow-ring">
-      <span className="whitespace-nowrap text-[11px] uppercase tracking-wide text-subtle">
-        {label}:
-      </span>
-      <input
-        className={`w-full min-w-0 bg-transparent text-[13px] text-foreground outline-none placeholder:text-subtle ${className}`}
-        {...props}
-      />
     </div>
   );
 }

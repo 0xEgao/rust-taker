@@ -8,7 +8,7 @@ const RISE = [0.16, 1, 0.3, 1] as const;
 
 /**
  * Deliberately quiet, with no `IntroStage`: both branches play their own arrival
- * sequence (taker unlock, first-maker creation), and a third one here would make the
+ * sequence (wallet unlock, first-router creation), and a third one here would make the
  * user sit through the wordmark twice before doing anything.
  */
 function RoleCard({
@@ -20,7 +20,7 @@ function RoleCard({
   delay,
 }: {
   to: string;
-  accent?: "maker";
+  accent?: "router";
   icon: React.ReactNode;
   title: string;
   description: string;
@@ -31,7 +31,7 @@ function RoleCard({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.55, delay, ease: RISE }}
-      // Scopes hairline's and lift's primary-derived glow to the maker accent.
+      // Scopes hairline's and lift's primary-derived glow to the router accent.
       data-accent={accent}
       className="flex-1"
     >
@@ -58,7 +58,7 @@ function RoleCard({
 
 export function LaunchPage() {
   const initialized = useSessionStore((s) => s.initialized);
-  // Nothing to choose once a taker is unlocked; a stale history entry must not strand it here.
+  // Nothing to choose once a wallet is unlocked; a stale history entry must not strand it here.
   if (initialized) return <Navigate to="/" replace />;
 
   return (
@@ -87,15 +87,15 @@ export function LaunchPage() {
             <RoleCard
               to="/setup"
               icon={<ArrowLeftRight size={22} strokeWidth={1.8} />}
-              title="Taker"
-              description="Unlock a wallet and swap your bitcoin privately through a route of makers."
+              title="Wallet"
+              description="Unlock a wallet and swap your bitcoin privately through a route of routers."
               delay={0.12}
             />
             <RoleCard
-              to="/maker"
-              accent="maker"
+              to="/router"
+              accent="router"
               icon={<Server size={22} strokeWidth={1.8} />}
-              title="Maker"
+              title="Router"
               description="Run liquidity services over Tor and earn fees from the swaps you route."
               delay={0.2}
             />

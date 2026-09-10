@@ -1,14 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   AlertTriangle,
   ArrowLeftRight,
   CheckCircle2,
   FileText,
-  Globe,
+  LifeBuoy,
+  Gauge,
   RefreshCw,
   ShieldAlert,
-  Wallet,
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -18,27 +17,25 @@ import {
   getBtcPrice,
   getLogs,
   getOffers,
-  getRecoveryStatus,
+  getSwapPreparation,
   getSwapProgress,
   getSwapTracker,
   prepareSwap,
-  recoverSwap,
   startSwap,
 } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type {
+  SwapPreparation,
   AppError,
   LogLine,
-  Maker,
+  Router,
   Outpoint,
   ProtocolVersion,
-  RecoveryStatus,
   SwapLiquidity,
   SwapFundingEstimate,
   SwapRequest,
   SwapSummary,
   SwapTrackerProgress,
-  TrackerPhase,
   UtxoEntry,
 } from "../../api/types";
 import {
@@ -47,7 +44,6 @@ import {
   Disclosure,
   LogViewer,
   SatsAmount,
-  StatusChip,
 } from "../../components/ui/display";
 import {
   Button,
@@ -55,13 +51,18 @@ import {
   SegmentedToggle,
   TextField,
 } from "../../components/ui/inputs";
+import { Checklist } from "../../components/ui/Checklist";
+import { SwapCircuit } from "./circuit/SwapCircuit";
+import { NowPanel, Vitals } from "./circuit/panels";
+import { useSwapCircuit } from "./circuit/useSwapCircuit";
 import {
-  estimateRouteMakerFees,
+  estimateRouteRouterFees,
   formatTorEndpoint,
 } from "../../lib/market-format";
 import {
   classifySpendType,
   formatDuration,
+  formatFeeRate,
   formatUnitAmount,
   satsToUnitString,
   SATS_PER_BTC,
@@ -69,23 +70,12 @@ import {
   unitStringToSats,
   type Unit,
 } from "../../lib/wallet-format";
+import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 
 type UtxoFilter = "regular" | "swap";
 type Lifecycle = "configure" | "running" | "finished" | "failed";
-type RouteTone = "idle" | "active" | "success" | "danger";
-type RouteNodeInfo = { tone: RouteTone; badge?: string };
-const ROUTE_STATUS_TONE: Record<
-  RouteTone,
-  "subtle" | "primary" | "success" | "danger"
-> = {
-  idle: "subtle",
-  active: "primary",
-  success: "success",
-  danger: "danger",
-};
-
 function EstimatedSats({
   sats,
   className,
@@ -100,14 +90,19 @@ function EstimatedSats({
   );
 }
 
-const MAKER_COUNT_PRESETS = [2, 3, 4] as const;
+// A blocking prepare takes tens of seconds; this only reads a local file.
+const PREPARATION_POLL_MS = 1_200;
+
+const ROUTER_COUNT_PRESETS = [2, 3, 4] as const;
+
+const FUNDING_RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
 
 function elapsedLabel(startedAt: number | null): string {
   if (!startedAt) return "0s";
   return formatDuration(Date.now() / 1000 - startedAt);
 }
 
-// Owns its own 1s tick so the rest of the progress screen (route diagram, framer-motion props
+// Owns its own 1s tick so the rest of the progress screen (circuit diagram, Motion props
 // and all) doesn't re-render every second just to update this one label.
 function Elapsed({
   startedAt,
@@ -123,242 +118,6 @@ function Elapsed({
     return () => clearInterval(id);
   }, [active]);
   return <>{elapsedLabel(startedAt)}</>;
-}
-
-const ROUTE_SIZE = 480;
-const ROUTE_CENTER = ROUTE_SIZE / 2;
-const ROUTE_RADIUS = 175;
-const ROUTE_NODE_SIZE = 84;
-
-const ROUTE_TONE_BORDER: Record<RouteTone, string> = {
-  idle: "border-line-strong text-subtle",
-  active: "border-primary/70 text-primary",
-  success: "border-success/70 text-success",
-  danger: "border-danger/70 text-danger",
-};
-const ROUTE_TONE_LABEL: Record<RouteTone, string> = {
-  idle: "Waiting",
-  active: "Active",
-  success: "Complete",
-  danger: "Failed",
-};
-const ROUTE_TONE_TEXT: Record<RouteTone, string> = {
-  idle: "text-subtle",
-  active: "text-foreground",
-  success: "text-success",
-  danger: "text-danger",
-};
-const ROUTE_TONE_GLOW: Record<RouteTone, string> = {
-  idle: "rgba(255,255,255,0.06)",
-  active: "color-mix(in oklab, var(--color-primary) 55%, transparent)",
-  success: "color-mix(in oklab, var(--color-success) 55%, transparent)",
-  danger: "color-mix(in oklab, var(--color-danger) 55%, transparent)",
-};
-
-// Live per-maker milestone counts -> a coarse visual tone (no progress yet / some / all done).
-function stepsToTone(stepsDone: number, stepsTotal: number): RouteTone {
-  if (stepsTotal > 0 && stepsDone >= stepsTotal) return "success";
-  if (stepsDone > 0) return "active";
-  return "idle";
-}
-
-const TRACKER_PHASE_LABEL: Record<TrackerPhase, string> = {
-  makers_discovered: "Finding makers…",
-  negotiated: "Negotiating…",
-  funding_created: "Creating funding…",
-  funds_broadcast: "Broadcasting funding…",
-  contracts_exchanged: "Exchanging contracts…",
-  finalizing: "Finalizing…",
-  privkeys_forwarded: "Forwarding keys…",
-  completed: "Swap Complete",
-  failed: "Swap Failed",
-};
-
-function routeNodeXY(index: number, total: number) {
-  const angle = -Math.PI / 2 + (index / total) * Math.PI * 2;
-  return {
-    x: ROUTE_CENTER + ROUTE_RADIUS * Math.cos(angle),
-    y: ROUTE_CENTER + ROUTE_RADIUS * Math.sin(angle),
-  };
-}
-
-/**
- * Radial route diagram — your wallet + one node per maker, driven by real live progress read
- * from the crate's own swap_tracker.cbor (see SwapPage's tracker-polling effect), same file the
- * old Electron app polled directly off disk. Each node gets its own tone/badge; a maker with no
- * milestones yet sits "idle" rather than pretending it's already active.
- */
-function SwapRouteAnimation({
-  wallet,
-  makers,
-  centerLabel,
-  centerTone,
-}: {
-  wallet: RouteNodeInfo;
-  makers: (RouteNodeInfo & { address: string })[];
-  centerLabel: string;
-  centerTone: RouteTone;
-}) {
-  const reduceMotion = useReducedMotion();
-  const total = makers.length + 1;
-  const nodes = [
-    {
-      id: "wallet",
-      label: "Your Wallet",
-      sub: undefined as string | undefined,
-      icon: Wallet,
-      info: wallet,
-    },
-    ...makers.map((m, i) => ({
-      id: m.address,
-      label: `Maker ${i + 1}`,
-      sub: formatTorEndpoint(m.address, 8, 4, true),
-      icon: Globe,
-      info: m,
-    })),
-  ];
-  const segments = Array.from({ length: total }, (_, i) => {
-    const a = routeNodeXY(i, total);
-    const b = routeNodeXY((i + 1) % total, total);
-    // A true arc of the same circle the nodes sit on (not a bezier bulge) — with few nodes (e.g.
-    // wallet + 2 makers) a bulging curve reads as a rounded triangle instead of a circle.
-    const d = `M ${a.x} ${a.y} A ${ROUTE_RADIUS} ${ROUTE_RADIUS} 0 0 1 ${b.x} ${b.y}`;
-    // Tint the arc by whichever endpoint is furthest along, so a segment glows once either side
-    // of it has made progress rather than staying idle-gray until both ends finish.
-    const toneRank: Record<RouteTone, number> = {
-      idle: 0,
-      active: 1,
-      danger: 2,
-      success: 3,
-    };
-    const destTone = nodes[(i + 1) % total].info.tone;
-    const srcTone = nodes[i].info.tone;
-    const tone = toneRank[destTone] >= toneRank[srcTone] ? destTone : srcTone;
-    return { d, tone };
-  });
-
-  return (
-    // Extra bottom space beyond the SVG/node-position math (ROUTE_SIZE square) so the label + pill
-    // hanging below the bottommost node has room before the stats grid that follows this diagram.
-    <div
-      className="relative mx-auto"
-      style={{ width: ROUTE_SIZE, height: ROUTE_SIZE + 56 }}
-    >
-      <svg
-        width={ROUTE_SIZE}
-        height={ROUTE_SIZE}
-        className="absolute left-0 top-0"
-        style={{ pointerEvents: "none" }}
-      >
-        {segments.map((seg, i) => (
-          <motion.path
-            key={i}
-            d={seg.d}
-            fill="none"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            stroke="currentColor"
-            className={ROUTE_TONE_BORDER[seg.tone]}
-            initial={{ pathLength: 0, opacity: 0 }}
-            animate={
-              seg.tone === "active"
-                ? { pathLength: 1, opacity: [0.3, 0.85, 0.3] }
-                : { pathLength: 1, opacity: seg.tone === "idle" ? 0.5 : 0.9 }
-            }
-            transition={
-              seg.tone === "active"
-                ? {
-                    pathLength: { duration: 0.6, delay: i * 0.06 },
-                    opacity: {
-                      duration: 1.6,
-                      repeat: reduceMotion ? 0 : Infinity,
-                      ease: "easeInOut",
-                      delay: reduceMotion ? 0 : i * 0.1,
-                    },
-                  }
-                : { duration: 0.6, delay: i * 0.06 }
-            }
-          />
-        ))}
-      </svg>
-
-      <div
-        className="pointer-events-none absolute left-0 top-0 grid place-items-center"
-        style={{ width: ROUTE_SIZE, height: ROUTE_SIZE }}
-      >
-        <AnimatePresence mode="wait">
-          <motion.span
-            key={centerLabel}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.3 }}
-            className={`font-header text-[14px] font-bold ${ROUTE_TONE_TEXT[centerTone]}`}
-          >
-            {centerLabel}
-          </motion.span>
-        </AnimatePresence>
-      </div>
-
-      {nodes.map((n, i) => {
-        const { x, y } = routeNodeXY(i, total);
-        const Icon = n.icon;
-        const tone = n.info.tone;
-        return (
-          <motion.div
-            key={n.id}
-            initial={{
-              opacity: reduceMotion ? 1 : 0,
-              y: reduceMotion ? 0 : 10,
-            }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              duration: 0.42,
-              delay: reduceMotion ? 0 : i * 0.07,
-              ease: [0.16, 1, 0.3, 1],
-            }}
-            className="absolute flex flex-col items-center gap-1.5"
-            style={{
-              left: x - ROUTE_NODE_SIZE / 2,
-              top: y - ROUTE_NODE_SIZE / 2,
-              width: ROUTE_NODE_SIZE,
-            }}
-          >
-            <div className="relative">
-              {tone === "active" && (
-                <motion.span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 rounded-full"
-                  style={{ boxShadow: `0 0 18px ${ROUTE_TONE_GLOW[tone]}` }}
-                  animate={{ opacity: reduceMotion ? 0.55 : [0.2, 0.8, 0.2] }}
-                  transition={{
-                    duration: 1.4,
-                    repeat: reduceMotion ? 0 : Infinity,
-                    ease: "easeInOut",
-                  }}
-                />
-              )}
-              <div
-                className={`relative grid place-items-center rounded-full border-2 bg-surface-raised ${ROUTE_TONE_BORDER[tone]}`}
-                style={{ width: ROUTE_NODE_SIZE, height: ROUTE_NODE_SIZE }}
-              >
-                <Icon size={26} strokeWidth={1.8} />
-              </div>
-            </div>
-            <span className="text-center text-[10px] font-bold uppercase tracking-wide text-foreground">
-              {n.label}
-            </span>
-            {n.sub && (
-              <span className="font-mono text-[9px] text-subtle">{n.sub}</span>
-            )}
-            <StatusChip tone={ROUTE_STATUS_TONE[tone]}>
-              {n.info.badge ?? ROUTE_TONE_LABEL[tone]}
-            </StatusChip>
-          </motion.div>
-        );
-      })}
-    </div>
-  );
 }
 
 export function SwapPage() {
@@ -382,49 +141,66 @@ export function SwapPage() {
   }, [balances]);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [btcPriceCached, setBtcPriceCached] = useState(false);
-  const [makers, setMakers] = useState<Maker[]>([]);
+  const [routers, setRouters] = useState<Router[]>([]);
   const [fundingEstimate, setFundingEstimate] =
     useState<SwapFundingEstimate | null>(null);
   const [fundingEstimateStatus, setFundingEstimateStatus] = useState<
-    "idle" | "loading" | "ready" | "error"
+    "idle" | "loading" | "retrying" | "ready" | "error"
   >("idle");
+  // Bumped by the summary's Retry to re-arm the quote with a fresh attempt budget.
+  const [fundingAttempt, setFundingAttempt] = useState(0);
+  // Compared against the quote's own rate rather than a literal 2: the protocol's fixed rate
+  // lives in the crate, and hardcoding it here would go stale silently.
 
   const [unit, setUnit] = useState<Unit>("sats");
   const [amountInput, setAmountInput] = useState("");
   const [utxoFilter, setUtxoFilter] = useState<UtxoFilter>("regular");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [protocol, setProtocol] = useState<ProtocolVersion>("taproot");
-  const [makerCount, setMakerCount] = useState(2);
-  const [customMakerCount, setCustomMakerCount] = useState("5");
-  const [selectedMakers, setSelectedMakers] = useState<string[]>([]);
+  const [routerCount, setRouterCount] = useState(2);
+  const [customRouterCount, setCustomRouterCount] = useState("5");
+  const [selectedRouters, setSelectedRouters] = useState<string[]>([]);
 
   const [phase, setPhase] = useState<Lifecycle>("configure");
   const [summary, setSummary] = useState<SwapSummary | null>(null);
   const [swapId, setSwapId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [failure, setFailure] = useState<AppError | null>(null);
-  const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(
-    null,
-  );
   const [tracker, setTracker] = useState<SwapTrackerProgress | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [recovering, setRecovering] = useState(false);
+  const [preparingSince, setPreparingSince] = useState<number | null>(null);
+  const [preparation, setPreparation] = useState<SwapPreparation | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [swapLogs, setSwapLogs] = useState<LogLine[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
 
+  const recoveryActive = useRecoveryStore((s) => s.active);
+
+  const circuit = useSwapCircuit(
+    tracker,
+    summary,
+    phase === "failed",
+    phase === "finished",
+  );
+
   const loadReference = useCallback(async () => {
     const nextOffers = await getOffers();
-    setMakers(nextOffers.good);
+    setRouters(nextOffers.good);
   }, []);
 
   useEffect(() => {
-    void loadReference().catch((e) =>
+    // A warning, not an error: arriving here before the offerbook has synced is the normal
+    // first-launch state, the page still works, and the router list fills in on its own.
+    // Silent for SWAP_IN_PROGRESS, which is not a fault at all: `get_offers` needs the taker,
+    // a running swap holds it for hours, and the router list is not what the user is here for
+    // while that is true.
+    void loadReference().catch((e) => {
+      if (isAppError(e) && e.code === "SWAP_IN_PROGRESS") return;
       pushToast(
-        "error",
-        isAppError(e) ? e.message : "Failed to load swap data.",
-      ),
-    );
+        "warning",
+        isAppError(e) ? e.message : "Router list is not available yet.",
+      );
+    });
     // BTC/USD price is best-effort, same as Send — leave the USD unit disabled rather than toast.
     void getBtcPrice()
       .then((p) => {
@@ -436,21 +212,17 @@ export function SwapPage() {
         setBtcPriceCached(false);
       });
 
-    // Reconcile a swap already in flight (app restart mid-swap, or navigating back here).
+    // Reconcile a swap already in flight (app restart mid-swap, or navigating back here). Only a
+    // running swap is ever reported: a terminal phase is stale by definition, and recovery lives
+    // on its own page, so an answer here means "still running" and nothing else.
     void getSwapProgress().then((progress) => {
       if (!progress) return;
       setSwapId(progress.swapId);
       setStartedAt(progress.startedAt ?? null);
-      if (progress.phase === "finished") setPhase("finished");
-      else if (progress.phase === "running" || progress.phase === "recovering")
-        setPhase("running");
-      else if (progress.phase === "failed") {
-        setFailure(
-          progress.error ? { code: "INTERNAL", message: progress.error } : null,
-        );
-        setPhase("failed");
-      }
-      // "prepared" has no cached SwapSummary to show on a confirm screen — leave on configure.
+      // Router fees live only in the prepared quote, so without replaying it the circuit's
+      // per-hop amounts silently stop descending after a remount.
+      setSummary(progress.summary);
+      setPhase("running");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -458,24 +230,38 @@ export function SwapPage() {
   useEffect(() => {
     let unlistenFinished: (() => void) | undefined;
     let unlistenFailed: (() => void) | undefined;
+    let unlistenRecovering: (() => void) | undefined;
     void listen<string>("swap://finished", () => setPhase("finished")).then(
       (fn) => {
         unlistenFinished = fn;
       },
     );
+    // Only fires for a failure with nothing on-chain, which is a plain error with nothing to
+    // recover. Anything past the funding broadcast arrives as swap://recovering instead.
     void listen<AppError>("swap://failed", (e) => {
       setFailure(e.payload);
       setPhase("failed");
     }).then((fn) => {
       unlistenFailed = fn;
     });
+    // The funds are in contracts and the crate is already claiming them back, so this page hands
+    // itself back for the next swap and the recovery page takes over.
+    void listen("swap://recovering", () => {
+      resetWizard();
+      pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
+      navigate("/swap/recovery");
+    }).then((fn) => {
+      unlistenRecovering = fn;
+    });
     return () => {
       unlistenFinished?.();
       unlistenFailed?.();
+      unlistenRecovering?.();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Live per-maker detail straight off swap_tracker.cbor — same 2s poll cadence the old Electron
+  // Live per-router detail straight off swap_tracker.cbor — same 2s poll cadence the old Electron
   // app used for its disk-read poll of the same file.
   useEffect(() => {
     if (phase !== "running") return;
@@ -496,7 +282,7 @@ export function SwapPage() {
   }, [phase]);
 
   // One more read on the terminal transition — the last 2s-cadence poll can be a beat stale by
-  // the time swap://finished|failed fires, so refresh once more for the final per-maker state.
+  // the time swap://finished|failed fires, so refresh once more for the final per-router state.
   useEffect(() => {
     if (phase !== "finished" && phase !== "failed") return;
     void getSwapTracker()
@@ -525,13 +311,6 @@ export function SwapPage() {
       if (id) clearInterval(id);
     };
   }, [phase, logsOpen]);
-
-  useEffect(() => {
-    if (phase !== "failed") return;
-    void getRecoveryStatus()
-      .then(setRecoveryStatus)
-      .catch(() => {});
-  }, [phase]);
 
   function changeUnit(nextUnit: Unit) {
     const sats = unitStringToSats(amountInput, unit, btcPrice);
@@ -585,29 +364,29 @@ export function SwapPage() {
     setSelectedOutpoints([]);
   }
 
-  const compatibleMakers = useMemo(
+  const compatibleRouters = useMemo(
     () =>
-      makers.filter((m) => {
+      routers.filter((m) => {
         if (!m.offer) return false;
-        const makerProtocol = m.protocol?.toLowerCase();
-        // "unified" makers (the crate's current default) speak both — only a maker pinned to
+        const routerProtocol = m.protocol?.toLowerCase();
+        // "unified" routers (the crate's current default) speak both — only a router pinned to
         // the other protocol is actually incompatible.
         return (
-          !makerProtocol ||
-          makerProtocol === "unified" ||
-          makerProtocol === protocol
+          !routerProtocol ||
+          routerProtocol === "unified" ||
+          routerProtocol === protocol
         );
       }),
-    [makers, protocol],
+    [routers, protocol],
   );
 
-  function pickMakerCount(count: number) {
-    setMakerCount(count);
-    setSelectedMakers([]);
+  function pickRouterCount(count: number) {
+    setRouterCount(count);
+    setSelectedRouters([]);
   }
 
-  function toggleMaker(address: string) {
-    setSelectedMakers((prev) =>
+  function toggleRouter(address: string) {
+    setSelectedRouters((prev) =>
       prev.includes(address)
         ? prev.filter((a) => a !== address)
         : [...prev, address],
@@ -616,29 +395,35 @@ export function SwapPage() {
 
   // Nothing ticked in the advanced panel means automatic — no separate mode flag to keep in sync.
   const manualCoins = selectedOutpoints.length > 0;
-  const manualMakers = selectedMakers.length > 0;
+  const manualRouters = selectedRouters.length > 0;
 
-  const effectiveMakerCount = manualMakers
-    ? selectedMakers.length
-    : makerCount === 5
-      ? Math.max(2, Number(customMakerCount) || 5)
-      : makerCount;
+  const effectiveRouterCount = manualRouters
+    ? selectedRouters.length
+    : routerCount === 5
+      ? Math.max(2, Number(customRouterCount) || 5)
+      : routerCount;
 
-  const estimateMakers = useMemo(() => {
-    if (manualMakers)
-      return compatibleMakers.filter((m) => selectedMakers.includes(m.address));
-    return compatibleMakers.slice(0, Math.max(0, effectiveMakerCount));
-  }, [compatibleMakers, manualMakers, selectedMakers, effectiveMakerCount]);
+  const estimateRouters = useMemo(() => {
+    if (manualRouters)
+      return compatibleRouters.filter((m) => selectedRouters.includes(m.address));
+    return compatibleRouters.slice(0, Math.max(0, effectiveRouterCount));
+  }, [compatibleRouters, manualRouters, selectedRouters, effectiveRouterCount]);
 
+  // Deliberately not gated on the wallet sync: `estimate_swap_funding` is a `coin_select`
+  // over the wallet's stored UTXOs with no network I/O, so it can quote before a sync lands.
+  // Sync still gates *starting* a swap — see `warnings` and `handleStartSwap`.
   useEffect(() => {
     let cancelled = false;
     setFundingEstimate(null);
-    setFundingEstimateStatus("idle");
-    if (amountSats <= 0 || walletSyncStatus !== "synced")
+    if (amountSats <= 0) {
+      setFundingEstimateStatus("idle");
       return () => {
         cancelled = true;
       };
-    const timer = setTimeout(() => {
+    }
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const run = () => {
       setFundingEstimateStatus("loading");
       const outpoints =
         manualCoins && selectedOutpoints.length > 0
@@ -653,41 +438,53 @@ export function SwapPage() {
         .catch(() => {
           if (cancelled) return;
           setFundingEstimate(null);
-          setFundingEstimateStatus("error");
+          // A quote most often fails because a long sync is holding the wallet lock, which
+          // clears on its own — so back off and try again rather than leaving the summary
+          // blank with no way forward. Manual Retry re-arms this budget.
+          const delay = FUNDING_RETRY_DELAYS_MS[attempt];
+          attempt += 1;
+          if (delay === undefined) {
+            setFundingEstimateStatus("error");
+            return;
+          }
+          setFundingEstimateStatus("retrying");
+          timer = setTimeout(run, delay);
         });
-    }, 150);
+    };
+    // Debounced so typing an amount doesn't quote every keystroke.
+    timer = setTimeout(run, 150);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [amountSats, protocol, manualCoins, selectedOutpoints, walletSyncStatus]);
+  }, [amountSats, protocol, manualCoins, selectedOutpoints, fundingAttempt]);
 
   const feeSummary = useMemo(() => {
     const hasCompleteRoute =
       amountSats > 0 &&
-      effectiveMakerCount > 0 &&
-      estimateMakers.length === effectiveMakerCount;
-    const makerFee = hasCompleteRoute
-      ? estimateRouteMakerFees(
-          estimateMakers.map((maker) => ({
-            baseFee: maker.offer!.baseFee,
-            amountRelativeFeePct: maker.offer!.amountRelativeFeePct,
-            timeRelativeFeePct: maker.offer!.timeRelativeFeePct,
+      effectiveRouterCount > 0 &&
+      estimateRouters.length === effectiveRouterCount;
+    const routerFee = hasCompleteRoute
+      ? estimateRouteRouterFees(
+          estimateRouters.map((router) => ({
+            baseFee: router.offer!.baseFee,
+            amountRelativeFeePct: router.offer!.amountRelativeFeePct,
+            timeRelativeFeePct: router.offer!.timeRelativeFeePct,
           })),
           amountSats,
         )
       : null;
     const fundingFee = fundingEstimate?.feeSats ?? null;
     const routeMiningFee = fundingEstimate
-      ? fundingEstimate.routeMiningFeePerMakerSats * effectiveMakerCount
+      ? fundingEstimate.routeMiningFeePerRouterSats * effectiveRouterCount
       : null;
     const sweepFee = fundingEstimate?.sweepFeeSats ?? null;
     // Everything the route takes out of the amount itself, as opposed to the funding fee,
     // which the wallet pays on top of it — hence `amount - deductions` for the receive
     // figure and `+ fundingFee` only for the total.
     const routeDeductions =
-      makerFee !== null && routeMiningFee !== null && sweepFee !== null
-        ? makerFee + routeMiningFee + sweepFee
+      routerFee !== null && routeMiningFee !== null && sweepFee !== null
+        ? routerFee + routeMiningFee + sweepFee
         : null;
     const totalFee =
       routeDeductions !== null && fundingFee !== null
@@ -696,14 +493,14 @@ export function SwapPage() {
     const receiveAmount =
       routeDeductions !== null ? Math.max(0, amountSats - routeDeductions) : null;
     return {
-      makerFee,
+      routerFee,
       fundingFee,
       routeMiningFee,
       sweepFee,
       totalFee,
       receiveAmount,
     };
-  }, [estimateMakers, effectiveMakerCount, amountSats, fundingEstimate]);
+  }, [estimateRouters, effectiveRouterCount, amountSats, fundingEstimate]);
 
   const warnings = useMemo(() => {
     const list: string[] = [];
@@ -712,11 +509,6 @@ export function SwapPage() {
         walletSyncStatus === "error"
           ? `Wallet sync failed: ${walletSyncError ?? "The chain backend is unavailable."}`
           : "Wait for the initial wallet sync before starting a swap.",
-      );
-    }
-    if (fundingEstimateStatus === "error") {
-      list.push(
-        "The wallet could not calculate a funding transaction for this amount and coin selection.",
       );
     }
     if (amountInput.length > 0 && amountSats <= 0)
@@ -732,16 +524,16 @@ export function SwapPage() {
     ) {
       list.push("Estimated receive amount is too small after fees.");
     }
-    if (manualMakers && selectedMakers.length < 2) {
-      list.push("Pin at least two makers, or untick them all to auto-select.");
-    } else if (effectiveMakerCount < 2) {
-      list.push("A Portal route requires at least two makers.");
+    if (manualRouters && selectedRouters.length < 2) {
+      list.push("Pin at least two routers, or untick them all to auto-select.");
+    } else if (effectiveRouterCount < 2) {
+      list.push("A Portal route requires at least two routers.");
     }
-    if (compatibleMakers.length === 0) {
-      list.push(`No compatible ${protocol} makers found in the offerbook.`);
-    } else if (!manualMakers && effectiveMakerCount > compatibleMakers.length) {
+    if (compatibleRouters.length === 0) {
+      list.push(`No compatible ${protocol} routers found in the offerbook.`);
+    } else if (!manualRouters && effectiveRouterCount > compatibleRouters.length) {
       list.push(
-        `Only ${compatibleMakers.length} compatible maker${compatibleMakers.length === 1 ? "" : "s"} available for ${effectiveMakerCount} hops.`,
+        `Only ${compatibleRouters.length} compatible router${compatibleRouters.length === 1 ? "" : "s"} available for ${effectiveRouterCount} hops.`,
       );
     }
     return list;
@@ -753,29 +545,30 @@ export function SwapPage() {
     selectedOutpoints,
     selectedTotal,
     feeSummary.receiveAmount,
-    manualMakers,
-    selectedMakers,
-    compatibleMakers,
-    effectiveMakerCount,
+    manualRouters,
+    selectedRouters,
+    compatibleRouters,
+    effectiveRouterCount,
     protocol,
     walletSyncStatus,
     walletSyncError,
     fundingEstimateStatus,
   ]);
 
-  // Null once the quote is ready: the numbers underneath already are the quote.
+  // Null once the quote is ready: the numbers underneath already are the quote. Reports the
+  // quote's own state, not the sync's — the quote no longer waits on one.
   const quoteStatus =
-    walletSyncStatus !== "synced"
-      ? "Waiting for wallet sync"
-      : fundingEstimateStatus === "loading"
-        ? "Calculating wallet quote"
+    fundingEstimateStatus === "loading"
+      ? "Calculating wallet quote"
+      : fundingEstimateStatus === "retrying"
+        ? "Retrying quote"
         : fundingEstimateStatus === "error"
           ? "Quote unavailable"
           : fundingEstimate
             ? null
             : "";
 
-  // Pinned makers already show up in the Makers section; a UTXO pick has no other home.
+  // Pinned routers already show up in the Routers section; a UTXO pick has no other home.
   const advancedSummary = manualCoins
     ? `${selectedOutpoints.length} UTXO${selectedOutpoints.length === 1 ? "" : "s"} selected`
     : null;
@@ -788,27 +581,52 @@ export function SwapPage() {
 
   // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
   // dialog, bound to the authoritative prepared summary; there is no second renderer modal.
+  // Only while `submitting`: this is the one window where the taker mutex is held by a call that
+  // reports nothing, so the tracker file is the only progress signal there is.
+  useEffect(() => {
+    if (!submitting || preparingSince === null) {
+      setPreparation(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      void getSwapPreparation(preparingSince)
+        .then((next) => {
+          if (!cancelled) setPreparation(next);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, PREPARATION_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [submitting, preparingSince]);
+
   async function handleStartSwap() {
     if (useWalletCacheStore.getState().syncStatus !== "synced") {
+      // Not a fault: the sync is expected to be in progress on arrival, and it clears on its own.
       pushToast(
-        "error",
-        "Wait for wallet synchronization before starting a swap.",
+        "warning",
+        "Wait for the wallet sync to finish before starting a swap.",
       );
       return;
     }
+    setPreparingSince(Math.floor(Date.now() / 1000));
     setSubmitting(true);
     try {
       const request: SwapRequest = {
         protocol,
         amountSats,
-        makerCount: effectiveMakerCount,
+        routerCount: effectiveRouterCount,
         outpoints:
           manualCoins && selectedOutpoints.length > 0
             ? selectedOutpoints
             : undefined,
-        preferredMakers:
-          manualMakers && selectedMakers.length > 0
-            ? selectedMakers
+        preferredRouters:
+          manualRouters && selectedRouters.length > 0
+            ? selectedRouters
             : undefined,
       };
       const prepared = await prepareSwap(request);
@@ -819,9 +637,7 @@ export function SwapPage() {
       setPhase("running");
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      if (err?.code !== "AUTHORIZATION_DENIED" && err?.code !== "USER_CANCELLED") {
-        pushToast("error", err?.message ?? "Failed to start swap.");
-      }
+      pushToast("error", err?.message ?? "Failed to start swap.");
     } finally {
       setSubmitting(false);
     }
@@ -833,26 +649,50 @@ export function SwapPage() {
     setSwapId(null);
     setStartedAt(null);
     setFailure(null);
-    setRecoveryStatus(null);
     setTracker(null);
     setAmountInput("");
     setSelectedOutpoints([]);
-    setSelectedMakers([]);
+    setSelectedRouters([]);
     void loadReference().catch(() => {});
   }
 
-  async function handleRecover() {
-    setRecovering(true);
-    try {
-      await recoverSwap();
-      pushToast("success", "Recovery started.");
-      setRecoveryStatus(await getRecoveryStatus());
-    } catch (e) {
-      const err = isAppError(e) ? e : null;
-      pushToast("error", err?.message ?? "Recovery failed to start.");
-    } finally {
-      setRecovering(false);
-    }
+  if (submitting) {
+    // Every step here is real: no record on disk yet means the crate is still refreshing the
+    // marketplace, a record means routers are picked, and the per-router `negotiated` flags are
+    // where the count comes from. Nothing is faked forward on a timer.
+    const discovered = preparation !== null;
+    const negotiated = discovered && preparation.negotiatedCount >= preparation.routerCount;
+    const negotiating = discovered && !negotiated;
+    return (
+      <div className="grid h-full place-items-center px-8 py-10">
+        <Card className="flex w-full max-w-md flex-col gap-5 border-line-strong p-7">
+          <div>
+            <h1 className="font-header text-[19px] font-bold text-foreground">
+              Starting your swap
+            </h1>
+            <p className="mt-1 text-[12.5px] leading-5 text-muted">
+              No funds have moved yet. Every router has to agree terms over its own Tor circuit
+              first, one after another, which is what takes the time.
+            </p>
+          </div>
+          <Checklist
+            steps={[
+              {
+                label: "Refreshing the marketplace",
+                state: discovered ? "passed" : "running",
+              },
+              {
+                label: discovered
+                  ? `Agreeing terms · ${preparation.negotiatedCount} of ${preparation.routerCount} routers`
+                  : "Agreeing terms with the routers",
+                state: negotiated ? "passed" : negotiating ? "running" : "idle",
+              },
+              { label: "Funding the route", state: negotiated ? "running" : "idle" },
+            ]}
+          />
+        </Card>
+      </div>
+    );
   }
 
   if (phase === "running" || phase === "finished" || phase === "failed") {
@@ -862,54 +702,15 @@ export function SwapPage() {
     // ever comes from prepareSwap's return value, which can't be re-fetched for an already-running
     // swap. Fall back to the live tracker (which survives remounts fine, since it's a fresh read
     // off disk each time) so the screen doesn't get stuck "reconnecting" forever.
-    const makerAddresses =
-      summary?.makers.map((m) => m.address) ??
-      tracker?.makers.map((m) => m.address) ??
-      null;
+    const routeKnown =
+      (summary?.routers.length ?? tracker?.routers.length ?? 0) > 0 ||
+      tracker !== null;
     const displaySendAmountSats =
       summary?.sendAmountSats ?? tracker?.sendAmountSats;
-    const displayMakerCount = summary?.makers.length ?? tracker?.makerCount;
-
-    const makerNodes: (RouteNodeInfo & { address: string })[] = (
-      makerAddresses ?? []
-    ).map((address) => {
-      if (phase === "finished") return { address, tone: "success" };
-      if (phase === "failed") return { address, tone: "danger" };
-      const live = tracker?.makers.find((tm) => tm.address === address);
-      if (!live) return { address, tone: "idle" };
-      return { address, tone: stepsToTone(live.stepsDone, live.stepsTotal) };
-    });
-
-    const walletNode: RouteNodeInfo =
-      phase === "finished"
-        ? { tone: "success", badge: "Received" }
-        : phase === "failed"
-          ? { tone: "danger" }
-          : {
-              tone:
-                tracker && tracker.phase !== "makers_discovered"
-                  ? "active"
-                  : "idle",
-            };
-
-    const centerLabel =
-      phase === "finished"
-        ? "Swap Complete"
-        : phase === "failed"
-          ? "Swap Failed"
-          : tracker
-            ? TRACKER_PHASE_LABEL[tracker.phase]
-            : "Swapping…";
-    const centerTone: RouteTone =
-      phase === "finished"
-        ? "success"
-        : phase === "failed"
-          ? "danger"
-          : "active";
 
     return (
       <div className="flex h-full flex-col items-center overflow-y-auto px-8 py-10">
-        <div className="w-full max-w-2xl">
+        <div className="w-full max-w-4xl">
           <div className="flex items-center justify-center gap-3">
             {phase === "running" && (
               <RefreshCw
@@ -936,13 +737,22 @@ export function SwapPage() {
           </div>
 
           <Card className="mt-5 flex flex-col gap-4 border-line-strong p-6">
-            {makerAddresses ? (
-              <SwapRouteAnimation
-                wallet={walletNode}
-                makers={makerNodes}
-                centerLabel={centerLabel}
-                centerTone={centerTone}
-              />
+            {routeKnown ? (
+              <div className="flex flex-col gap-4">
+                <SwapCircuit view={circuit} />
+                <Vitals
+                  view={circuit}
+                  elapsed={
+                    startedAt === null ? (
+                      "—"
+                    ) : (
+                      <Elapsed startedAt={startedAt} active={phase === "running"} />
+                    )
+                  }
+                  blockHeight={null}
+                />
+                <NowPanel view={circuit} />
+              </div>
             ) : (
               <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
                 <RefreshCw
@@ -954,32 +764,14 @@ export function SwapPage() {
               </div>
             )}
 
-            <div className="grid grid-cols-3 gap-3 rounded-control border border-line-strong bg-surface-raised px-3.5 py-3 text-center">
-              <div>
-                <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                  Amount
-                </div>
-                <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
-                  {displaySendAmountSats !== undefined
-                    ? displaySendAmountSats.toLocaleString()
-                    : "—"}
-                </div>
+            <div className="rounded-control border border-line-strong bg-surface-raised px-3.5 py-3 text-center">
+              <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                Amount
               </div>
-              <div>
-                <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                  Makers
-                </div>
-                <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
-                  {displayMakerCount !== undefined ? displayMakerCount : "—"}
-                </div>
-              </div>
-              <div>
-                <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                  Elapsed
-                </div>
-                <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
-                  <Elapsed startedAt={startedAt} active={phase === "running"} />
-                </div>
+              <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
+                {displaySendAmountSats !== undefined
+                  ? displaySendAmountSats.toLocaleString()
+                  : "—"}
               </div>
             </div>
 
@@ -1005,28 +797,6 @@ export function SwapPage() {
                         "Something went wrong.")}
                   </span>
                 </div>
-                {recoveryStatus &&
-                  (recoveryStatus.recovering ||
-                    recoveryStatus.pendingContractCount > 0) && (
-                    <div className="flex items-center justify-between text-[11.5px] text-subtle">
-                      <span>
-                        {recoveryStatus.complete
-                          ? "Recovery complete."
-                          : `Recovering ${recoveryStatus.pendingContractCount} pending contract${recoveryStatus.pendingContractCount === 1 ? "" : "s"}...`}
-                      </span>
-                      {!recoveryStatus.complete &&
-                        !recoveryStatus.recovering && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => void handleRecover()}
-                            loading={recovering}
-                          >
-                            Recover Now
-                          </Button>
-                        )}
-                    </div>
-                  )}
               </div>
             )}
 
@@ -1067,17 +837,30 @@ export function SwapPage() {
             Initiate Swap
           </h1>
           <p className="mt-1 text-[13.5px] text-muted">
-            Route a private Bitcoin swap through multiple makers over Tor.
+            Route a private Bitcoin swap through multiple routers over Tor.
           </p>
         </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => navigate("/swap/reports")}
-        >
-          <FileText size={14} strokeWidth={2} />
-          Swap Reports
-        </Button>
+        <div className="flex items-center gap-2">
+          {RECOVERY_UI_ENABLED && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => navigate("/swap/recovery")}
+              className={recoveryActive ? "border-warning/50 text-warning" : ""}
+            >
+              <LifeBuoy size={14} strokeWidth={2} />
+              Recovery
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => navigate("/swap/reports")}
+          >
+            <FileText size={14} strokeWidth={2} />
+            Swap Reports
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -1162,41 +945,64 @@ export function SwapPage() {
           <div className="flex flex-col gap-2.5 border-t border-line pt-5">
             <div className="flex items-center justify-between">
               <h2 className="font-header text-[13.5px] font-bold text-foreground">
-                Makers
+                Routers
               </h2>
               <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                {effectiveMakerCount} from {compatibleMakers.length} available
+                {effectiveRouterCount} from {compatibleRouters.length} available
               </span>
             </div>
             <div className="grid grid-cols-4 gap-2">
-              {MAKER_COUNT_PRESETS.map((n) => (
+              {ROUTER_COUNT_PRESETS.map((n) => (
                 <PresetTile
                   key={n}
-                  onClick={() => pickMakerCount(n)}
-                  selected={!manualMakers && makerCount === n}
-                  label="Makers"
+                  onClick={() => pickRouterCount(n)}
+                  selected={!manualRouters && routerCount === n}
+                  label="Routers"
                   value={n}
                 />
               ))}
               <PresetTile
-                onClick={() => pickMakerCount(5)}
-                selected={!manualMakers && makerCount === 5}
+                onClick={() => pickRouterCount(5)}
+                selected={!manualRouters && routerCount === 5}
                 label="Custom"
                 value="5+"
               />
             </div>
-            {!manualMakers && makerCount === 5 && (
+            {!manualRouters && routerCount === 5 && (
               <TextField
-                label="Number of makers"
+                label="Number of routers"
                 inputMode="numeric"
-                value={customMakerCount}
-                onChange={(e) => setCustomMakerCount(e.target.value)}
+                value={customRouterCount}
+                onChange={(e) => setCustomRouterCount(e.target.value)}
               />
             )}
             <p className="text-[11.5px] text-subtle">
-              {manualMakers
-                ? `Route pinned to ${selectedMakers.length} specific maker${selectedMakers.length === 1 ? "" : "s"} in advanced options — pick a count to go back to automatic.`
-                : "More makers means stronger privacy and higher fees."}
+              {manualRouters
+                ? `Route pinned to ${selectedRouters.length} specific router${selectedRouters.length === 1 ? "" : "s"} in advanced options — pick a count to go back to automatic.`
+                : "More routers means stronger privacy and higher fees."}
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
+            <div className="flex items-center justify-between gap-3 rounded-control border border-dashed border-line bg-surface px-3.5 py-3">
+              <span className="flex items-center gap-2.5">
+                <Gauge size={15} strokeWidth={1.9} className="text-subtle" />
+                <span className="text-[13px] text-muted">Network fee rate</span>
+              </span>
+              <span className="flex items-baseline gap-2.5">
+                <strong className="font-numeric text-[13.5px] text-foreground">
+                  {fundingEstimate
+                    ? `${formatFeeRate(fundingEstimate.feeRateSatsPerVb)} s/vB`
+                    : "—"}
+                </strong>
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-subtle">
+                  Fixed
+                </span>
+              </span>
+            </div>
+            <p className="text-[11.5px] text-subtle">
+              Every hop signs the same contract transactions in advance, so all of them have to
+              agree on one rate before any funds move.
             </p>
           </div>
 
@@ -1206,25 +1012,25 @@ export function SwapPage() {
                 <div className="flex flex-col gap-2.5">
                   <div className="flex items-center justify-between">
                     <h3 className="font-header text-[12.5px] font-bold text-foreground">
-                      Pin Specific Makers
+                      Pin Specific Routers
                     </h3>
                     <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                      {manualMakers
-                        ? `${selectedMakers.length} pinned`
+                      {manualRouters
+                        ? `${selectedRouters.length} pinned`
                         : "Automatic"}
                     </span>
                   </div>
                   <p className="text-[11.5px] text-subtle">
-                    Tick makers to route through them specifically, or leave
+                    Tick routers to route through them specifically, or leave
                     them all unticked to auto-select.
                   </p>
                   <div className="flex max-h-45 flex-col gap-1.5 overflow-y-auto">
-                    {compatibleMakers.length === 0 && (
+                    {compatibleRouters.length === 0 && (
                       <p className="text-[11.5px] text-subtle">
-                        No compatible {protocol} makers in the offerbook.
+                        No compatible {protocol} routers in the offerbook.
                       </p>
                     )}
-                    {compatibleMakers.map((m) => (
+                    {compatibleRouters.map((m) => (
                       <label
                         key={m.address}
                         className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
@@ -1232,8 +1038,8 @@ export function SwapPage() {
                         <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
                           <input
                             type="checkbox"
-                            checked={selectedMakers.includes(m.address)}
-                            onChange={() => toggleMaker(m.address)}
+                            checked={selectedRouters.includes(m.address)}
+                            onChange={() => toggleRouter(m.address)}
                             className="accent-primary"
                           />
                           {formatTorEndpoint(m.address, 10, 6, true)}
@@ -1353,11 +1159,6 @@ export function SwapPage() {
           >
             Start Swap
           </Button>
-          {submitting && (
-            <p className="-mt-2 text-center text-[11.5px] text-subtle">
-              Negotiating with makers over Tor — this can take up to a minute.
-            </p>
-          )}
         </Card>
 
         <div className="flex flex-col gap-4">
@@ -1390,6 +1191,26 @@ export function SwapPage() {
               )}
             </div>
 
+            {fundingEstimateStatus === "error" && (
+              <div className="flex flex-col gap-2 rounded-control border border-warning/35 bg-warning/[0.06] px-3 py-2.5">
+                <p className="text-[11.5px] leading-4 text-warning">
+                  The wallet couldn't quote a funding transaction for this amount and coin
+                  selection, so the mining-fee rows are blank. Router fees come from the
+                  offerbook and are unaffected.
+                </p>
+                <div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setFundingAttempt((n) => n + 1)}
+                  >
+                    <RefreshCw size={13} strokeWidth={1.9} />
+                    Retry quote
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-col gap-1.5 text-[12px]">
               <div className="flex items-center justify-between">
                 <span className="text-subtle">Swap amount</span>
@@ -1399,9 +1220,9 @@ export function SwapPage() {
                 />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Makers</span>
+                <span className="text-subtle">Routers</span>
                 <strong className="font-mono text-foreground">
-                  {effectiveMakerCount}
+                  {effectiveRouterCount}
                 </strong>
               </div>
               <div className="flex items-center justify-between">
@@ -1429,9 +1250,9 @@ export function SwapPage() {
                 straight down into "You receive"; the funding fee sits above it with its own tx. */}
             <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-3 text-[12px]">
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Maker fees</span>
+                <span className="text-subtle">Router fees</span>
                 <EstimatedSats
-                  sats={feeSummary.makerFee}
+                  sats={feeSummary.routerFee}
                   className="font-semibold text-foreground"
                 />
               </div>

@@ -5,8 +5,8 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { getMakerSwapReport, verifyMakerDeniability } from "../../api/commands";
-import type { MakerSwapReportDetail } from "../../api/types";
+import { getRouterSwapReport, verifyRouterDeniability } from "../../api/commands";
+import type { RouterSwapReportDetail } from "../../api/types";
 import {
   BackButton,
   Card,
@@ -56,17 +56,17 @@ function Artifact({
   );
 }
 
-export function MakerSwapReportPage() {
-  const { makerId = "", swapId = "" } = useParams();
-  const id = decodeURIComponent(makerId);
+export function RouterSwapReportPage() {
+  const { routerId = "", swapId = "" } = useParams();
+  const id = decodeURIComponent(routerId);
   const reportId = decodeURIComponent(swapId);
   const pushToast = useToastStore((s) => s.push);
-  const [report, setReport] = useState<MakerSwapReportDetail | null>(null);
+  const [report, setReport] = useState<RouterSwapReportDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState(false);
   const [verified, setVerified] = useState<boolean | null>(null);
   useEffect(() => {
-    void getMakerSwapReport(id, reportId)
+    void getRouterSwapReport(id, reportId)
       .then(setReport)
       .catch((e) => pushToast("error", e.message))
       .finally(() => setLoading(false));
@@ -77,17 +77,17 @@ export function MakerSwapReportPage() {
     );
   if (!report)
     return (
-      <EmptyState size="lg" title="Report unavailable" description="The maker report could not be loaded." />
+      <EmptyState size="lg" title="Report unavailable" description="The router report could not be loaded." />
     );
   const spread = report.incomingAmountSats - report.outgoingAmountSats;
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto w-full max-w-[1250px] pb-8">
         <header className="flex items-center gap-3">
-          <BackButton to={`/maker/${encodeURIComponent(id)}`} label="Back to maker" />
+          <BackButton to={`/router/${encodeURIComponent(id)}`} label="Back to router" />
           <div>
             <h1 className="font-header text-[26px] font-bold">
-              Maker swap report
+              Router swap report
             </h1>
             <p className="mt-1 font-mono text-[10.5px] text-subtle">
               {report.network} · {formatRelativeTime(report.endTimestamp)} ·{" "}
@@ -131,7 +131,7 @@ export function MakerSwapReportPage() {
             <Card className="border-line-strong">
               <div className="border-b border-line px-5 py-4">
                 <h2 className="font-header text-[14px] font-bold">
-                  Maker flow
+                  Router flow
                 </h2>
               </div>
               <div className="grid grid-cols-3 gap-px bg-line max-[650px]:grid-cols-1">
@@ -164,7 +164,7 @@ export function MakerSwapReportPage() {
                     Deniability proof
                   </h2>
                   <p className="mt-1 text-[11px] text-muted">
-                    Verify the report proof against the maker wallet and chain
+                    Verify the report proof against the router wallet and chain
                     state.
                   </p>
                 </div>
@@ -173,7 +173,7 @@ export function MakerSwapReportPage() {
                   loading={verifying}
                   onClick={() => {
                     setVerifying(true);
-                    void verifyMakerDeniability(id, reportId)
+                    void verifyRouterDeniability(id, reportId)
                       .then(setVerified)
                       .catch((e) => pushToast("error", e.message))
                       .finally(() => setVerifying(false));

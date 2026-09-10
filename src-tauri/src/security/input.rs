@@ -56,7 +56,6 @@ pub fn validate_leaf_name(value: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

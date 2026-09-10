@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  SwapPreparation,
   AddressType,
   AddressValidation,
   Balances,
@@ -10,13 +11,13 @@ import type {
   InitConfig,
   InitResult,
   LogLine,
-  Maker,
-  MakerInitConfig,
-  MakerSwapReportDetail,
-  MakerSwapReportSummary,
-  MakerPortCheck,
-  MakerSettings,
-  MakerStatus,
+  Router,
+  RouterInitConfig,
+  RouterSwapReportDetail,
+  RouterSwapReportSummary,
+  RouterPortCheck,
+  RouterSettings,
+  RouterStatus,
   NewAddress,
   OfferBookView,
   Outpoint,
@@ -25,19 +26,18 @@ import type {
   RecoveryStatus,
   RestoreSelection,
   SendResult,
-  SwapLiquidity,
   SwapFundingEstimate,
   SwapProgress,
   SwapReportDetail,
   SwapReportSummary,
+  SwapUtxo,
   SwapRequest,
   SwapSummary,
   SwapTrackerProgress,
-  SuggestedMakerPorts,
+  SuggestedRouterPorts,
   TorStatus,
   TxSummary,
   UtxoEntry,
-  VersionInfo,
   WalletInfo,
 } from "./types";
 
@@ -67,27 +67,12 @@ export function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
 
-export function getVersionInfo(): Promise<VersionInfo> {
-  return invoke("get_version_info");
-}
-
-export function isWalletEncrypted(
-  walletName: string,
-  dataDir?: string,
-): Promise<boolean> {
-  return invoke("is_wallet_encrypted", { dataDir, walletName });
-}
-
 export function listWallets(dataDir?: string): Promise<string[]> {
   return invoke("list_wallets", { dataDir });
 }
 
-export function initTaker(config: InitConfig): Promise<InitResult> {
+export function initWallet(config: InitConfig): Promise<InitResult> {
   return invoke("init_taker", { config });
-}
-
-export function shutdownTaker(): Promise<void> {
-  return invoke("shutdown_taker");
 }
 
 export function getWalletInfo(): Promise<WalletInfo> {
@@ -128,11 +113,7 @@ export function getBalances(): Promise<Balances> {
   return invoke("get_balances");
 }
 
-export function checkSwapLiquidity(): Promise<SwapLiquidity> {
-  return invoke("check_swap_liquidity");
-}
-
-export function estimateSwapFunding(
+export async function estimateSwapFunding(
   amountSats: number,
   protocol: ProtocolVersion,
   outpoints?: Outpoint[],
@@ -142,6 +123,11 @@ export function estimateSwapFunding(
 
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {
   return invoke("get_new_address", { addressType });
+}
+
+/** The chain-querying half of address issuance; slow, so it runs after the panel has painted. */
+export function verifyLastAddress(addressType: AddressType): Promise<NewAddress> {
+  return invoke("verify_last_address", { addressType });
 }
 
 export function validateAddress(address: string): Promise<AddressValidation> {
@@ -192,109 +178,109 @@ export function syncOfferbook(): Promise<void> {
   return invoke("sync_offerbook");
 }
 
-export function pollMaker(address: string): Promise<Maker> {
+export function pollRouter(address: string): Promise<Router> {
   return invoke("poll_maker", { address });
 }
 
-export function removeMaker(address: string): Promise<boolean> {
+export function removeRouter(address: string): Promise<boolean> {
   return invoke("remove_maker", { address });
 }
 
 // ---------------------------------------------------------------------------
-// Maker operations
+// Router operations
 // ---------------------------------------------------------------------------
 
-export function listMakers(): Promise<MakerSettings[]> {
+export function listRouters(): Promise<RouterSettings[]> {
   return invoke("list_makers");
 }
 
-export function listDashboardImports(): Promise<MakerSettings[]> {
+export function listDashboardImports(): Promise<RouterSettings[]> {
   return invoke("list_dashboard_imports");
 }
 
-export function importDashboardMakers(makerIds: string[]): Promise<MakerSettings[]> {
-  return invoke("import_dashboard_makers", { makerIds });
+export function importDashboardRouters(routerIds: string[]): Promise<RouterSettings[]> {
+  return invoke("import_dashboard_makers", { routerIds });
 }
 
-export function getMakerStatus(makerId: string): Promise<MakerStatus> {
-  return invoke("get_maker_status", { makerId });
+export function getRouterStatus(routerId: string): Promise<RouterStatus> {
+  return invoke("get_maker_status", { routerId });
 }
 
-export function initMaker(config: MakerInitConfig): Promise<MakerStatus> {
+export function initRouter(config: RouterInitConfig): Promise<RouterStatus> {
   return invoke("init_maker", { config });
 }
 
-export function updateMakerSettings(makerId: string, settings: MakerSettings): Promise<MakerSettings> {
-  return invoke("update_maker_settings", { makerId, settings });
+export function updateRouterSettings(routerId: string, settings: RouterSettings): Promise<RouterSettings> {
+  return invoke("update_maker_settings", { routerId, settings });
 }
 
-export function startMaker(makerId: string, walletPassword?: string): Promise<void> {
-  return invoke("start_maker", { makerId, walletPassword });
+export function startRouter(routerId: string, walletPassword?: string): Promise<void> {
+  return invoke("start_maker", { routerId, walletPassword });
 }
 
-export function stopMaker(makerId: string): Promise<void> {
-  return invoke("stop_maker", { makerId });
+export function stopRouter(routerId: string): Promise<void> {
+  return invoke("stop_maker", { routerId });
 }
 
-export function getMakerInfo(makerId: string): Promise<WalletInfo> {
-  return invoke("get_maker_info", { makerId });
+export function getRouterInfo(routerId: string): Promise<WalletInfo> {
+  return invoke("get_maker_info", { routerId });
 }
 
-export function getSavedMakerSettings(makerId: string): Promise<MakerSettings | null> {
-  return invoke("get_saved_maker_settings", { makerId });
+export function getSavedRouterSettings(routerId: string): Promise<RouterSettings | null> {
+  return invoke("get_saved_maker_settings", { routerId });
 }
 
-export function clearMakerSettings(makerId: string): Promise<void> {
-  return invoke("clear_maker_settings", { makerId });
+export function clearRouterSettings(routerId: string): Promise<void> {
+  return invoke("clear_maker_settings", { routerId });
 }
 
-export function getSuggestedMakerPorts(): Promise<SuggestedMakerPorts> {
+export function getSuggestedRouterPorts(): Promise<SuggestedRouterPorts> {
   return invoke("get_suggested_maker_ports");
 }
 
-/** Verifies a maker's listener ports are bindable and unclaimed. Empty result means both are fine. */
-export function checkMakerPorts(networkPort: number, rpcPort: number): Promise<MakerPortCheck> {
+/** Verifies a router's listener ports are bindable and unclaimed. Empty result means both are fine. */
+export function checkRouterPorts(networkPort: number, rpcPort: number): Promise<RouterPortCheck> {
   return invoke("check_maker_ports", { networkPort, rpcPort });
 }
 
-export function getMakerBalances(makerId: string): Promise<Balances> {
-  return invoke("get_maker_balances", { makerId });
+export function getRouterBalances(routerId: string): Promise<Balances> {
+  return invoke("get_maker_balances", { routerId });
 }
 
-export function listMakerUtxos(makerId: string): Promise<UtxoEntry[]> {
-  return invoke("list_maker_utxos", { makerId });
+export function listRouterUtxos(routerId: string): Promise<UtxoEntry[]> {
+  return invoke("list_maker_utxos", { routerId });
 }
 
-export function getMakerTransactions(makerId: string, count?: number, skip?: number): Promise<TxSummary[]> {
-  return invoke("get_maker_transactions", { makerId, count, skip });
+export function getRouterTransactions(routerId: string, count?: number, skip?: number): Promise<TxSummary[]> {
+  return invoke("get_maker_transactions", { routerId, count, skip });
 }
 
-export function getMakerNewAddress(makerId: string, addressType: AddressType): Promise<NewAddress> {
-  return invoke("get_maker_new_address", { makerId, addressType });
+export function getRouterNewAddress(routerId: string, addressType: AddressType): Promise<NewAddress> {
+  return invoke("get_maker_new_address", { routerId, addressType });
 }
 
-export function syncMakerWallet(makerId: string): Promise<void> {
-  return invoke("sync_maker_wallet", { makerId });
+export function syncRouterWallet(routerId: string): Promise<void> {
+  return invoke("sync_maker_wallet", { routerId });
 }
 
-export function listMakerFidelityBonds(makerId: string): Promise<FidelityBond[]> {
-  return invoke("list_maker_fidelity_bonds", { makerId });
+export function listRouterFidelityBonds(routerId: string): Promise<FidelityBond[]> {
+  return invoke("list_maker_fidelity_bonds", { routerId });
 }
 
-export function listMakerSwapReports(makerId: string): Promise<MakerSwapReportSummary[]> {
-  return invoke("list_maker_swap_reports", { makerId });
+export function listRouterSwapReports(routerId: string): Promise<RouterSwapReportSummary[]> {
+  return invoke("list_maker_swap_reports", { routerId });
 }
 
-export function getMakerSwapReport(makerId: string, swapId: string): Promise<MakerSwapReportDetail> {
-  return invoke("get_maker_swap_report", { makerId, swapId });
+export function getRouterSwapReport(routerId: string, swapId: string): Promise<RouterSwapReportDetail> {
+  return invoke("get_maker_swap_report", { routerId, swapId });
 }
 
-export function verifyMakerDeniability(makerId: string, swapId: string): Promise<boolean> {
-  return invoke("verify_maker_deniability", { makerId, swapId });
+export function verifyRouterDeniability(routerId: string, swapId: string): Promise<boolean> {
+  return invoke("verify_maker_deniability", { routerId, swapId });
 }
 
-export function getMakerLogs(makerId: string, lines?: number): Promise<LogLine[]> {
-  return invoke("get_maker_logs", { makerId, lines });
+export function getRouterLogs(routerId: string, lines?: number): Promise<LogLine[]> {
+  return invoke("get_maker_logs", { routerId, lines });
 }
 
 // ---------------------------------------------------------------------------
@@ -315,10 +301,19 @@ export function getSwapProgress(): Promise<SwapProgress | null> {
   return invoke("get_swap_progress");
 }
 
-// Live per-maker detail read straight from swap_tracker.cbor — poll this every couple seconds
+// Live per-router detail read straight from swap_tracker.cbor — poll this every couple seconds
 // while a swap is running, same cadence as the old Electron app's disk-read poll.
-export function getSwapTracker(): Promise<SwapTrackerProgress | null> {
-  return invoke("get_swap_tracker");
+/**
+ * Progress for a `prepareSwap` still in flight. Safe to poll while it blocks — it reads the
+ * tracker file, not the taker. `since` is the unix second preparation began.
+ */
+export function getSwapPreparation(since: number): Promise<SwapPreparation | null> {
+  return invoke("get_swap_preparation", { since });
+}
+
+/** Omit `swapId` for the running swap; pass one to read a swap the app has already released. */
+export function getSwapTracker(swapId?: string): Promise<SwapTrackerProgress | null> {
+  return invoke("get_swap_tracker", { swapId: swapId ?? null });
 }
 
 export function recoverSwap(): Promise<void> {
@@ -339,6 +334,11 @@ export function listSwapReports(): Promise<SwapReportSummary[]> {
 
 export function getSwapReport(swapId: string): Promise<SwapReportDetail> {
   return invoke("get_swap_report", { swapId });
+}
+
+/** Walks the chain to find the coin this swap paid out; null when the sweep isn't found. */
+export function getIncomingSwapUtxo(swapId: string): Promise<SwapUtxo | null> {
+  return invoke("get_incoming_swap_utxo", { swapId });
 }
 
 export function verifyDeniability(swapId: string): Promise<boolean> {

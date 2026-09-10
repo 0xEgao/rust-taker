@@ -11,19 +11,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
-  getMakerBalances,
-  getMakerStatus,
-  listMakerSwapReports,
-  listMakers,
-  startMaker,
-  stopMaker,
+  getRouterBalances,
+  getRouterStatus,
+  listRouterSwapReports,
+  listRouters,
+  startRouter,
+  stopRouter,
 } from "../../api/commands";
 import {
   isAppError,
   type Balances,
-  type MakerPhase,
-  type MakerSettings,
-  type MakerStatus,
+  type RouterPhase,
+  type RouterSettings,
+  type RouterStatus,
 } from "../../api/types";
 import {
   EmptyState,
@@ -41,25 +41,25 @@ import {
 } from "../../components/ui/inputs";
 import { formatTorEndpoint } from "../../lib/market-format";
 import { IntroStage } from "../../components/ui/IntroStage";
-import { MakerIntro } from "./MakerIntro";
+import { RouterIntro } from "./RouterIntro";
 import { useToastStore } from "../../store/toast";
 import { DashboardImport } from "./DashboardImport";
 
-interface OwnedMaker {
-  settings: MakerSettings;
-  status: MakerStatus | null;
+interface OwnedRouter {
+  settings: RouterSettings;
+  status: RouterStatus | null;
   balances: Balances | null;
   earningsSats: number | null;
   reportCount: number | null;
 }
 
-type MakerFilter = "all" | "running" | "stopped";
+type RouterFilter = "all" | "running" | "stopped";
 
-// Per app launch, not per mount: crossing into the maker side deserves the arrival, returning
+// Per app launch, not per mount: crossing into the router side deserves the arrival, returning
 // to the fleet from a workspace does not.
 let introPlayed = false;
 
-const PHASE_CLASS: Record<MakerPhase["phase"], string> = {
+const PHASE_CLASS: Record<RouterPhase["phase"], string> = {
   notConfigured: "bg-subtle",
   initializing:
     "bg-warning shadow-[0_0_10px_color-mix(in_oklab,var(--color-warning)_45%,transparent)]",
@@ -74,12 +74,12 @@ const PHASE_CLASS: Record<MakerPhase["phase"], string> = {
     "bg-danger shadow-[0_0_10px_color-mix(in_oklab,var(--color-danger)_45%,transparent)]",
 };
 
-function phaseLabel(phase: MakerPhase["phase"]): string {
+function phaseLabel(phase: RouterPhase["phase"]): string {
   return phase.replace(/([A-Z])/g, " $1").toLowerCase();
 }
 
 function phaseTone(
-  phase: MakerPhase["phase"],
+  phase: RouterPhase["phase"],
 ): "success" | "warning" | "danger" | "subtle" {
   if (phase === "running") return "success";
   if (phase === "failed") return "danger";
@@ -99,11 +99,11 @@ function BalanceValue({ label, sats, tone }: { label: string; sats: number; tone
   );
 }
 
-function MakerCard({
-  maker,
+function RouterCard({
+  router,
   onChanged,
 }: {
-  maker: OwnedMaker;
+  router: OwnedRouter;
   onChanged: () => Promise<void>;
 }) {
   const pushToast = useToastStore((state) => state.push);
@@ -112,7 +112,7 @@ function MakerCard({
   const [unlocking, setUnlocking] = useState(false);
   const [password, setPassword] = useState("");
   const [unlockError, setUnlockError] = useState<string | undefined>();
-  const { settings, status, balances } = maker;
+  const { settings, status, balances } = router;
   const phase = status?.phase.phase ?? "notConfigured";
   const running = phase === "running" || phase === "starting";
   const transitioning = ["initializing", "starting", "stopping"].includes(
@@ -128,19 +128,19 @@ function MakerCard({
     });
   }
 
-  async function toggleMaker() {
+  async function toggleRouter() {
     setActionLoading(true);
     try {
-      if (running) await stopMaker(settings.makerId);
+      if (running) await stopRouter(settings.routerId);
       else if (status?.walletEncrypted) {
         setPassword("");
         setUnlockError(undefined);
         setUnlocking(true);
         return;
-      } else await startMaker(settings.makerId);
+      } else await startRouter(settings.routerId);
       pushToast(
         "success",
-        `${settings.makerId} ${running ? "stopped" : "is starting"}.`,
+        `${settings.routerId} ${running ? "stopped" : "is starting"}.`,
       );
       await onChanged();
     } catch (error) {
@@ -152,7 +152,7 @@ function MakerCard({
         pushToast(
           "error",
           (error as { message?: string })?.message ??
-            `Could not ${running ? "stop" : "start"} maker.`,
+            `Could not ${running ? "stop" : "start"} router.`,
         );
       }
     } finally {
@@ -161,20 +161,20 @@ function MakerCard({
   }
 
   async function submitUnlock() {
-    if (!password) return setUnlockError("Enter the maker wallet password.");
+    if (!password) return setUnlockError("Enter the router wallet password.");
     setActionLoading(true);
     setUnlockError(undefined);
     try {
-      await startMaker(settings.makerId, password);
+      await startRouter(settings.routerId, password);
       setUnlocking(false);
       setPassword("");
-      pushToast("success", `${settings.makerId} is starting.`);
+      pushToast("success", `${settings.routerId} is starting.`);
       await onChanged();
     } catch (error) {
       setUnlockError(
         isAppError(error) && error.code === "WALLET_WRONG_PASSWORD"
-          ? "Wrong password for this maker's wallet."
-          : ((error as { message?: string })?.message ?? "Could not start maker."),
+          ? "Wrong password for this router's wallet."
+          : ((error as { message?: string })?.message ?? "Could not start router."),
       );
     } finally {
       setActionLoading(false);
@@ -185,9 +185,9 @@ function MakerCard({
     <article className={`lift flex flex-col rounded-card border border-line-strong bg-surface-raised/55 p-5 hover:border-primary/35 ${balances || running ? "min-h-[350px]" : "min-h-[250px]"}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <EntityMonogram name={settings.makerId} size="sm" />
+          <EntityMonogram name={settings.routerId} size="sm" />
           <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${PHASE_CLASS[phase]}`} />
-          <h3 className="min-w-0 truncate text-[18px] font-bold text-foreground" title={settings.makerId}>{settings.makerId}</h3>
+          <h3 className="min-w-0 truncate text-[18px] font-bold text-foreground" title={settings.routerId}>{settings.routerId}</h3>
         </div>
         <StatusChip tone={phaseTone(phase)}>{phaseLabel(phase)}</StatusChip>
       </div>
@@ -238,12 +238,12 @@ function MakerCard({
       <div className="mt-auto flex items-end justify-between gap-3 pt-5">
         <div className="min-w-0">
           <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-            {maker.reportCount === null ? (
+            {router.reportCount === null ? (
               "Reports unavailable"
             ) : (
               <>
-                {maker.reportCount} reports ·{" "}
-                <SatsAmount sats={maker.earningsSats ?? 0} /> earned
+                {router.reportCount} reports ·{" "}
+                <SatsAmount sats={router.earningsSats ?? 0} /> earned
               </>
             )}
           </span>
@@ -257,7 +257,7 @@ function MakerCard({
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => void toggleMaker()}
+            onClick={() => void toggleRouter()}
             loading={actionLoading}
             disabled={transitioning}
           >
@@ -265,7 +265,7 @@ function MakerCard({
             {running ? "Stop" : "Start"}
           </Button>
           <LinkButton
-            to={`/maker/${encodeURIComponent(settings.makerId)}`}
+            to={`/router/${encodeURIComponent(settings.routerId)}`}
             size="sm"
           >
             Manage
@@ -279,9 +279,9 @@ function MakerCard({
           wrapper re-declares it. */}
       {unlocking &&
         createPortal(
-          <div data-accent="maker">
+          <div data-accent="router">
             <Modal
-              title={`Unlock ${settings.makerId}`}
+              title={`Unlock ${settings.routerId}`}
               onClose={() => setUnlocking(false)}
               footer={
                 <>
@@ -289,18 +289,18 @@ function MakerCard({
                     Cancel
                   </Button>
                   <Button onClick={() => void submitUnlock()} loading={actionLoading}>
-                    <Play size={13} /> Start maker
+                    <Play size={13} /> Start router
                   </Button>
                 </>
               }
             >
               <p className="text-[12.5px] text-muted">
-                This maker's wallet is encrypted. Its password isn't stored between app
-                launches, so it's needed again to start the maker.
+                This router's wallet is encrypted. Its password isn't stored between app
+                launches, so it's needed again to start the router.
               </p>
               <div className="mt-4">
                 <PasswordField
-                  label="Maker wallet password"
+                  label="Router wallet password"
                   autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -316,21 +316,21 @@ function MakerCard({
   );
 }
 
-export function MakerPage() {
-  const [makers, setMakers] = useState<OwnedMaker[]>([]);
-  const [filter, setFilter] = useState<MakerFilter>("all");
+export function RouterPage() {
+  const [routers, setRouters] = useState<OwnedRouter[]>([]);
+  const [filter, setFilter] = useState<RouterFilter>("all");
   const [loading, setLoading] = useState(true);
   const [introDone, setIntroDone] = useState(introPlayed);
   const pushToast = useToastStore((state) => state.push);
 
   const load = useCallback(async () => {
-    const registrations = await listMakers();
+    const registrations = await listRouters();
     const rows = await Promise.all(
-      registrations.map(async (settings): Promise<OwnedMaker> => {
+      registrations.map(async (settings): Promise<OwnedRouter> => {
         const [status, balances, reports] = await Promise.allSettled([
-          getMakerStatus(settings.makerId),
-          getMakerBalances(settings.makerId),
-          listMakerSwapReports(settings.makerId),
+          getRouterStatus(settings.routerId),
+          getRouterBalances(settings.routerId),
+          listRouterSwapReports(settings.routerId),
         ]);
         const reportRows =
           reports.status === "fulfilled" ? reports.value : null;
@@ -347,7 +347,7 @@ export function MakerPage() {
         };
       }),
     );
-    setMakers(rows);
+    setRouters(rows);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -357,7 +357,7 @@ export function MakerPage() {
       pushToast(
         "error",
         (error as { message?: string })?.message ??
-          "Failed to load your makers.",
+          "Failed to load your routers.",
       );
     } finally {
       setLoading(false);
@@ -369,44 +369,44 @@ export function MakerPage() {
   }, [refresh]);
 
   const stats = useMemo(() => {
-    const running = makers.filter(
-      (maker) => maker.status?.phase.phase === "running",
+    const running = routers.filter(
+      (router) => router.status?.phase.phase === "running",
     ).length;
     return {
       running,
-      stopped: makers.length - running,
-      spendable: makers.reduce(
-        (sum, maker) => sum + (maker.balances?.spendable ?? 0),
+      stopped: routers.length - running,
+      spendable: routers.reduce(
+        (sum, router) => sum + (router.balances?.spendable ?? 0),
         0,
       ),
-      earnings: makers.reduce(
-        (sum, maker) => sum + (maker.earningsSats ?? 0),
+      earnings: routers.reduce(
+        (sum, router) => sum + (router.earningsSats ?? 0),
         0,
       ),
     };
-  }, [makers]);
-  const visibleMakers = useMemo(
+  }, [routers]);
+  const visibleRouters = useMemo(
     () =>
-      makers.filter(
-        (maker) =>
+      routers.filter(
+        (router) =>
           filter === "all" ||
           (filter === "running"
-            ? maker.status?.phase.phase === "running"
-            : maker.status?.phase.phase !== "running"),
+            ? router.status?.phase.phase === "running"
+            : router.status?.phase.phase !== "running"),
       ),
-    [filter, makers],
+    [filter, routers],
   );
 
   // One stage covers both beats — the fleet loading behind the wordmark, and the create-first-
-  // maker form for an empty fleet — so the arrival never replays between them. No page padding:
+  // router form for an empty fleet — so the arrival never replays between them. No page padding:
   // the stage sets its own, and its backdrop has to reach the page edges.
-  if (!introDone || loading || makers.length === 0) {
+  if (!introDone || loading || routers.length === 0) {
     return (
       <div className="h-full overflow-y-auto">
         <IntroStage
           lead="Welcome to"
           accent="Portal"
-          caption="Your maker dashboard"
+          caption="Your router dashboard"
           instant={introPlayed}
           onDone={() => {
             introPlayed = true;
@@ -417,10 +417,10 @@ export function MakerPage() {
           {loading ? (
             <div className="flex items-center justify-center gap-2.5 text-[12.5px] text-muted">
               <RefreshCw size={14} strokeWidth={1.9} className="animate-spin text-primary" />
-              Loading your makers…
+              Loading your routers…
             </div>
           ) : (
-            <MakerIntro onImported={() => void refresh()} />
+            <RouterIntro onImported={() => void refresh()} />
           )}
         </IntroStage>
       </div>
@@ -434,13 +434,13 @@ export function MakerPage() {
           <div>
             <div className="mb-3 flex items-center gap-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.18em] text-primary">
               <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_8px_color-mix(in_oklab,var(--color-primary)_70%,transparent)]" />
-              Maker Console · Signet
+              Router Console · Signet
             </div>
-            <h1 className="text-[28px] font-bold leading-none text-foreground">Maker fleet</h1>
+            <h1 className="text-[28px] font-bold leading-none text-foreground">Router fleet</h1>
             <p className="mt-2 text-[12.5px] text-muted">Operate liquidity services, wallets, and earnings from one workspace.</p>
           </div>
           <div className="flex gap-2">
-            <LinkButton to="/maker/new"><Plus size={15} /> Add maker</LinkButton>
+            <LinkButton to="/router/new"><Plus size={15} /> Add router</LinkButton>
           </div>
         </header>
 
@@ -451,9 +451,9 @@ export function MakerPage() {
         <StatStrip
           className="mt-6"
           items={[
-            { label: "Makers", value: makers.length.toLocaleString(), detail: `${stats.running} running` },
+            { label: "Routers", value: routers.length.toLocaleString(), detail: `${stats.running} running` },
             { label: "Running", value: stats.running.toLocaleString(), detail: `${stats.stopped} stopped`, tone: "success" },
-            { label: "Spendable", value: <SatsAmount sats={stats.spendable} />, detail: "across maker wallets" },
+            { label: "Spendable", value: <SatsAmount sats={stats.spendable} />, detail: "across router wallets" },
             { label: "Net earnings", value: <SatsAmount sats={stats.earnings} />, detail: "from saved reports", tone: "success" },
           ]}
         />
@@ -461,16 +461,16 @@ export function MakerPage() {
         <section className="mt-7">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-4">
-              <h2 className="text-[20px] font-bold text-foreground">Makers</h2>
+              <h2 className="text-[20px] font-bold text-foreground">Routers</h2>
               <SegmentedToggle
-                groupId="maker-filter"
+                groupId="router-filter"
                 value={filter}
                 onChange={setFilter}
                 options={[
                   {
                     value: "all",
                     label: "All",
-                    suffix: <span>{makers.length}</span>,
+                    suffix: <span>{routers.length}</span>,
                   },
                   {
                     value: "running",
@@ -485,23 +485,23 @@ export function MakerPage() {
                 ]}
               />
             </div>
-            <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-subtle">{visibleMakers.length} shown</span>
+            <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-subtle">{visibleRouters.length} shown</span>
           </div>
 
-          {visibleMakers.length === 0 ? (
+          {visibleRouters.length === 0 ? (
             <div className="mt-5 rounded-card border border-line-strong bg-surface-raised/45">
               <EmptyState
                 size="lg"
                 icon={<Inbox size={38} />}
-                title="No makers in this view"
+                title="No routers in this view"
                 description="Choose another status filter."
               />
             </div>
           ) : (
             <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
-              {visibleMakers.map((maker, i) => (
+              {visibleRouters.map((router, i) => (
                 <motion.div
-                  key={maker.settings.makerId}
+                  key={router.settings.routerId}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{
@@ -510,7 +510,7 @@ export function MakerPage() {
                     ease: [0.16, 1, 0.3, 1],
                   }}
                 >
-                  <MakerCard maker={maker} onChanged={refresh} />
+                  <RouterCard router={router} onChanged={refresh} />
                 </motion.div>
               ))}
             </div>

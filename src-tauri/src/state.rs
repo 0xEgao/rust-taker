@@ -12,7 +12,7 @@ use coinswap::wallet::Wallet;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto, SwapSummaryDto};
+use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto};
 
 /// Non-blocking taker lock — fails fast with SwapInProgress instead of
 /// blocking for however long a running swap holds the mutex.
@@ -90,8 +90,11 @@ pub struct AppState {
 
 pub struct ActiveSwap {
     pub swap_id: String,
+    /// The quote `prepare_swap` returned. Router fees exist nowhere else — not in the crate's
+    /// `SwapRecord`, not in `swap_tracker.cbor` — so without this a remounted Swap page can
+    /// never redraw the per-hop amounts for a swap already in flight.
+    pub summary: crate::types::SwapSummaryDto,
     pub phase: SwapLifecycle,
-    pub prepared: Option<SwapSummaryDto>,
     pub backend_fingerprint: String,
     pub started_at: Option<SystemTime>,
     pub error: Option<String>,
@@ -108,7 +111,6 @@ pub struct PendingFileSelection {
 pub enum SwapLifecycle {
     Prepared,
     Running,
-    Recovering,
     Finished,
     Failed,
 }

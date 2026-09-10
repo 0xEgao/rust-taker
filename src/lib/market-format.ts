@@ -1,5 +1,5 @@
 // Ported from taker-app/src/js/coinswapHelpers.js (formatTorEndpoint,
-// estimateMakerFee) so the Market page matches the old app's real fee math
+// estimateRouterFee) so the Market page matches the old app's real fee math
 // and address display exactly.
 
 import { truncateMiddle } from "./wallet-format";
@@ -14,7 +14,7 @@ export function formatTorEndpoint(value: string, start = 12, end = 8, stripOnion
   return truncateMiddle(host, start, end);
 }
 
-export interface MakerFeeEstimate {
+export interface RouterFeeEstimate {
   baseFee: number;
   liquidityFee: number;
   timeFee: number;
@@ -23,16 +23,16 @@ export interface MakerFeeEstimate {
 }
 
 // totalFee = baseFee + amount*volumeRate + refundLocktime*amount*timeRate.
-// refundLocktime = 20 * (totalMakers - position + 1).
-export function estimateMakerFee(opts: {
+// refundLocktime = 20 * (totalRouters - position + 1).
+export function estimateRouterFee(opts: {
   baseFee: number;
   amountRelativeFeePct: number;
   timeRelativeFeePct: number;
   amountSats: number;
-  makerPosition: number;
-  totalMakers: number;
-}): MakerFeeEstimate {
-  const refundLocktime = 20 * (opts.totalMakers - opts.makerPosition + 1);
+  routerPosition: number;
+  totalRouters: number;
+}): RouterFeeEstimate {
+  const refundLocktime = 20 * (opts.totalRouters - opts.routerPosition + 1);
   const liquidityFee = opts.amountSats * (opts.amountRelativeFeePct / 100);
   const timeFee = refundLocktime * opts.amountSats * (opts.timeRelativeFeePct / 100);
   return {
@@ -44,22 +44,22 @@ export function estimateMakerFee(opts: {
   };
 }
 
-/** Total maker fees for a whole route, in sats. Mirrors Taker::prepare_coinswap: each hop
- * prices the amount remaining after the previous hop, and each individual maker fee is
+/** Total router fees for a whole route, in sats. Mirrors Taker::prepare_coinswap: each hop
+ * prices the amount remaining after the previous hop, and each individual router fee is
  * rounded up to sats. */
-export function estimateRouteMakerFees(
-  makers: { baseFee: number; amountRelativeFeePct: number; timeRelativeFeePct: number }[],
+export function estimateRouteRouterFees(
+  routers: { baseFee: number; amountRelativeFeePct: number; timeRelativeFeePct: number }[],
   amountSats: number,
 ): number {
   let remaining = amountSats;
   let totalFeeSats = 0;
-  for (let i = 0; i < makers.length; i += 1) {
-    const maker = makers[i];
-    const estimate = estimateMakerFee({
-      ...maker,
+  for (let i = 0; i < routers.length; i += 1) {
+    const router = routers[i];
+    const estimate = estimateRouterFee({
+      ...router,
       amountSats: remaining,
-      makerPosition: i + 1,
-      totalMakers: makers.length,
+      routerPosition: i + 1,
+      totalRouters: routers.length,
     });
     totalFeeSats += Math.ceil(estimate.totalFee);
     // The crate carries the unrounded f64 amount into the next hop.

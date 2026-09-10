@@ -5,14 +5,15 @@ import { QuitShutdown } from "./components/app/QuitShutdown";
 import { ConnectPage } from "./pages/connect/ConnectPage";
 import { LaunchPage } from "./pages/launch/LaunchPage";
 import { LogsPage } from "./pages/logs/LogsPage";
-import { MakerPage } from "./pages/maker/MakerPage";
-import { AddMakerPage } from "./pages/maker/AddMakerPage";
-import { MakerWorkspacePage } from "./pages/maker/MakerWorkspacePage";
-import { MakerSetupPage } from "./pages/maker/MakerSetupPage";
-import { MakerSwapReportPage } from "./pages/maker/MakerSwapReportPage";
+import { RouterPage } from "./pages/router/RouterPage";
+import { AddRouterPage } from "./pages/router/AddRouterPage";
+import { RouterWorkspacePage } from "./pages/router/RouterWorkspacePage";
+import { RouterSetupPage } from "./pages/router/RouterSetupPage";
+import { RouterSwapReportPage } from "./pages/router/RouterSwapReportPage";
 import { MarketPage } from "./pages/market/MarketPage";
 import { SendPage } from "./pages/send/SendPage";
 import { SetupPage } from "./pages/setup/SetupPage";
+import { RecoveryPage } from "./pages/swap/RecoveryPage";
 import { SwapPage } from "./pages/swap/SwapPage";
 import { SwapReportPage } from "./pages/swap/SwapReportPage";
 import { SwapReportsPage } from "./pages/swap/SwapReportsPage";
@@ -22,17 +23,17 @@ import { useSessionStore } from "./store/session";
 import { REFRESH_INTERVAL_MS } from "./store/wallet-cache";
 
 /**
- * Guards the taker half only. Maker routes are deliberately outside it: maker commands
- * resolve their wallet and data dir from the maker's own registration, so a maker session
- * needs no taker. The taker session is per-launch memory state, so every launch starts at
+ * Guards the wallet half only. Router routes are deliberately outside it: router commands
+ * resolve their wallet and data dir from the router's own registration, so a router session
+ * needs no wallet. The wallet session is per-launch memory state, so every launch starts at
  * the role picker no matter what exists on disk.
  */
-function RequireTaker() {
+function RequireWallet() {
   const initialized = useSessionStore((s) => s.initialized);
 
-  // Scoped here rather than in AppShell because this is the only subtree where a taker is
-  // guaranteed to exist — a maker-only session would otherwise sync a wallet that isn't
-  // there. Runs regardless of the active taker route so Send/Swap never depend on the
+  // Scoped here rather than in AppShell because this is the only subtree where a wallet is
+  // guaranteed to exist — a router-only session would otherwise sync a wallet that isn't
+  // there. Runs regardless of the active wallet route so Send/Swap never depend on the
   // Wallet page having been mounted recently.
   useEffect(() => {
     if (!initialized) return;
@@ -63,7 +64,7 @@ function App() {
   return (
     <HashRouter>
       {/* Outside the routes: a quit can be requested from any page, including the ones
-          that render before a taker exists. */}
+          that render before a wallet exists. */}
       <QuitShutdown />
       <Routes>
         <Route path="/connect" element={<ConnectPage />} />
@@ -73,21 +74,22 @@ function App() {
           <Route path="/setup" element={<SetupPage />} />
 
           <Route element={<AppShell />}>
-            <Route element={<RequireTaker />}>
+            <Route element={<RequireWallet />}>
               <Route path="/" element={<WalletPage />} />
               <Route path="/market" element={<MarketPage />} />
               <Route path="/send" element={<SendPage />} />
               <Route path="/swap" element={<SwapPage />} />
+              <Route path="/swap/recovery" element={<RecoveryPage />} />
               <Route path="/swap/reports" element={<SwapReportsPage />} />
               <Route path="/swap/reports/:swapId" element={<SwapReportPage />} />
               <Route path="/logs" element={<LogsPage />} />
             </Route>
 
-            <Route path="/maker" element={<MakerPage />} />
-            <Route path="/maker/new" element={<AddMakerPage />} />
-            <Route path="/maker/:makerId" element={<MakerWorkspacePage />} />
-            <Route path="/maker/:makerId/setup" element={<MakerSetupPage />} />
-            <Route path="/maker/:makerId/report/:swapId" element={<MakerSwapReportPage />} />
+            <Route path="/router" element={<RouterPage />} />
+            <Route path="/router/new" element={<AddRouterPage />} />
+            <Route path="/router/:routerId" element={<RouterWorkspacePage />} />
+            <Route path="/router/:routerId/setup" element={<RouterSetupPage />} />
+            <Route path="/router/:routerId/report/:swapId" element={<RouterSwapReportPage />} />
           </Route>
         </Route>
 

@@ -1,9 +1,9 @@
 import { AlertTriangle, CheckCircle2, RefreshCw, Timer, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
-import type { MakerFeeInfo, Offer, SwapReportDetail, SwapStatus } from "../../api/types";
+import { getIncomingSwapUtxo, getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
+import type { ReportRouterFee, Offer, SwapReportDetail, SwapStatus, SwapUtxo } from "../../api/types";
 import { isAppError } from "../../api/types";
 import { BackButton, Card, CopyButton, Disclosure, ExternalLinkButton, IndeterminateBar, Modal, SatsAmount } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
@@ -13,12 +13,15 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
   success: "Completed",
   recovery_hashlock: "Recovered (hashlock)",
   recovery_timelock: "Recovered (timelock)",
+  recovered: "Interrupted · recovered",
+  interrupted: "Interrupted · recovering",
+  unfinished: "Never finished",
   failed: "Failed",
 };
 
-// One accent per hop so a funding tx is visually tied to the maker it funded, matching the
-// per-maker colours the old app used in this same list.
-const HOP_ACCENTS = ["var(--color-primary)", "var(--color-info)", "var(--color-maker)", "var(--color-success)"];
+// One accent per hop so a funding tx is visually tied to the router it funded, matching the
+// per-router colours the old app used in this same list.
+const HOP_ACCENTS = ["var(--color-primary)", "var(--color-info)", "var(--color-router)", "var(--color-success)"];
 const OUTGOING_ACCENT = "var(--color-warning)";
 
 function satsToBtc(sats: number): string {
@@ -31,7 +34,18 @@ function formatTimestamp(unixSeconds: number): string {
 }
 
 /** Full txid, not truncated — the whole point of this row is being able to read and copy it. */
-function TxArtifact({ label, txid, accent, arrow }: { label: string; txid: string; accent: string; arrow: string }) {
+function TxArtifact({ label, caption, txid, vout, amountSats, accent, arrow }: {
+  label: string;
+  caption?: string;
+  txid: string;
+  vout?: number;
+  amountSats?: number;
+  accent: string;
+  arrow: string;
+}) {
+  // `txid:vout` names the coin, which is what the contract actually holds; a bare txid only
+  // names the transaction that created it.
+  const reference = vout === undefined ? txid : `${txid}:${vout}`;
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_34px_34px] items-center gap-2.5 rounded-control border border-line bg-surface-raised p-5">
       <div className="min-w-0">
@@ -41,9 +55,15 @@ function TxArtifact({ label, txid, accent, arrow }: { label: string; txid: strin
           </span>
           {label}
         </h4>
-        <p className="break-all font-mono text-[12px] leading-relaxed text-muted">{txid}</p>
+        <p className="break-all font-mono text-[12px] leading-relaxed text-muted">{reference}</p>
+        {amountSats !== undefined && (
+          <p className="mt-2 font-numeric text-[13px] text-foreground">
+            <SatsAmount sats={amountSats} />
+          </p>
+        )}
+        {caption && <p className="mt-2 text-[11.5px] leading-5 text-subtle">{caption}</p>}
       </div>
-      <CopyButton text={txid} title="Copy transaction ID" />
+      <CopyButton text={reference} title={vout === undefined ? "Copy transaction ID" : "Copy outpoint"} />
       <ExternalLinkButton txid={txid} />
     </div>
   );
@@ -124,20 +144,39 @@ export function SwapReportPage() {
   const [notFound, setNotFound] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [selectedMaker, setSelectedMaker] = useState<{ index: number; address: string; fee?: MakerFeeInfo } | null>(null);
+  const [selectedRouter, setSelectedRouter] = useState<{ index: number; address: string; fee?: ReportRouterFee } | null>(null);
   const [offerByAddress, setOfferByAddress] = useState<Record<string, Offer>>({});
+  const [incomingUtxo, setIncomingUtxo] = useState<SwapUtxo | null>(null);
+  const [utxoState, setUtxoState] = useState<"idle" | "loading" | "done" | "failed">("idle");
 
   useEffect(() => {
     if (!swapId) return;
     void getSwapReport(swapId).then(setReport).catch(() => setNotFound(true));
   }, [swapId]);
 
-  // Fidelity bond data isn't part of the swap report — it lives on the maker's current offer.
+  // The received coin is not in the report file — it has to be read off the chain, which costs a
+  // round-trip per candidate transaction, so it loads on demand rather than with the report.
+  const loadIncomingUtxo = useCallback(() => {
+    if (!swapId || utxoState === "loading") return;
+    setUtxoState("loading");
+    void getIncomingSwapUtxo(swapId)
+      .then((utxo) => {
+        setIncomingUtxo(utxo);
+        setUtxoState("done");
+      })
+      .catch(() => setUtxoState("failed"));
+  }, [swapId, utxoState]);
+
+  useEffect(() => {
+    if (swapId && utxoState === "idle") loadIncomingUtxo();
+  }, [swapId, utxoState, loadIncomingUtxo]);
+
+  // Fidelity bond data isn't part of the swap report — it lives on the router's current offer.
   // Fetched lazily on first modal open (not mount) since nothing else on this page needs it, and
-  // best-effort: the maker may no longer be posting offers, in which case the modal says so.
+  // best-effort: the router may no longer be posting offers, in which case the modal says so.
   const offersFetched = useRef(false);
-  function openMakerModal(maker: { index: number; address: string; fee?: MakerFeeInfo }) {
-    setSelectedMaker(maker);
+  function openRouterModal(router: { index: number; address: string; fee?: ReportRouterFee }) {
+    setSelectedRouter(router);
     if (offersFetched.current) return;
     offersFetched.current = true;
     void getOffers()
@@ -151,7 +190,11 @@ export function SwapReportPage() {
       .catch(() => {});
   }
 
-  const provenOutpoint = report?.provenOutpoint ?? null;
+  // The proof records both contract outpoints exactly. A report written before the proof existed
+  // has only the txids, so the vout is left off rather than guessed at 0.
+  const outgoingContract =
+    report?.outgoingContractOutpoint ??
+    (report?.outgoingContractTxid ? { txid: report.outgoingContractTxid, vout: undefined } : null);
 
   async function handleVerify() {
     if (!swapId) return;
@@ -240,29 +283,75 @@ export function SwapReportPage() {
             </p>
           </Card>
 
-          <SectionCard title="Transactions">
-            {report.outgoingContractTxid && (
-              <TxArtifact label="Outgoing Contract Tx" txid={report.outgoingContractTxid} accent={OUTGOING_ACCENT} arrow="↗" />
+          <SectionCard title="UTXOs">
+            {outgoingContract && (
+              <TxArtifact
+                label="Outgoing UTXO"
+                caption="The coin this wallet paid into the route"
+                txid={outgoingContract.txid}
+                vout={outgoingContract.vout}
+                accent={OUTGOING_ACCENT}
+                arrow="↗"
+              />
             )}
-            {report.incomingContractTxid && (
-              <TxArtifact label="Incoming Contract Tx" txid={report.incomingContractTxid} accent={HOP_ACCENTS[0]} arrow="↙" />
+            {incomingUtxo ? (
+              <TxArtifact
+                label="Incoming UTXO"
+                caption={
+                  incomingUtxo.address
+                    ? `The coin the route paid back, at ${incomingUtxo.address}`
+                    : "The coin the route paid back"
+                }
+                txid={incomingUtxo.txid}
+                vout={incomingUtxo.vout}
+                amountSats={incomingUtxo.amountSats}
+                accent={HOP_ACCENTS[0]}
+                arrow="↙"
+              />
+            ) : (
+              // Not in the report file: the sweep that lands this coin happens after the report
+              // is written, so it has to be read off the chain.
+              <div className="flex flex-col gap-2 rounded-control border border-dashed border-line bg-surface-raised p-5">
+                <h4 className="text-[15px] font-extrabold text-foreground">Incoming UTXO</h4>
+                {utxoState === "failed" ? (
+                  <p className="text-[11.5px] text-danger">
+                    Could not reach the chain backend to find it.
+                  </p>
+                ) : utxoState === "done" ? (
+                  <p className="text-[11.5px] text-subtle">
+                    No sweep of the incoming contract was found yet.
+                  </p>
+                ) : (
+                  <p className="text-[11.5px] text-subtle">Reading the chain…</p>
+                )}
+                {utxoState !== "loading" && (
+                  <Button size="sm" variant="secondary" onClick={loadIncomingUtxo}>
+                    <RefreshCw size={14} strokeWidth={1.8} />
+                    Try again
+                  </Button>
+                )}
+              </div>
             )}
-            {report.fundingTxids.map((hopTxids, hopIdx) =>
-              hopTxids.map((txid, i) => (
-                <TxArtifact
-                  key={`${hopIdx}-${i}`}
-                  label={`Funding Transaction · Hop ${hopIdx + 1}`}
-                  txid={txid}
-                  accent={HOP_ACCENTS[hopIdx % HOP_ACCENTS.length]}
-                  arrow="→"
-                />
-              )),
-            )}
-            {!report.outgoingContractTxid && !report.incomingContractTxid && report.fundingTxids.flat().length === 0 && (
-              <p className="text-[12px] text-subtle">No transaction data recorded for this swap.</p>
+            {!outgoingContract && !incomingUtxo && utxoState === "done" && (
+              <p className="text-[12px] text-subtle">No UTXO data recorded for this swap.</p>
             )}
           </SectionCard>
 
+          {report.fundingTxids.flat().length > 0 && (
+            <SectionCard title="Funding Transactions">
+              {report.fundingTxids.map((hopTxids, hopIdx) =>
+                hopTxids.map((txid, i) => (
+                  <TxArtifact
+                    key={`${hopIdx}-${i}`}
+                    label={`Hop ${hopIdx + 1}`}
+                    txid={txid}
+                    accent={HOP_ACCENTS[hopIdx % HOP_ACCENTS.length]}
+                    arrow="→"
+                  />
+                )),
+              )}
+            </SectionCard>
+          )}
         </div>
 
         <div className="flex flex-col gap-4">
@@ -270,8 +359,8 @@ export function SwapReportPage() {
             <Row label="Received">
               <SatsAmount sats={report.receivedAmountSats} />
             </Row>
-            <Row label="Maker fees">
-              <SatsAmount sats={report.totalMakerFeesSats} />
+            <Row label="Router fees">
+              <SatsAmount sats={report.totalRouterFeesSats} />
             </Row>
             <Row label="Mining fees">
               <SatsAmount sats={report.miningFeeSats} />
@@ -289,19 +378,19 @@ export function SwapReportPage() {
             </div>
           </SectionCard>
 
-          <SectionCard title={`Swap Partners (${report.makersCount})`}>
-            {report.makerAddresses.length === 0 && <p className="text-[12px] text-subtle">No makers recorded.</p>}
-            {report.makerAddresses.map((address, i) => {
-              const fee = report.makerFeeInfo.find((m) => m.makerIndex === i) ?? report.makerFeeInfo[i];
+          <SectionCard title={`Swap Partners (${report.routersCount})`}>
+            {report.routerAddresses.length === 0 && <p className="text-[12px] text-subtle">No routers recorded.</p>}
+            {report.routerAddresses.map((address, i) => {
+              const fee = report.routerFeeInfo.find((m) => m.routerIndex === i) ?? report.routerFeeInfo[i];
               return (
                 <button
                   key={address}
                   type="button"
-                  onClick={() => openMakerModal({ index: i, address, fee })}
+                  onClick={() => openRouterModal({ index: i, address, fee })}
                   className="lift flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3.5 py-3 text-left outline-none hover:border-line-strong hover:bg-[var(--color-hover)] focus-visible:shadow-ring"
                 >
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="font-mono text-[11px] text-foreground">Maker {i + 1}</span>
+                    <span className="font-mono text-[11px] text-foreground">Router {i + 1}</span>
                     <span className="truncate font-mono text-[10.5px] text-subtle">{truncateMiddle(address, 14, 8)}</span>
                   </span>
                   {fee && <SatsAmount sats={fee.totalFeeSats} className="flex-none text-[12px] font-semibold text-warning" />}
@@ -313,15 +402,16 @@ export function SwapReportPage() {
           <SectionCard title="Deniability Proof">
             {report.deniabilityProof ? (
               <>
-                {provenOutpoint && (
+                {report.incomingContractOutpoint && (
                   <div className="flex items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3.5 py-2">
                     <span className="flex min-w-0 flex-col gap-0.5">
                       <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Proven outpoint</span>
                       <span className="truncate font-mono text-[11px] text-muted">
-                        {truncateMiddle(provenOutpoint.txid, 10, 6)}:{provenOutpoint.vout}
+                        {truncateMiddle(report.incomingContractOutpoint.txid, 10, 6)}:
+                        {report.incomingContractOutpoint.vout}
                       </span>
                     </span>
-                    <ExternalLinkButton txid={provenOutpoint.txid} />
+                    <ExternalLinkButton txid={report.incomingContractOutpoint.txid} />
                   </div>
                 )}
                 <div className="flex items-center gap-2.5">
@@ -365,35 +455,35 @@ export function SwapReportPage() {
         </div>
       </div>
 
-      {selectedMaker && (
-        <Modal title={`Maker ${selectedMaker.index + 1}`} onClose={() => setSelectedMaker(null)}>
+      {selectedRouter && (
+        <Modal title={`Router ${selectedRouter.index + 1}`} onClose={() => setSelectedRouter(null)}>
           <Row label="Address">
-            <span className="break-all text-left">{selectedMaker.address}</span>
+            <span className="break-all text-left">{selectedRouter.address}</span>
           </Row>
-          <Row label="Route position">{selectedMaker.index + 1}</Row>
-          {selectedMaker.fee ? (
+          <Row label="Route position">{selectedRouter.index + 1}</Row>
+          {selectedRouter.fee ? (
             <>
               <Row label="Base fee">
-                <SatsAmount sats={selectedMaker.fee.baseFeeSats} />
+                <SatsAmount sats={selectedRouter.fee.baseFeeSats} />
               </Row>
               <Row label="Amount-relative fee">
-                <SatsAmount sats={selectedMaker.fee.amountRelativeFeeSats} />
+                <SatsAmount sats={selectedRouter.fee.amountRelativeFeeSats} />
               </Row>
               <Row label="Time-relative fee">
-                <SatsAmount sats={selectedMaker.fee.timeRelativeFeeSats} />
+                <SatsAmount sats={selectedRouter.fee.timeRelativeFeeSats} />
               </Row>
               <Row label="Total fee">
-                <SatsAmount sats={selectedMaker.fee.totalFeeSats} className="font-bold text-warning" />
+                <SatsAmount sats={selectedRouter.fee.totalFeeSats} className="font-bold text-warning" />
               </Row>
             </>
           ) : (
-            <p className="text-[12px] text-subtle">No fee breakdown recorded for this maker.</p>
+            <p className="text-[12px] text-subtle">No fee breakdown recorded for this router.</p>
           )}
 
           <div className="mt-1 border-t border-dashed border-line pt-3">
             <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Fidelity Bond</span>
             {(() => {
-              const bond = offerByAddress[selectedMaker.address];
+              const bond = offerByAddress[selectedRouter.address];
               return bond ? (
                 <div className="mt-2 flex flex-col gap-1.5">
                   <Row label="Bond amount">
@@ -405,7 +495,7 @@ export function SwapReportPage() {
                 </div>
               ) : (
                 <p className="mt-2 text-[12px] text-subtle">
-                  This maker isn't in the current offerbook, so its fidelity bond can't be looked up.
+                  This router isn't in the current offerbook, so its fidelity bond can't be looked up.
                 </p>
               );
             })()}
@@ -414,11 +504,11 @@ export function SwapReportPage() {
           <div className="mt-1 border-t border-dashed border-line pt-3">
             <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Transactions</span>
             <div className="mt-2 flex flex-col gap-1.5">
-              {(report.fundingTxids[selectedMaker.index] ?? []).map((txid, i) => (
+              {(report.fundingTxids[selectedRouter.index] ?? []).map((txid, i) => (
                 <TxidRow key={i} label={`Funding ${i + 1}`} txid={txid} />
               ))}
-              {(report.fundingTxids[selectedMaker.index] ?? []).length === 0 && (
-                <p className="text-[12px] text-subtle">No transactions recorded for this maker.</p>
+              {(report.fundingTxids[selectedRouter.index] ?? []).length === 0 && (
+                <p className="text-[12px] text-subtle">No transactions recorded for this router.</p>
               )}
             </div>
           </div>
