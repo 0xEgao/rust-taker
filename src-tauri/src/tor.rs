@@ -47,7 +47,12 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
         match slot.as_ref() {
             Some(runtime) => runtime.clone(),
             None => {
-                if STARTED.swap(true, Ordering::SeqCst) {
+                // Load-then-store rather than swap, and stored only once `tor_main` has actually
+                // been spawned: picking ports or creating the Tor directory can fail without
+                // ever reaching it, and latching the flag there would answer every later retry
+                // with the permanent error below over a transient fault. Safe as two steps
+                // because the `RUNTIME` lock is held across both.
+                if STARTED.load(Ordering::SeqCst) {
                     return Err(
                         "Portal's Tor already ran once this session and cannot be started again \
                          in place. Quit and reopen Portal to try a fresh one."
@@ -58,6 +63,7 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
                 let control_password = hex_upper(&random_bytes::<16>());
                 let hashed = hashed_control_password(&control_password, &random_bytes::<8>());
                 start_embedded_tor(&tor_dir()?, socks_port, control_port, &hashed)?;
+                STARTED.store(true, Ordering::SeqCst);
                 let runtime = TorRuntime {
                     socks_port,
                     control_port,

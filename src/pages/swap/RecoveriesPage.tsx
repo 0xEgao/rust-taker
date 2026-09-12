@@ -1,4 +1,4 @@
-import { ChevronRight, LifeBuoy, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ChevronRight, LifeBuoy, RefreshCw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getRecoveryStatus, listRecoveries } from "../../api/commands";
@@ -12,6 +12,7 @@ import {
   StatStrip,
   StatusChip,
 } from "../../components/ui/display";
+import { Button } from "../../components/ui/inputs";
 import { formatRelativeTime, truncateMiddle } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
@@ -32,13 +33,19 @@ export function RecoveriesPage() {
   // headline figures come from the status read and the per-swap detail comes from the list.
   const [pool, setPool] = useState<RecoveryStatus | null>(null);
 
+  const [failed, setFailed] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const [list, status] = await Promise.all([listRecoveries(), getRecoveryStatus()]);
       setRows(list);
       setPool(status);
+      setFailed(false);
     } catch (e) {
-      setRows([]);
+      // Deliberately keeps whatever was last read. Emptying the list here would render
+      // "Nothing to recover" over a recovery that is still running, off nothing more than a
+      // failed disk read — the one claim this page must never make wrongly.
+      setFailed(true);
       pushFailure(e, "Failed to load recoveries.");
     }
   }, [pushFailure]);
@@ -61,7 +68,18 @@ export function RecoveriesPage() {
         </div>
       </div>
 
-      {rows === null ? (
+      {rows === null && failed ? (
+        <EmptyState
+          icon={<AlertTriangle size={30} strokeWidth={1.6} />}
+          title="Couldn't read the recovery state"
+          description="This says nothing about your funds — the contracts are on-chain either way."
+          action={
+            <Button variant="secondary" size="sm" onClick={() => void load()}>
+              Try again
+            </Button>
+          }
+        />
+      ) : rows === null ? (
         <div className="grid flex-1 place-items-center gap-2.5 text-center text-[13px] text-subtle">
           <RefreshCw size={28} strokeWidth={1.6} className="animate-spin text-primary" />
           <span>Loading recoveries…</span>

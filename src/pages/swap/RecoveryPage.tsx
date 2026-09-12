@@ -86,16 +86,30 @@ export function RecoveryPage() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [checking, setChecking] = useState(false);
 
-  const load = useCallback(async () => {
-    const next = await getRecoveryStatus(swapId);
-    setStatus(next);
-    if (next.swapId) setTracker(await getSwapTracker(next.swapId));
-  }, [swapId]);
+  const load = useCallback(
+    // `live` is checked after every await: opening one recovery and then another leaves the
+    // first read in flight, and without this it lands afterwards and paints the first swap's
+    // funds under the second swap's id.
+    async (live: () => boolean) => {
+      const next = await getRecoveryStatus(swapId);
+      if (!live()) return;
+      setStatus(next);
+      if (!next.swapId) return;
+      const tracker = await getSwapTracker(next.swapId);
+      if (live()) setTracker(tracker);
+    },
+    [swapId],
+  );
 
   useEffect(() => {
-    void load().catch(() => {});
-    const id = setInterval(() => void load().catch(() => {}), POLL_MS);
-    return () => clearInterval(id);
+    let current = true;
+    const live = () => current;
+    void load(live).catch(() => {});
+    const id = setInterval(() => void load(live).catch(() => {}), POLL_MS);
+    return () => {
+      current = false;
+      clearInterval(id);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -110,7 +124,8 @@ export function RecoveryPage() {
     try {
       await recoverSwap();
       pushToast("success", "Recovery restarted.");
-      await load();
+      // Always current: this only runs from a click on the page being viewed.
+      await load(() => true);
     } catch (e) {
       pushToast("error", isAppError(e) ? e.message : "Could not start recovery.");
     } finally {

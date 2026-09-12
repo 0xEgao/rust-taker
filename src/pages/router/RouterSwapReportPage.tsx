@@ -24,12 +24,17 @@ import { useToastStore } from "../../store/toast";
 function Artifact({
   label,
   txid,
+  vout,
   direction,
 }: {
   label: string;
   txid: string;
+  vout: number;
   direction: "incoming" | "outgoing";
 }) {
+  // `txid:vout` names the contract output itself; a bare txid only names the transaction that
+  // created it, and a Taproot contract is not necessarily output 0.
+  const reference = `${txid}:${vout}`;
   return (
     <div className="flex items-center gap-4 rounded-control border border-line bg-surface/70 p-4">
       <span
@@ -47,8 +52,8 @@ function Artifact({
       </span>
       <div className="min-w-0 flex-1">
         <MicroLabel>{label}</MicroLabel>
-        <code className="mt-1 block truncate font-mono text-[11px]" title={txid}>
-          {txid}
+        <code className="mt-1 block truncate font-mono text-[11px]" title={reference}>
+          {reference}
         </code>
       </div>
       <ExternalLinkButton txid={txid} />
@@ -164,6 +169,7 @@ export function RouterSwapReportPage() {
                   <Artifact
                     label="Incoming contract"
                     txid={report.incomingContractOutpoint.txid}
+                    vout={report.incomingContractOutpoint.vout}
                     direction="incoming"
                   />
                 )}
@@ -171,6 +177,7 @@ export function RouterSwapReportPage() {
                   <Artifact
                     label="Outgoing contract"
                     txid={report.outgoingContractOutpoint.txid}
+                    vout={report.outgoingContractOutpoint.vout}
                     direction="outgoing"
                   />
                 )}

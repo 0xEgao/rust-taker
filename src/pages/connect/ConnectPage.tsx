@@ -26,13 +26,9 @@ import { wait } from "../../lib/timing";
 import { useSessionStore } from "../../store/session";
 
 const TOR_POLL_MS = 1_200;
-// Bootstrap is judged on whether it is still moving, never on total elapsed time: a cold Tor on
-// a slow network legitimately takes minutes, and an absolute ceiling fails the ones that would
-// have finished seconds later. Only a percentage that stops climbing for this long is a problem.
-//
-// Generous because the quiet gaps inside a *healthy* bootstrap are long: a cold start here sat
-// at 5% for 76 seconds before reaching 10%, and again at 14% for 75. Anything near that would
-// report a stall on a Tor that was working fine.
+// Watches for progress stopping rather than capping total time: an absolute ceiling fails a slow
+// bootstrap that would have finished seconds later. Four minutes because a healthy bootstrap goes
+// quiet for up to ~76s between phases, and anything near that reports a stall on a working Tor.
 const TOR_STALL_MS = 240_000;
 // Consecutive probe misses tolerated before the panel reports trouble. A miss against a busy,
 // still-bootstrapping Tor is routine, so this is about a run of them, not a single one.

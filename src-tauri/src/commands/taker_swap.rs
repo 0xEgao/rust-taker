@@ -693,17 +693,29 @@ pub async fn get_recovery_status(
         // `incomplete_swaps` already excludes anything cleaned up. With no `swap_id` the newest
         // failed record is the one to report against — the crate recovers all outstanding
         // contracts together rather than per swap, so any of them describes the same recovery.
-        let mut candidates = tracker.incomplete_swaps().into_iter().filter(|r| {
-            r.phase == SwapPhase::Failed || r.recovery.phase != RecoveryPhase::NotStarted
-        });
+        let candidates: Vec<_> = tracker
+            .incomplete_swaps()
+            .into_iter()
+            .filter(|r| {
+                r.phase == SwapPhase::Failed || r.recovery.phase != RecoveryPhase::NotStarted
+            })
+            .collect();
         let record = match &swap_id {
-            Some(wanted) => candidates.find(|r| &r.swap_id == wanted).cloned(),
-            None => candidates.max_by_key(|r| r.updated_at).cloned(),
-        };
+            Some(wanted) => candidates.iter().find(|r| &r.swap_id == wanted).copied(),
+            None => candidates.iter().max_by_key(|r| r.updated_at).copied(),
+        }
+        .cloned();
 
-        // The taker's own refund delay. Without a record there is no router count to derive it
-        // from, so a countdown is simply not offered.
-        let offset = record.as_ref().map(|r| refund_locktime_blocks(r.maker_count));
+        // The taker's own refund delay, taken across *every* unfinished swap rather than the
+        // selected one: `pending` below is the wallet's whole contract pool, which cannot be
+        // attributed per swap, so a single swap's delay applied to all of it would count a
+        // longer-locked contract down to zero early. The longest is the only safe bound — it
+        // can overstate the wait when swaps have different router counts, never understate it.
+        // Without a record there is no router count at all, so no countdown is offered.
+        let offset = candidates
+            .iter()
+            .map(|r| refund_locktime_blocks(r.maker_count))
+            .max();
 
         let mut pending: Vec<RecoveryContractDto> = live
             .iter()

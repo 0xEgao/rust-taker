@@ -77,13 +77,54 @@ fn resolve_report_path(state: &AppState) -> Result<PathBuf, AppError> {
     Ok(report_path(&data_dir, &wallet_name))
 }
 
-fn load_report_file(path: &PathBuf) -> Result<SwapReportFile, AppError> {
+fn load_report_file(path: &Path) -> Result<SwapReportFile, AppError> {
+    serde_json::from_value(read_report_json(path)?)
+        .map_err(|e| AppError::internal(format!("failed to read {}: {e}", path.display())))
+}
+
+/// Reads a report file as raw JSON, with the compatibility fix-ups applied.
+///
+/// Shared with `commands::maker_reports`: both sections of the file need the same treatment, and
+/// a maker's file carries taker entries too.
+pub(crate) fn read_report_json(path: &Path) -> Result<serde_json::Value, AppError> {
     if !path.exists() {
-        return Ok(SwapReportFile::default());
+        return Ok(serde_json::json!({}));
     }
     let contents = std::fs::read_to_string(path)?;
-    serde_json::from_str(&contents)
-        .map_err(|e| AppError::internal(format!("failed to parse {}: {e}", path.display())))
+    let mut value: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| AppError::internal(format!("failed to parse {}: {e}", path.display())))?;
+    backfill_report_utxos(&mut value);
+    Ok(value)
+}
+
+/// Gives every report entry the `*_utxos` arrays upstream PR #1006 added.
+///
+/// It made them required rather than defaulted on both `TakerReport` and `MakerReport`, so a file
+/// written before that update fails to deserialise and takes the wallet's *entire* swap history
+/// with it — one missing field and every past swap reads as unopenable. An empty list is what the
+/// field means for those swaps: nothing of the kind was recorded.
+fn backfill_report_utxos(value: &mut serde_json::Value) {
+    fn patch(entry: &mut serde_json::Value) {
+        let Some(object) = entry.as_object_mut() else {
+            return;
+        };
+        for field in ["outgoing_utxos", "incoming_utxos"] {
+            object
+                .entry(field)
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        }
+    }
+    if let Some(entries) = value.get_mut("taker").and_then(|t| t.as_array_mut()) {
+        entries.iter_mut().for_each(patch);
+    }
+    // The maker section is keyed by maker node name, one bucket of reports each.
+    if let Some(buckets) = value.get_mut("maker").and_then(|m| m.as_object_mut()) {
+        for (_, bucket) in buckets.iter_mut() {
+            if let Some(entries) = bucket.as_array_mut() {
+                entries.iter_mut().for_each(patch);
+            }
+        }
+    }
 }
 
 /// Every record in `swap_tracker.cbor`, deserialised here rather than through `SwapTracker`.
@@ -413,6 +454,55 @@ mod tests {
             report_path(dir, "taker-wallet"),
             dir.join("wallets").join("taker-wallet_swap_report.json")
         );
+    }
+
+    /// Reports written before upstream PR #1006 have no `*_utxos` arrays, which the crate's
+    /// structs made required — without the backfill a single missing field makes the whole
+    /// file unreadable and the wallet's entire swap history disappears from the UI.
+    #[test]
+    fn a_report_written_before_the_utxo_fields_existed_still_loads() {
+        // Field-for-field the shape a pre-update taker report has on disk, including the two
+        // contract txids the same upstream change removed.
+        let old_schema = serde_json::json!({
+            "taker": [{
+                "swap_id": "040f15b3deb9c6ab",
+                "status": "Success",
+                "network": "signet",
+                "swap_duration_seconds": 258.9433155,
+                "start_timestamp": 1787141340u64,
+                "end_timestamp": 1787141598u64,
+                "error_message": null,
+                "outgoing_amount": 155190,
+                "incoming_amount": 151695,
+                "fee_paid": 3825,
+                "mining_fee": 1653,
+                "fee_percentage": 2.464720664991301,
+                "total_maker_fees": 2172,
+                "outgoing_contract_txid": "47".repeat(32),
+                "incoming_contract_txid": "5d".repeat(32),
+                "funding_txids": [[]],
+                "makers_count": 2,
+                "maker_addresses": ["a.onion", "b.onion"],
+                "maker_fee_info": [],
+                "input_utxos": [10000000],
+                "output_change_amounts": [9844480],
+                "output_swap_amounts": [151695],
+                "output_change_utxos": [[9844480, "Unknown"]],
+                "output_swap_utxos": [[151695, "Unknown"]],
+                "deniability_proof": null
+            }]
+        });
+
+        let mut value = old_schema;
+        super::backfill_report_utxos(&mut value);
+        let file: SwapReportFile =
+            serde_json::from_value(value).expect("a pre-#1006 report must still deserialise");
+
+        assert_eq!(file.taker.len(), 1);
+        assert_eq!(file.taker[0].swap_id, "040f15b3deb9c6ab");
+        assert_eq!(file.taker[0].outgoing_amount, 155190);
+        // Absent on disk, so the only honest reading is that none were recorded.
+        assert!(file.taker[0].outgoing_utxos.is_empty());
     }
 
     /// A dotfile name is all extension and no stem; falling back to the raw name keeps the

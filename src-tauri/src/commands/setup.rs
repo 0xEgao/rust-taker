@@ -146,11 +146,14 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
     }
     resp.clear();
     let _ = reader.read_line(&mut resp);
+    // Anything outside 0-100 is reported as unknown rather than clamped: the gate unlocks on
+    // exactly 100, so clamping a bogus 101 would call a half-bootstrapped Tor ready.
     let bootstrap_progress = resp
         .split("PROGRESS=")
         .nth(1)
         .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
-        .and_then(|s| s.parse::<u8>().ok());
+        .and_then(|s| s.parse::<u8>().ok())
+        .filter(|progress| *progress <= 100);
 
     TorStatus {
         reachable: true,

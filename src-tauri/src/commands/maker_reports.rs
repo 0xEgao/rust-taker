@@ -7,14 +7,14 @@
 //! report file and flattens the node-name buckets stored within that file.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use openswap::maker::MakerServer;
 use openswap::wallet::MakerReport;
 
 use crate::commands::maker_settings;
-use crate::commands::taker_reports::{status_label, to_report_utxos};
+use crate::commands::taker_reports::{self, status_label, to_report_utxos};
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
 use crate::types::{MakerSwapReportDetail, MakerSwapReportSummary, Outpoint};
@@ -62,13 +62,9 @@ fn resolve_report_path(state: &AppState, router_id: &str) -> Result<PathBuf, App
     ))
 }
 
-fn load_report_file(path: &PathBuf) -> Result<SwapReportFile, AppError> {
-    if !path.exists() {
-        return Ok(SwapReportFile::default());
-    }
-    let contents = std::fs::read_to_string(path)?;
-    serde_json::from_str(&contents)
-        .map_err(|e| AppError::internal(format!("failed to parse {}: {e}", path.display())))
+fn load_report_file(path: &Path) -> Result<SwapReportFile, AppError> {
+    serde_json::from_value(taker_reports::read_report_json(path)?)
+        .map_err(|e| AppError::internal(format!("failed to read {}: {e}", path.display())))
 }
 
 #[tauri::command]
