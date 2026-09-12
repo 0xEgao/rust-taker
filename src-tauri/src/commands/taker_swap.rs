@@ -1,6 +1,6 @@
 //! Swap execution: two-phase prepare/start, coarse in-memory progress, recovery.
 //!
-//! Live per-maker progress (`get_swap_tracker`) reads `coinswap::taker::swap_tracker::SwapTracker`
+//! Live per-maker progress (`get_swap_tracker`) reads `openswap::taker::swap_tracker::SwapTracker`
 //! directly — a public crate API (`SwapTracker`/`SwapRecord`/`MakerProgress` are all `pub`,
 //! `Serialize`/`Deserialize`), the same `<data_dir>/swap_tracker.cbor` file the old Electron app
 //! polled straight off disk.
@@ -8,22 +8,22 @@
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use coinswap::bitcoin::{Amount, OutPoint, Txid};
-use coinswap::protocol::ProtocolVersion;
-use coinswap::taker::swap_tracker::{
+use openswap::bitcoin::{Amount, OutPoint, Txid};
+use openswap::protocol::ProtocolVersion;
+use openswap::taker::swap_tracker::{
     ContractResolution, ExchangeProgress, LegacyExchangeProgress, MakerProgress,
     RecoveryPhase, SwapPhase, SwapRecord, SwapTracker, TaprootExchangeProgress,
 };
-use coinswap::taker::{SwapParams, SwapSummary};
-use coinswap::utill::{estimate_funding_tx_fee_sats, MIN_FEE_RATE};
-use coinswap::wallet::{AddressType, UTXOSpendInfo};
+use openswap::taker::{SwapParams, SwapSummary};
+use openswap::utill::{estimate_funding_tx_fee_sats, MIN_FEE_RATE};
+use openswap::wallet::{AddressType, UTXOSpendInfo};
 use tauri::{Emitter, Manager};
 
 use crate::error::{AppError, ErrorCode};
 use crate::security::operation::{ensure_main_window, SensitiveOperation, SensitiveOperationGuard};
 use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
-    ProtocolVersionDto, RecoveredContractDto, RecoveryContractDto, RecoveryStatus,
+    ProtocolVersionDto, RecoveredContractDto, RecoveryContractDto, RecoveryStatus, RecoverySummary,
     SwapPreparationDto, RouterFeeInfoDto, RouterMilestoneDto,
     RouterProgressDto, RouterStageDto, SwapFundingEstimateDto, SwapProgressDto, SwapRequest,
     SwapSummaryDto, SwapTrackerDto,
@@ -307,7 +307,7 @@ pub async fn prepare_swap(
     let summary = tauri::async_runtime::spawn_blocking(move || -> Result<SwapSummary, AppError> {
         let mut guard = try_lock_taker(&taker)?;
         let taker = guard.as_mut().ok_or_else(AppError::not_initialized)?;
-        Ok(taker.prepare_coinswap(params)?)
+        Ok(taker.prepare_swap(params)?)
     })
     .await
     .map_err(AppError::internal)??;
@@ -335,7 +335,7 @@ pub async fn prepare_swap(
 
 /// Progress for a `prepare_swap` still in flight.
 ///
-/// Never touches the taker mutex — `prepare_coinswap` is holding it — so this is safe to poll
+/// Never touches the taker mutex — `prepare_swap` is holding it — so this is safe to poll
 /// while preparation blocks. `since` is the second the caller started preparing, which is what
 /// separates this preparation's record from an older incomplete swap's.
 #[tauri::command]
@@ -445,7 +445,7 @@ pub async fn start_swap(
                 Err(poisoned) => poisoned.into_inner(),
             };
             match guard.as_mut() {
-                Some(taker) => taker.start_coinswap(&swap_id),
+                Some(taker) => taker.start_swap(&swap_id),
                 None => return, // taker dropped (app shutting down) mid-swap
             }
         };
@@ -577,7 +577,7 @@ pub async fn recover_swap(state: tauri::State<'_, AppState>) -> Result<(), AppEr
 }
 
 /// The taker's own refund delay, in blocks: `REFUND_LOCKTIME_BASE + REFUND_LOCKTIME_STEP *
-/// maker_count` from `coinswap::taker::api` (20 and 20 at the time of writing — both `pub(crate)`
+/// maker_count` from `openswap::taker::api` (20 and 20 at the time of writing — both `pub(crate)`
 /// there, so they are mirrored rather than imported, and both change under the crate's
 /// `integration-test` feature). The taker's is one step beyond the first maker's on purpose: its
 /// refund must be the last to mature so every maker can act first.
@@ -609,6 +609,50 @@ fn recovery_started(state: &AppState, swap_id: &str) -> bool {
         .is_some_and(|r| r.phase >= SwapPhase::FundsBroadcast)
 }
 
+/// Every swap whose funds recovery has not finished reclaiming, newest first.
+///
+/// The crate runs one recovery loop over all of them at once rather than one per swap, so this
+/// lists the swaps *inside* that recovery — which is what a user who failed several swaps is
+/// actually looking for — not several independent recoveries.
+///
+/// Contracts are deliberately absent: `list_live_contract_spend_info` reports the wallet's live
+/// contracts as one pool, and the crate keeps the swap-to-swapcoin maps `pub(crate)`, so there is
+/// no honest way to split them per swap from out here. The detail view shows the pool.
+#[tauri::command]
+pub async fn list_recoveries(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<RecoverySummary>, AppError> {
+    let data_dir = state
+        .data_dir
+        .read()?
+        .clone()
+        .ok_or_else(AppError::not_initialized)?;
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<RecoverySummary>, AppError> {
+        let tracker = SwapTracker::load_or_create(&data_dir)?;
+        let mut rows: Vec<RecoverySummary> = tracker
+            .incomplete_swaps()
+            .into_iter()
+            .filter(|r| r.phase == SwapPhase::Failed || r.recovery.phase != RecoveryPhase::NotStarted)
+            .map(|r| RecoverySummary {
+                swap_id: r.swap_id.clone(),
+                phase: recovery_phase_label(r.recovery.phase).to_string(),
+                failure_reason: r.failure_reason.clone(),
+                failed_at_phase: r.failed_at_phase.map(|p| tracker_phase_label(p).to_string()),
+                router_count: r.maker_count,
+                send_amount_sats: r.send_amount_sat,
+                resolved_count: r.recovery.incoming.len() + r.recovery.outgoing.len(),
+                active: r.recovery.phase < RecoveryPhase::CleanedUp,
+                updated_at: r.updated_at,
+            })
+            .collect();
+        rows.sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
 /// Recovery state.
 ///
 /// Built from the wallet's live contract UTXOs first and the tracker second, because that is the
@@ -621,6 +665,7 @@ fn recovery_started(state: &AppState, swap_id: &str) -> bool {
 #[tauri::command]
 pub async fn get_recovery_status(
     state: tauri::State<'_, AppState>,
+    swap_id: Option<String>,
 ) -> Result<RecoveryStatus, AppError> {
     let wallet = get_wallet_handle(&state)?;
     let data_dir = state
@@ -645,21 +690,32 @@ pub async fn get_recovery_status(
         };
 
         let tracker = SwapTracker::load_or_create(&data_dir)?;
-        // The one record with contracts left to resolve. `incomplete_swaps` already excludes
-        // anything cleaned up, and the crate recovers all outstanding contracts together rather
-        // than per swap, so the newest failed record is the one to report against.
-        let record = tracker
+        // `incomplete_swaps` already excludes anything cleaned up. With no `swap_id` the newest
+        // failed record is the one to report against — the crate recovers all outstanding
+        // contracts together rather than per swap, so any of them describes the same recovery.
+        let candidates: Vec<_> = tracker
             .incomplete_swaps()
             .into_iter()
             .filter(|r| {
                 r.phase == SwapPhase::Failed || r.recovery.phase != RecoveryPhase::NotStarted
             })
-            .max_by_key(|r| r.updated_at)
-            .cloned();
+            .collect();
+        let record = match &swap_id {
+            Some(wanted) => candidates.iter().find(|r| &r.swap_id == wanted).copied(),
+            None => candidates.iter().max_by_key(|r| r.updated_at).copied(),
+        }
+        .cloned();
 
-        // The taker's own refund delay. Without a record there is no router count to derive it
-        // from, so a countdown is simply not offered.
-        let offset = record.as_ref().map(|r| refund_locktime_blocks(r.maker_count));
+        // The taker's own refund delay, taken across *every* unfinished swap rather than the
+        // selected one: `pending` below is the wallet's whole contract pool, which cannot be
+        // attributed per swap, so a single swap's delay applied to all of it would count a
+        // longer-locked contract down to zero early. The longest is the only safe bound — it
+        // can overstate the wait when swaps have different router counts, never understate it.
+        // Without a record there is no router count at all, so no countdown is offered.
+        let offset = candidates
+            .iter()
+            .map(|r| refund_locktime_blocks(r.maker_count))
+            .max();
 
         let mut pending: Vec<RecoveryContractDto> = live
             .iter()

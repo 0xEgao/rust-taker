@@ -12,12 +12,12 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use coinswap::bitcoin::{Address, Network};
-use coinswap::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::ListUnspentResultEntry;
-use coinswap::bitcoind::bitcoincore_rpc::jsonrpc::{self, simple_http};
-use coinswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
-use coinswap::utill::get_taker_dir;
-use coinswap::wallet::{BackendConfig, Blockchain, CoreRpcConfig, Electrum, ElectrumConfig};
+use openswap::bitcoin::{Address, Network};
+use openswap::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::ListUnspentResultEntry;
+use openswap::bitcoind::bitcoincore_rpc::jsonrpc::{self, simple_http};
+use openswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
+use openswap::utill::get_taker_dir;
+use openswap::wallet::{BackendConfig, Blockchain, CoreRpcConfig, Electrum, ElectrumConfig};
 
 use crate::error::{AppError, ErrorCode};
 use crate::types::{

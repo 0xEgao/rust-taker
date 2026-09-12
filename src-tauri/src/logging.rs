@@ -171,7 +171,7 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
             Logger::builder()
                 .appender("maker_router")
                 .additive(false)
-                .build("coinswap::maker", log::LevelFilter::Info),
+                .build("openswap::maker", log::LevelFilter::Info),
         )
         .build(
             Root::builder()

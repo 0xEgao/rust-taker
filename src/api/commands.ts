@@ -24,6 +24,7 @@ import type {
   PriceEstimate,
   ProtocolVersion,
   RecoveryStatus,
+  RecoverySummary,
   RestoreSelection,
   SendResult,
   SwapFundingEstimate,
@@ -60,6 +61,14 @@ export function checkBackend(config?: ChainBackendConfig): Promise<BackendStatus
 /** Starts Portal's own Tor if it isn't up yet; the result carries the ports it landed on. */
 export function checkTor(): Promise<TorStatus> {
   return invoke("check_tor");
+}
+
+/**
+ * Makes the running Tor discard its current attempt and bootstrap again. Tor itself is not
+ * restarted — it cannot be, within one process — so this is the only real retry there is.
+ */
+export function restartTorBootstrap(): Promise<void> {
+  return invoke("restart_tor_bootstrap");
 }
 
 /** Confirms a quit the user was warned about; the process exits once teardown finishes. */
@@ -320,8 +329,14 @@ export function recoverSwap(): Promise<void> {
   return invoke("recover_swap");
 }
 
-export function getRecoveryStatus(): Promise<RecoveryStatus> {
-  return invoke("get_recovery_status");
+/** Omit `swapId` for the newest unfinished swap, which is what the summary poll wants. */
+export function getRecoveryStatus(swapId?: string): Promise<RecoveryStatus> {
+  return invoke("get_recovery_status", { swapId });
+}
+
+/** Every swap the one recovery loop is still working through, newest first. */
+export function listRecoveries(): Promise<RecoverySummary[]> {
+  return invoke("list_recoveries");
 }
 
 // ---------------------------------------------------------------------------

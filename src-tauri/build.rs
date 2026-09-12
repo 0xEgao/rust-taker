@@ -1,26 +1,27 @@
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.lock");
     let lock = std::fs::read_to_string("Cargo.lock").expect("Cargo.lock is required");
-    let coinswap_block = lock
+    let openswap_block = lock
         .split("[[package]]")
         .find(|block| {
             block
                 .lines()
-                .any(|line| line.trim() == "name = \"coinswap\"")
+                .any(|line| line.trim() == "name = \"openswap\"")
         })
-        .expect("coinswap must be pinned in Cargo.lock");
-    let revision = coinswap_block
+        .expect("openswap must be pinned in Cargo.lock");
+    let revision = openswap_block
         .lines()
         .find_map(|line| line.trim().strip_prefix("source = \"")?.strip_suffix('"'))
         .and_then(|source| source.rsplit_once('#').map(|(_, revision)| revision))
         .filter(|revision| revision.len() == 40)
-        .expect("coinswap Cargo.lock source must end in a full git revision");
-    println!("cargo:rustc-env=PORTAL_COINSWAP_REV={revision}");
+        .expect("openswap Cargo.lock source must end in a full git revision");
+    println!("cargo:rustc-env=PORTAL_OPENSWAP_REV={revision}");
     // Every command in `lib.rs`'s `generate_handler!`, in the same order. A command absent
     // here gets no generated permission, so `capabilities/default.json` cannot grant it and
     // every call is rejected at the IPC boundary — see the sync test in `lib.rs`.
     const COMMANDS: &[&str] = &[
         "check_tor",
+        "restart_tor_bootstrap",
         "get_chain_backend",
         "set_chain_backend",
         "check_backend",
@@ -52,6 +53,7 @@ fn main() {
         "get_swap_preparation",
         "recover_swap",
         "get_recovery_status",
+        "list_recoveries",
         "list_swap_reports",
         "get_swap_report",
         "get_incoming_swap_utxo",

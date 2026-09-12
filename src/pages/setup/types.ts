@@ -5,9 +5,9 @@ export type WalletChoice =
   | { mode: "load"; walletName: string; password?: string }
   | { mode: "restore"; walletName: string; selectionId: string; displayName: string; password?: string };
 
-// Matches coinswap::utill::get_taker_dir() — get_home_dir().join(".coinswap").join("wallet").
+// Matches openswap::utill::get_taker_dir() — get_home_dir().join(".openswap").join("taker").
 export async function getDefaultDataDir(): Promise<string> {
-  return join(await homeDir(), ".coinswap", "taker");
+  return join(await homeDir(), ".openswap", "taker");
 }
 
 // Wallet files live under <data_dir>/wallets/ (see src-tauri's wallet_path() helper).
@@ -17,10 +17,12 @@ export async function getDefaultWalletsDir(): Promise<string> {
   return join(await getDefaultDataDir(), "wallets");
 }
 
+// Key keeps its old spelling through the .coinswap → .openswap rename: it stores an explicit
+// user-chosen path, which renaming the key would silently discard.
 const DATA_DIR_KEY = "coinswap_data_dir";
 
 /** User-chosen data dir override ("Change location"), or undefined to use
- * the backend's own default (~/.coinswap/taker). */
+ * the backend's own default (~/.openswap/taker). */
 export function loadDataDir(): string | undefined {
   return localStorage.getItem(DATA_DIR_KEY) ?? undefined;
 }

@@ -44,7 +44,7 @@ export function estimateRouterFee(opts: {
   };
 }
 
-/** Total router fees for a whole route, in sats. Mirrors Taker::prepare_coinswap: each hop
+/** Total router fees for a whole route, in sats. Mirrors Taker::prepare_swap: each hop
  * prices the amount remaining after the previous hop, and each individual router fee is
  * rounded up to sats. */
 export function estimateRouteRouterFees(

@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use coinswap::maker::api::MIN_SWAP_AMOUNT;
-use coinswap::maker::{start_server, MakerServer, MakerServerConfig};
-use coinswap::utill::get_maker_dir;
-use coinswap::wallet::Wallet;
+use openswap::maker::api::MIN_SWAP_AMOUNT;
+use openswap::maker::{start_server, MakerServer, MakerServerConfig};
+use openswap::utill::get_maker_dir;
+use openswap::wallet::Wallet;
 use tauri::{Emitter, Manager};
 
 use crate::commands::chain_backend;
@@ -600,7 +600,7 @@ pub async fn start_maker(
             let cleanup_server = run_server.clone();
             let result = start_server(run_server);
             if result.is_err() {
-                // `coinswap::start_server` has early error paths after it may
+                // `openswap::start_server` has early error paths after it may
                 // have spawned background work. Ensure those services cannot
                 // outlive a failed maker runtime.
                 cleanup_server.shutdown.store(true, Ordering::Relaxed);

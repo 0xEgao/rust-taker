@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime};
 
-use coinswap::maker::MakerServer;
-use coinswap::taker::offers::OfferSyncClient;
-use coinswap::taker::Taker;
-use coinswap::wallet::Wallet;
+use openswap::maker::MakerServer;
+use openswap::taker::offers::OfferSyncClient;
+use openswap::taker::Taker;
+use openswap::wallet::Wallet;
 use uuid::Uuid;
 
 use crate::error::AppError;

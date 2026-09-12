@@ -23,12 +23,12 @@ log = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
 libc = "0.2"
 minreq = { version = "2.12.0", features = ["https"] }
-# Decodes Tor's `tor/hostname` file in the maker's data dir — same format coinswap itself uses.
+# Decodes Tor's `tor/hostname` file in the maker's data dir — same format openswap itself uses.
 serde_cbor = "0.11.2"
-# Own logger config (see src/logging.rs) — coinswap's setup_taker_logger/setup_maker_logger
+# Own logger config (see src/logging.rs) — openswap's setup_taker_logger/setup_maker_logger
 # share one process-wide OnceLock, so we can't use both to get two separate log files.
 log4rs = "1.4.0"
-coinswap = { git = "https://github.com/citadel-tech/coinswap", branch = "master" }
+openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
 libtor = { version = "47.13", features = ["vendored-openssl"], optional = true }
 tauri-plugin-single-instance = "2"
 

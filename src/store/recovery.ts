@@ -2,17 +2,17 @@ import { create } from "zustand";
 import { getRecoveryStatus } from "../api/commands";
 
 /**
- * Gates the recovery entry points — the header pill and the Swap page's Recovery button. Kept as
- * one switch so the feature can be held back without unpicking it.
+ * Gates the recovery entry point — the Swap page's Recovery button. Kept as one switch so the
+ * feature can be held back without unpicking it.
  */
 export const RECOVERY_UI_ENABLED = true;
 
 /**
  * Whether any swap still has funds sitting in a contract.
  *
- * One poll for the whole app, in the shell, because recovery outlives the Swap page: the header
- * pill and the Swap page's Recovery button are both reading the same answer, and the recovery
- * page does its own fuller read.
+ * Polled in the shell rather than on the Swap page because recovery outlives any one page and
+ * runs for hours. Only the Recovery button's highlight reads it; the recovery pages do their
+ * own fuller read.
  */
 interface RecoveryState {
   active: boolean;

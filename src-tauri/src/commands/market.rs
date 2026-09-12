@@ -4,7 +4,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use coinswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState};
+use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState};
 
 use crate::error::AppError;
 use crate::state::{try_lock_taker, AppState};

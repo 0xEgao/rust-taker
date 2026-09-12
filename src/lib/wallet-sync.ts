@@ -26,7 +26,7 @@ export function refreshWalletCache(): Promise<void> {
     cache.setSyncing();
     let slowTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Avoid entering coinswap's retry-forever sync while the endpoint is already known
+      // Avoid entering openswap's retry-forever sync while the endpoint is already known
       // to be unreachable — that loop only exits on success or app shutdown. Probes the
       // saved backend over the same route the sync itself takes.
       const reachability = await checkBackend();

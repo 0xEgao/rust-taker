@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { getLogs, getRecoveryStatus, getSwapTracker, recoverSwap } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type {
@@ -77,22 +77,39 @@ function ContractRow({ contract }: { contract: RecoveryContract }) {
 
 export function RecoveryPage() {
   const pushToast = useToastStore((s) => s.push);
+  // Absent when something still links straight here rather than through the list, in which case
+  // the newest unfinished swap is the one to show.
+  const { swapId } = useParams();
   const [status, setStatus] = useState<RecoveryStatus | null>(null);
   const [tracker, setTracker] = useState<SwapTrackerProgress | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
   const [checking, setChecking] = useState(false);
 
-  const load = useCallback(async () => {
-    const next = await getRecoveryStatus();
-    setStatus(next);
-    if (next.swapId) setTracker(await getSwapTracker(next.swapId));
-  }, []);
+  const load = useCallback(
+    // `live` is checked after every await: opening one recovery and then another leaves the
+    // first read in flight, and without this it lands afterwards and paints the first swap's
+    // funds under the second swap's id.
+    async (live: () => boolean) => {
+      const next = await getRecoveryStatus(swapId);
+      if (!live()) return;
+      setStatus(next);
+      if (!next.swapId) return;
+      const tracker = await getSwapTracker(next.swapId);
+      if (live()) setTracker(tracker);
+    },
+    [swapId],
+  );
 
   useEffect(() => {
-    void load().catch(() => {});
-    const id = setInterval(() => void load().catch(() => {}), POLL_MS);
-    return () => clearInterval(id);
+    let current = true;
+    const live = () => current;
+    void load(live).catch(() => {});
+    const id = setInterval(() => void load(live).catch(() => {}), POLL_MS);
+    return () => {
+      current = false;
+      clearInterval(id);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -107,7 +124,8 @@ export function RecoveryPage() {
     try {
       await recoverSwap();
       pushToast("success", "Recovery restarted.");
-      await load();
+      // Always current: this only runs from a click on the page being viewed.
+      await load(() => true);
     } catch (e) {
       pushToast("error", isAppError(e) ? e.message : "Could not start recovery.");
     } finally {
@@ -119,7 +137,7 @@ export function RecoveryPage() {
     return (
       <div className="h-full overflow-y-auto px-8 py-10">
         <div className="mx-auto w-full max-w-4xl">
-          <BackButton to="/swap" label="Back to Swap" />
+          <BackButton to="/swap/recovery" label="Back to Recovery" />
           <EmptyState
             icon={<CheckCircle2 size={22} strokeWidth={1.8} />}
             title="Nothing to recover"
@@ -165,7 +183,7 @@ export function RecoveryPage() {
   return (
     <div className="h-full overflow-y-auto px-8 py-10">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-        <BackButton to="/swap" label="Back to Swap" />
+        <BackButton to="/swap/recovery" label="Back to Recovery" />
 
         <div className="flex items-start gap-3">
           <span className="mt-0.5 grid h-10 w-10 flex-none place-items-center rounded-card border border-success/40 bg-success/[0.08] text-success">
@@ -292,7 +310,10 @@ export function RecoveryPage() {
         {tracker && (
           <Disclosure label="The route this swap was taking">
             <div className="flex justify-center pt-2">
-              <SwapCircuit view={circuit} maxSize={460} />
+              {/* Router labels hang *inside* the ring, so their clearance from the centre
+                  readout falls with the radius. At 460 the two-router case put them straight
+                  through the readout's bottom rows, which is its tallest state. */}
+              <SwapCircuit view={circuit} maxSize={620} />
             </div>
           </Disclosure>
         )}

@@ -4,12 +4,13 @@
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use std::io::{BufRead, BufReader, Read, Write};
 
-use coinswap::bitcoin::secp256k1::rand::RngCore;
+use openswap::bitcoin::secp256k1::rand::RngCore;
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 /// `SIGNAL HALT` exits immediately by design, so this only bounds a Tor that has stopped
@@ -21,7 +22,7 @@ const HALT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct TorRuntime {
     pub socks_port: u16,
     pub control_port: u16,
-    /// Plaintext control-port password. The coinswap crate authenticates with
+    /// Plaintext control-port password. The openswap crate authenticates with
     /// `AUTHENTICATE "<password>"`, so cookie auth would lock the maker out of `ADD_ONION`.
     pub control_password: String,
 }
@@ -29,6 +30,12 @@ pub struct TorRuntime {
 /// Populated the moment Tor is launched, before it is known to be ready, so a retry waits on
 /// the instance already starting instead of spawning a second one on a second pair of ports.
 static RUNTIME: Mutex<Option<TorRuntime>> = Mutex::new(None);
+
+/// Separate from `RUNTIME` because it is never cleared: `tor_main` cannot run twice in one
+/// process, so once a launch has been attempted the only way to another one is a new process.
+/// Without this a failed readiness wait — which clears `RUNTIME` — would let the next retry
+/// call `tor_main` a second time and take the whole app down with it.
+static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Starts Portal's Tor if it isn't running yet and returns the ports to bind to.
 pub fn ensure_tor() -> Result<TorRuntime, String> {
@@ -40,10 +47,23 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
         match slot.as_ref() {
             Some(runtime) => runtime.clone(),
             None => {
+                // Load-then-store rather than swap, and stored only once `tor_main` has actually
+                // been spawned: picking ports or creating the Tor directory can fail without
+                // ever reaching it, and latching the flag there would answer every later retry
+                // with the permanent error below over a transient fault. Safe as two steps
+                // because the `RUNTIME` lock is held across both.
+                if STARTED.load(Ordering::SeqCst) {
+                    return Err(
+                        "Portal's Tor already ran once this session and cannot be started again \
+                         in place. Quit and reopen Portal to try a fresh one."
+                            .to_string(),
+                    );
+                }
                 let (socks_port, control_port) = free_port_pair().map_err(|e| e.to_string())?;
                 let control_password = hex_upper(&random_bytes::<16>());
                 let hashed = hashed_control_password(&control_password, &random_bytes::<8>());
                 start_embedded_tor(&tor_dir()?, socks_port, control_port, &hashed)?;
+                STARTED.store(true, Ordering::SeqCst);
                 let runtime = TorRuntime {
                     socks_port,
                     control_port,
@@ -85,6 +105,43 @@ pub fn shutdown() {
     }
 }
 
+/// Makes Tor throw away its current attempt and bootstrap from the start.
+///
+/// `tor_main` only runs once per process, so there is no restarting Tor itself — but
+/// `DisableNetwork` is settable at runtime, and dropping the network and restoring it is what
+/// Tor Browser does to retry a stalled bootstrap. `SIGNAL RELOAD` is not equivalent: it rereads
+/// the config and leaves a wedged bootstrap exactly where it was.
+pub fn restart_bootstrap() -> Result<(), String> {
+    let tor = runtime().ok_or_else(|| "Portal's Tor has not started yet".to_string())?;
+    let addr = SocketAddr::from(([127, 0, 0, 1], tor.control_port));
+    let io = |e: std::io::Error| e.to_string();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).map_err(io)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(io)?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(io)?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(io)?);
+
+    for command in [
+        format!("AUTHENTICATE \"{}\"", tor.control_password),
+        "SETCONF DisableNetwork=1".to_string(),
+        "SETCONF DisableNetwork=0".to_string(),
+    ] {
+        stream
+            .write_all(format!("{command}\r\n").as_bytes())
+            .map_err(io)?;
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(io)?;
+        if !line.starts_with("250") {
+            // The reply, never the command — the first one carries the control password.
+            return Err(format!("Tor refused the restart: {}", line.trim()));
+        }
+    }
+    Ok(())
+}
+
 fn signal_halt(tor: &TorRuntime) -> std::io::Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], tor.control_port));
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
@@ -111,9 +168,9 @@ pub fn runtime() -> Option<TorRuntime> {
 }
 
 /// Shared by the taker and every maker, but kept under the taker data dir so the layout
-/// stays inside the directories the coinswap crate already owns.
+/// stays inside the directories the openswap crate already owns.
 fn tor_dir() -> Result<PathBuf, String> {
-    coinswap::utill::get_taker_dir()
+    openswap::utill::get_taker_dir()
         .map(|dir| dir.join("tor-manager"))
         .map_err(|e| e.to_string())
 }
@@ -129,7 +186,7 @@ fn free_port_pair() -> std::io::Result<(u16, u16)> {
 
 fn random_bytes<const N: usize>() -> [u8; N] {
     let mut buffer = [0u8; N];
-    coinswap::bitcoin::secp256k1::rand::thread_rng().fill_bytes(&mut buffer);
+    openswap::bitcoin::secp256k1::rand::thread_rng().fill_bytes(&mut buffer);
     buffer
 }
 
@@ -141,7 +198,7 @@ fn hex_upper(bytes: &[u8]) -> String {
 /// as `16:<salt><indicator><digest>`. `tor --hash-password` produces this; libtor exposes no
 /// equivalent, so it has to be computed here.
 fn hashed_control_password(password: &str, salt: &[u8; 8]) -> String {
-    use coinswap::bitcoin::hashes::{sha1, Hash, HashEngine};
+    use openswap::bitcoin::hashes::{sha1, Hash, HashEngine};
 
     // Tor's own default indicator; expands to (16 + (c & 15)) << ((c >> 4) + 6) = 65536 bytes.
     const INDICATOR: u8 = 0x60;

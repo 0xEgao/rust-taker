@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, LifeBuoy, Link2, RefreshCw, ScrollText, Server, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Link2, RefreshCw, ScrollText, Server, X, XCircle } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -139,7 +139,6 @@ function TopNav({
 }) {
   const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
   const refreshing = useHeaderActionsStore((s) => s.refreshing);
-  const recoveryActive = useRecoveryStore((s) => s.active);
   const [justRefreshed, setJustRefreshed] = useState(false);
   const wasRefreshing = useRef(refreshing);
 
@@ -236,16 +235,6 @@ function TopNav({
       {/* Wallet is the only page that registers a refresh handler, so both of these are
           wallet-only — a router reads its own log from its workspace instead. */}
       <div className="flex items-center justify-self-end gap-2">
-        {RECOVERY_UI_ENABLED && recoveryActive && (
-          <NavLink
-            to="/swap/recovery"
-            title="Funds are being recovered from a stopped swap"
-            className="lift flex items-center gap-1.5 rounded-control border border-warning/40 bg-warning/[0.09] px-3 py-1.5 text-[12px] font-semibold text-warning outline-none hover:border-warning/60 hover:bg-warning/[0.14] focus-visible:shadow-ring"
-          >
-            <LifeBuoy size={13} strokeWidth={2} />
-            Recovery
-          </NavLink>
-        )}
         <ConnectionChip />
         {!routerMode && (
           <>

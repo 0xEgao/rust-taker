@@ -103,7 +103,7 @@ Portal uses the OpenSwap library's own layout, so the data is interchangeable wi
 CLI tools. 
 
 ```
-~/.coinswap/taker/
+~/.openswap/taker/
 ├── wallets/            wallet files, plus one swap report per wallet
 ├── debug.log           application log
 ├── offerbook.json      cached marketplace state

@@ -1,9 +1,10 @@
 //! App-level error envelope. Crate errors are `Debug`-only, so everything is
 //! converted here before crossing IPC. Frontend switches on `code`.
 
-use coinswap::maker::MakerError;
-use coinswap::taker::error::TakerError;
-use coinswap::wallet::WalletError;
+use openswap::maker::MakerError;
+use openswap::security::SecurityError;
+use openswap::taker::error::TakerError;
+use openswap::wallet::WalletError;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,12 +134,16 @@ impl From<TakerError> for AppError {
 }
 
 impl From<WalletError> for AppError {
-    // Wrong password never reaches this — see from_wallet_join_error below.
     fn from(e: WalletError) -> Self {
         let code = match &e {
             WalletError::InsufficientFund { .. } => ErrorCode::InsufficientFunds,
             WalletError::InvalidAddress(_) => ErrorCode::InvalidInput,
             WalletError::IO(_) => ErrorCode::Io,
+            // `PasswordRequired` means the file is encrypted and we passed none, which the UI
+            // recovers from the same way as a bad one: ask again.
+            WalletError::Security(SecurityError::Decryption | SecurityError::PasswordRequired) => {
+                ErrorCode::WalletWrongPassword
+            }
             _ => ErrorCode::WalletLoadFailed,
         };
         let details = match &e {
@@ -185,8 +190,10 @@ impl<T> From<std::sync::PoisonError<T>> for AppError {
     }
 }
 
-/// Coinswap panics (not Result::Err) on a wrong password or corrupt wallet file; this classifies
-/// the spawn_blocking JoinError's panic message into a proper ErrorCode instead of a generic Internal.
+/// Openswap used to panic (not Result::Err) on a wrong password or corrupt wallet file; this
+/// classifies the spawn_blocking JoinError's panic message into a proper ErrorCode instead of a
+/// generic Internal. Upstream now returns `WalletError::Security` for that, but the panic paths
+/// outside wallet decryption remain, so this stays.
 pub fn from_wallet_join_error(e: tauri::Error) -> AppError {
     let tauri::Error::JoinError(join_err) = e else {
         return AppError::internal(e);
