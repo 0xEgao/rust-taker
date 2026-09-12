@@ -10,12 +10,72 @@ use commands::{
     chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet, market, setup,
     shutdown, taker_reports, taker_swap, taker_wallet,
 };
+use std::fs;
+use std::path::Path;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 
 /// Label of the window declared in `tauri.conf.json`.
 const MAIN_WINDOW: &str = "main";
+
+/// Upstream renamed its data dir from `~/.coinswap` to `~/.openswap` (PR #988) without shipping
+/// a migration, so an updated build starts against an empty directory and every existing wallet,
+/// swap tracker and Tor identity looks lost. Copied rather than moved, so an older build still
+/// finds its own data.
+///
+/// The new root existing is not proof the move already happened — Tor writes `tor-manager/` under
+/// it the moment the app launches, and a build run before this migration existed leaves one
+/// behind — so the marker records that instead, and only entries with nothing in their way are
+/// filled in.
+fn migrate_legacy_data_dir() {
+    let Ok(taker_dir) = openswap::utill::get_taker_dir() else {
+        return;
+    };
+    let Some(root) = taker_dir.parent() else {
+        return;
+    };
+    let Some(legacy_root) = root.parent().map(|home| home.join(".coinswap")) else {
+        return;
+    };
+    let marker = root.join(".migrated-from-coinswap");
+    if marker.exists() || !legacy_root.is_dir() {
+        return;
+    }
+    if let Err(e) = merge_dir(&legacy_root, root) {
+        // Deliberately no marker on failure, so the next launch tries the rest again rather
+        // than leaving the wallets stranded in a directory nothing reads any more.
+        log::error!(
+            "migrating {} to {}: {e}",
+            legacy_root.display(),
+            root.display()
+        );
+        return;
+    }
+    let _ = fs::write(&marker, "");
+}
+
+/// Copies everything under `from` that `to` does not already have, recursing into directories
+/// present in both. Never overwrites: anything already in the new tree is the newer copy.
+///
+/// Directory modes are carried over rather than left to `create_dir_all`: Tor refuses to start
+/// when its data directory is group- or world-readable, and the process umask would widen it.
+fn merge_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !to.exists() {
+        fs::create_dir_all(to)?;
+        fs::set_permissions(to, from.metadata()?.permissions())?;
+    }
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            merge_dir(&entry.path(), &target)?;
+        } else if !target.exists() {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
 
 pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
@@ -51,6 +111,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // setup / connectivity
             setup::check_tor,
+            setup::restart_tor_bootstrap,
             // chain backend selection
             chain_backend::get_chain_backend,
             chain_backend::set_chain_backend,
@@ -87,6 +148,7 @@ pub fn run() {
             taker_swap::get_swap_preparation,
             taker_swap::recover_swap,
             taker_swap::get_recovery_status,
+            taker_swap::list_recoveries,
             // taker reports
             taker_reports::list_swap_reports,
             taker_reports::get_swap_report,
@@ -135,6 +197,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Ahead of everything else: Tor, the wallet and the config cleanup below all
+            // resolve paths under the data dir, and Tor in particular creates part of it.
+            migrate_legacy_data_dir();
+
             // Earlier versions persisted the backend, RPC password included. Ceasing to
             // write it is not enough — the old file has to go.
             chain_backend::remove_legacy_config();
@@ -222,6 +288,30 @@ mod tests {
 
     fn read(path: &Path) -> String {
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// The real shape this has to survive: Tor creates `taker/tor-manager/` under the new root
+    /// on launch, so the destination already exists before any wallet has been moved into it.
+    #[test]
+    fn merge_fills_in_what_the_new_tree_is_missing_without_overwriting() {
+        let tmp = std::env::temp_dir().join(format!("portal-merge-{}", std::process::id()));
+        let (old, new) = (tmp.join("old"), tmp.join("new"));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(old.join("taker/wallets")).unwrap();
+        std::fs::create_dir_all(old.join("taker/tor-manager")).unwrap();
+        std::fs::create_dir_all(new.join("taker/tor-manager")).unwrap();
+        std::fs::write(old.join("taker/wallets/Potterverse"), "wallet").unwrap();
+        std::fs::write(old.join("taker/swap_tracker.cbor"), "tracker").unwrap();
+        std::fs::write(old.join("taker/tor-manager/tor.log"), "stale").unwrap();
+        std::fs::write(new.join("taker/tor-manager/tor.log"), "current").unwrap();
+
+        super::merge_dir(&old, &new).unwrap();
+
+        assert_eq!(read(&new.join("taker/wallets/Potterverse")), "wallet");
+        assert_eq!(read(&new.join("taker/swap_tracker.cbor")), "tracker");
+        // This session's own Tor log must not be replaced by the old tree's stale one.
+        assert_eq!(read(&new.join("taker/tor-manager/tor.log")), "current");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     fn between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {

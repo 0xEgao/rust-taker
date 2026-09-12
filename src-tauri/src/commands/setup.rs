@@ -6,10 +6,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::types::TorStatus;
 
-/// Starts Portal's own Tor if it isn't up yet, then mirrors coinswap's control-port
+/// Starts Portal's own Tor if it isn't up yet, then mirrors openswap's control-port
 /// handshake against it. Bootstrap < 100% is informational only, not a failure.
 #[tauri::command]
 pub async fn check_tor() -> Result<TorStatus, AppError> {
@@ -20,6 +20,8 @@ pub async fn check_tor() -> Result<TorStatus, AppError> {
             socks_reachable: false,
             authenticated: false,
             bootstrap_progress: None,
+            bootstrap_summary: None,
+            bootstrap_warning: None,
             error: Some(error),
             socks_port: None,
             control_port: None,
@@ -29,6 +31,16 @@ pub async fn check_tor() -> Result<TorStatus, AppError> {
     .map_err(AppError::internal)
 }
 
+/// Restarts the bootstrap of the Tor already running, for a user who has watched it sit at the
+/// same percentage and wants it to start over rather than wait longer.
+#[tauri::command]
+pub async fn restart_tor_bootstrap() -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(crate::tor::restart_bootstrap)
+        .await
+        .map_err(AppError::internal)?
+        .map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))
+}
+
 fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
     let (socks_port, control_port) = (tor.socks_port, tor.control_port);
     let unreachable = |socks_reachable: bool, err: String| TorStatus {
@@ -36,6 +48,8 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
         socks_reachable,
         authenticated: false,
         bootstrap_progress: None,
+        bootstrap_summary: None,
+        bootstrap_warning: None,
         error: Some(err),
         socks_port: Some(socks_port),
         control_port: Some(control_port),
@@ -106,6 +120,8 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
             socks_reachable: true,
             authenticated: false,
             bootstrap_progress: None,
+            bootstrap_summary: None,
+            bootstrap_warning: None,
             error: Some("Tor control-port authentication failed".into()),
             socks_port: Some(socks_port),
             control_port: Some(control_port),
@@ -121,6 +137,8 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
             socks_reachable: true,
             authenticated: true,
             bootstrap_progress: None,
+            bootstrap_summary: None,
+            bootstrap_warning: None,
             error: None,
             socks_port: Some(socks_port),
             control_port: Some(control_port),
@@ -139,8 +157,49 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
         socks_reachable: true,
         authenticated: true,
         bootstrap_progress,
+        bootstrap_summary: quoted_field(&resp, "SUMMARY"),
+        bootstrap_warning: quoted_field(&resp, "WARNING"),
         error: None,
         socks_port: Some(socks_port),
         control_port: Some(control_port),
+    }
+}
+
+/// Pulls `KEY="..."` out of a Tor control-port reply. Tor emits these as plain quoted strings
+/// with no escaping in the bootstrap phase line, so the first closing quote ends the value.
+fn quoted_field(line: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}=\"");
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real `GETINFO status/bootstrap-phase` replies, the warning form taken from a Tor that
+    /// could not reach a relay — the case the connection gate has to be able to explain.
+    #[test]
+    fn reads_summary_and_warning_from_the_bootstrap_phase() {
+        let progressing = "250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=50 \
+             TAG=loading_descriptors SUMMARY=\"Loading relay descriptors\"\r\n";
+        assert_eq!(
+            quoted_field(progressing, "SUMMARY").as_deref(),
+            Some("Loading relay descriptors")
+        );
+        assert_eq!(quoted_field(progressing, "WARNING"), None);
+
+        let struggling = "250-status/bootstrap-phase=WARN BOOTSTRAP PROGRESS=10 TAG=conn_done \
+             SUMMARY=\"Connected to a relay\" WARNING=\"Connection timed out\" REASON=TIMEOUT \
+             COUNT=3 RECOMMENDATION=warn\r\n";
+        assert_eq!(
+            quoted_field(struggling, "SUMMARY").as_deref(),
+            Some("Connected to a relay")
+        );
+        assert_eq!(
+            quoted_field(struggling, "WARNING").as_deref(),
+            Some("Connection timed out")
+        );
     }
 }

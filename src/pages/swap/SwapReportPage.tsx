@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getIncomingSwapUtxo, getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
-import type { ReportRouterFee, Offer, SwapReportDetail, SwapStatus, SwapUtxo } from "../../api/types";
+import type { ReportRouterFee, ReportUtxo, Offer, SwapReportDetail, SwapStatus, SwapUtxo } from "../../api/types";
 import { isAppError } from "../../api/types";
 import { BackButton, Card, CopyButton, Disclosure, ExternalLinkButton, IndeterminateBar, Modal, SatsAmount } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
@@ -65,6 +65,45 @@ function TxArtifact({ label, caption, txid, vout, amountSats, accent, arrow }: {
       </div>
       <CopyButton text={reference} title={vout === undefined ? "Copy transaction ID" : "Copy outpoint"} />
       <ExternalLinkButton txid={txid} />
+    </div>
+  );
+}
+
+// The report names these coins by address and value only, with no outpoint to link out to.
+function CoinRow({ label, caption, coins, accent, arrow }: {
+  label: string;
+  caption: string;
+  coins: ReportUtxo[];
+  accent: string;
+  arrow: string;
+}) {
+  return (
+    <div className="rounded-control border border-line bg-surface-raised p-5">
+      <h4 className="mb-3.5 flex items-center gap-3 text-[15px] font-extrabold text-foreground">
+        <span className="font-mono" style={{ color: accent }} aria-hidden>
+          {arrow}
+        </span>
+        {label}
+      </h4>
+      <div className="flex flex-col gap-3">
+        {coins.map((coin, i) => (
+          <div
+            key={`${coin.address}-${i}`}
+            className="grid grid-cols-[minmax(0,1fr)_34px] items-center gap-2.5"
+          >
+            <div className="min-w-0">
+              <p className="break-all font-mono text-[12px] leading-relaxed text-muted">
+                {coin.address}
+              </p>
+              <p className="mt-2 font-numeric text-[13px] text-foreground">
+                <SatsAmount sats={coin.valueSats} />
+              </p>
+            </div>
+            <CopyButton text={coin.address} title="Copy address" />
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-[11.5px] leading-5 text-subtle">{caption}</p>
     </div>
   );
 }
@@ -154,8 +193,8 @@ export function SwapReportPage() {
     void getSwapReport(swapId).then(setReport).catch(() => setNotFound(true));
   }, [swapId]);
 
-  // The received coin is not in the report file — it has to be read off the chain, which costs a
-  // round-trip per candidate transaction, so it loads on demand rather than with the report.
+  // Reports written before upstream PR #1006 don't record the sweep outputs, so for those the
+  // received coin has to be read off the chain, at a round-trip per candidate transaction.
   const loadIncomingUtxo = useCallback(() => {
     if (!swapId || utxoState === "loading") return;
     setUtxoState("loading");
@@ -167,9 +206,12 @@ export function SwapReportPage() {
       .catch(() => setUtxoState("failed"));
   }, [swapId, utxoState]);
 
+  const reportedIncoming = report?.incomingUtxos ?? [];
   useEffect(() => {
-    if (swapId && utxoState === "idle") loadIncomingUtxo();
-  }, [swapId, utxoState, loadIncomingUtxo]);
+    if (swapId && report && reportedIncoming.length === 0 && utxoState === "idle") {
+      loadIncomingUtxo();
+    }
+  }, [swapId, report, reportedIncoming.length, utxoState, loadIncomingUtxo]);
 
   // Fidelity bond data isn't part of the swap report — it lives on the router's current offer.
   // Fetched lazily on first modal open (not mount) since nothing else on this page needs it, and
@@ -190,11 +232,7 @@ export function SwapReportPage() {
       .catch(() => {});
   }
 
-  // The proof records both contract outpoints exactly. A report written before the proof existed
-  // has only the txids, so the vout is left off rather than guessed at 0.
-  const outgoingContract =
-    report?.outgoingContractOutpoint ??
-    (report?.outgoingContractTxid ? { txid: report.outgoingContractTxid, vout: undefined } : null);
+  const outgoingContract = report?.outgoingContractOutpoint ?? null;
 
   async function handleVerify() {
     if (!swapId) return;
@@ -294,7 +332,24 @@ export function SwapReportPage() {
                 arrow="↗"
               />
             )}
-            {incomingUtxo ? (
+            {report.outgoingUtxos.length > 0 && (
+              <CoinRow
+                label="Funding coins"
+                caption="The wallet coins spent to fund the outgoing contract"
+                coins={report.outgoingUtxos}
+                accent={OUTGOING_ACCENT}
+                arrow="↗"
+              />
+            )}
+            {reportedIncoming.length > 0 ? (
+              <CoinRow
+                label="Incoming UTXO"
+                caption="The coins the route paid back into this wallet"
+                coins={reportedIncoming}
+                accent={HOP_ACCENTS[0]}
+                arrow="↙"
+              />
+            ) : incomingUtxo ? (
               <TxArtifact
                 label="Incoming UTXO"
                 caption={
@@ -332,9 +387,13 @@ export function SwapReportPage() {
                 )}
               </div>
             )}
-            {!outgoingContract && !incomingUtxo && utxoState === "done" && (
-              <p className="text-[12px] text-subtle">No UTXO data recorded for this swap.</p>
-            )}
+            {!outgoingContract &&
+              !incomingUtxo &&
+              report.outgoingUtxos.length === 0 &&
+              reportedIncoming.length === 0 &&
+              utxoState === "done" && (
+                <p className="text-[12px] text-subtle">No UTXO data recorded for this swap.</p>
+              )}
           </SectionCard>
 
           {report.fundingTxids.flat().length > 0 && (

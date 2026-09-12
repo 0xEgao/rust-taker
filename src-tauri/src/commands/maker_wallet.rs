@@ -2,13 +2,13 @@
 //! (which owns lifecycle) since it's the exact same shape as
 //! `commands::taker_wallet`'s operations, selected from `state.makers` by ID.
 //! The maker's wallet is the same
-//! `coinswap::wallet::Wallet` type the taker uses, so the DTOs
+//! `openswap::wallet::Wallet` type the taker uses, so the DTOs
 //! (`BalancesDto`, `UtxoEntry`, `NewAddress`) are
 //! shared, not duplicated.
 
 use std::sync::{Arc, RwLock};
 
-use coinswap::wallet::{AddressType, Wallet};
+use openswap::wallet::{AddressType, Wallet};
 
 use crate::commands::chain_backend;
 use crate::error::AppError;

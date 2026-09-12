@@ -1,8 +1,8 @@
 //! Maker-side swap reports & deniability — the maker's counterpart to
 //! `commands::taker_reports`. Same on-disk file
-//! (`<wallet_name>_swap_report.json`), different section: coinswap's
+//! (`<wallet_name>_swap_report.json`), different section: openswap's
 //! `SwapReportFile.maker` is a `HashMap<String, Vec<MakerReport>>` keyed by
-//! maker node name (see `coinswap::wallet::report::wallet_name_for_report`,
+//! maker node name (see `openswap::wallet::report::wallet_name_for_report`,
 //! not itself re-exported). Each command resolves one registered maker's
 //! report file and flattens the node-name buckets stored within that file.
 
@@ -10,14 +10,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use coinswap::maker::MakerServer;
-use coinswap::wallet::MakerReport;
+use openswap::maker::MakerServer;
+use openswap::wallet::MakerReport;
 
 use crate::commands::maker_settings;
-use crate::commands::taker_reports::status_label;
+use crate::commands::taker_reports::{status_label, to_report_utxos};
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
-use crate::types::{MakerSwapReportDetail, MakerSwapReportSummary};
+use crate::types::{MakerSwapReportDetail, MakerSwapReportSummary, Outpoint};
 
 fn get_maker_server(state: &AppState, router_id: &str) -> Result<Arc<MakerServer>, AppError> {
     let makers = state.makers.lock()?;
@@ -32,7 +32,7 @@ fn get_maker_server(state: &AppState, router_id: &str) -> Result<Arc<MakerServer
 }
 
 /// Mirrors `taker_reports.rs`'s own local `SwapReportFile` — the wrapper type isn't re-exported
-/// from `coinswap::wallet` (see that file's doc comment), so both read the on-disk JSON shape
+/// from `openswap::wallet` (see that file's doc comment), so both read the on-disk JSON shape
 /// directly rather than waiting on the crate to fix the re-export. Only the field this file
 /// needs is declared; `taker`/`recovery`/`deniability_proofs` are ignored here.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -126,6 +126,21 @@ pub async fn get_maker_swap_report(
             )
         })?;
 
+    // Since upstream PR #1006 the proof is the only record of either contract's location, and
+    // it names them as outpoints rather than bare txids.
+    let to_outpoint = |op: openswap::bitcoin::OutPoint| Outpoint {
+        txid: op.txid.to_string(),
+        vout: op.vout,
+    };
+    let incoming_contract_outpoint = r
+        .deniability_proof
+        .as_ref()
+        .map(|p| to_outpoint(p.proven_outpoint()));
+    let outgoing_contract_outpoint = r
+        .deniability_proof
+        .as_ref()
+        .and_then(|p| p.outgoing_swapcoin)
+        .map(to_outpoint);
     let deniability_proof = r
         .deniability_proof
         .map(|p| serde_json::to_value(p).unwrap_or(serde_json::Value::Null));
@@ -140,8 +155,10 @@ pub async fn get_maker_swap_report(
         incoming_amount_sats: r.incoming_amount,
         outgoing_amount_sats: r.outgoing_amount,
         fee_earned_sats: r.fee_earned,
-        incoming_contract_txid: r.incoming_contract_txid,
-        outgoing_contract_txid: r.outgoing_contract_txid,
+        incoming_contract_outpoint,
+        outgoing_contract_outpoint,
+        incoming_utxos: to_report_utxos(r.incoming_utxos),
+        outgoing_utxos: to_report_utxos(r.outgoing_utxos),
         timelock: r.timelock,
         deniability_proof,
     })

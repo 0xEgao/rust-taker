@@ -36,13 +36,18 @@ export interface BackendStatus {
   verificationProgress?: number;
 }
 
-// bootstrapProgress is informational only — coinswap's own init doesn't gate on it.
+// bootstrapProgress is informational only — openswap's own init doesn't gate on it.
 export interface TorStatus {
   reachable: boolean;
   /** Independent SOCKS5 greeting result, even when the control port fails. */
   socksReachable: boolean;
   authenticated: boolean;
   bootstrapProgress?: number;
+  /** Tor's own name for the phase it is in, e.g. "Loading relay descriptors". */
+  bootstrapSummary?: string;
+  /** Why Tor says its own bootstrap is struggling. Distinct from `error`, which is Portal
+   * failing to reach or authenticate against Tor rather than Tor failing to connect. */
+  bootstrapWarning?: string;
   error?: string;
   /** Loopback ports Portal's own Tor was started on; freshly chosen each run. */
   socksPort?: number;
@@ -183,6 +188,12 @@ export interface Outpoint {
   vout: number;
 }
 
+/** One coin named in a swap report — where the money sat, not which transaction moved it. */
+export interface ReportUtxo {
+  address: string;
+  valueSats: number;
+}
+
 export interface SendResult {
   txid: string;
 }
@@ -313,8 +324,10 @@ export interface RouterSwapReportSummary {
 export interface RouterSwapReportDetail extends RouterSwapReportSummary {
   network: string;
   swapDurationSeconds: number;
-  incomingContractTxid: string;
-  outgoingContractTxid: string;
+  incomingContractOutpoint?: Outpoint;
+  outgoingContractOutpoint?: Outpoint;
+  incomingUtxos: ReportUtxo[];
+  outgoingUtxos: ReportUtxo[];
   timelock: number;
   deniabilityProof: Record<string, unknown> | null;
 }
@@ -461,6 +474,24 @@ export interface RecoveredContract {
   spendingTxid?: string;
 }
 
+/**
+ * One swap inside the recovery. The crate runs a single recovery loop over every unfinished
+ * swap rather than one per swap, so a list of these is a list of what that one recovery is
+ * still working through — not a list of concurrent recoveries.
+ */
+export interface RecoverySummary {
+  swapId: string;
+  phase: RecoveryPhase;
+  failureReason?: string;
+  failedAtPhase?: TrackerPhase;
+  routerCount: number;
+  sendAmountSats: number;
+  /** How many of this swap's contracts have already been claimed back. */
+  resolvedCount: number;
+  active: boolean;
+  updatedAt: number;
+}
+
 export interface RecoveryStatus {
   active: boolean;
   swapId?: string;
@@ -486,7 +517,7 @@ export interface RecoveryStatus {
 
 /**
  * The first four come from the report file. The last three are synthesised from the swap tracker
- * for a swap that never got a report — the process died mid-swap, so `start_coinswap`'s failure
+ * for a swap that never got a report — the process died mid-swap, so `start_swap`'s failure
  * arm never ran and `cleanup_incomplete` marked it Failed at the next launch without writing one.
  */
 export type SwapStatus =
@@ -543,8 +574,8 @@ export interface SwapReportDetail {
   miningFeeSats: number;
   feePercentage: number;
   totalRouterFeesSats: number;
-  outgoingContractTxid?: string;
-  incomingContractTxid?: string;
+  outgoingUtxos: ReportUtxo[];
+  incomingUtxos: ReportUtxo[];
   fundingTxids: string[][];
   routersCount: number;
   routerAddresses: string[];

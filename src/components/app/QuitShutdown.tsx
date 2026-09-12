@@ -42,7 +42,7 @@ export function QuitShutdown() {
   if (!blockers) return null;
 
   const running = [
-    blockers.swapRunning ? "a coinswap" : null,
+    blockers.swapRunning ? "a swap" : null,
     blockers.recoveryRunning ? "a recovery" : null,
     blockers.runningRouters.length === 1
       ? `the router ${blockers.runningRouters[0]}`

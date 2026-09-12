@@ -3,19 +3,20 @@
 //! itself — we only read it.
 
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
-use coinswap::bitcoin::{Address, Txid};
-use coinswap::taker::swap_tracker::{RecoveryPhase, SwapPhase, SwapRecord};
-use coinswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport, UTXOSpendInfo};
+use openswap::bitcoin::{Address, Txid};
+use openswap::taker::swap_tracker::{RecoveryPhase, SwapPhase, SwapRecord};
+use openswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport, UTXOSpendInfo};
 
 use crate::commands::chain_backend;
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, AppState};
-use crate::types::{Outpoint, ReportRouterFee, SwapReportDetail, SwapReportSummary, SwapUtxoDto};
+use crate::types::{
+    Outpoint, ReportRouterFee, ReportUtxo, SwapReportDetail, SwapReportSummary, SwapUtxoDto,
+};
 
 /// Mirrors the `taker` field of the crate's `wallet::report::SwapReportFile` — that wrapper type
-/// isn't re-exported from `coinswap::wallet`, so this reads the same on-disk JSON shape directly
+/// isn't re-exported from `openswap::wallet`, so this reads the same on-disk JSON shape directly
 /// rather than waiting on the crate to fix the re-export.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct SwapReportFile {
@@ -49,6 +50,16 @@ pub(crate) fn status_label(s: &SwapStatus) -> &'static str {
         SwapStatus::RecoveryTimelock => "recovery_timelock",
         SwapStatus::Failed => "failed",
     }
+}
+
+pub(crate) fn to_report_utxos(utxos: Vec<openswap::wallet::ReportUtxo>) -> Vec<ReportUtxo> {
+    utxos
+        .into_iter()
+        .map(|u| ReportUtxo {
+            address: u.address,
+            value_sats: u.value,
+        })
+        .collect()
 }
 
 fn resolve_report_path(state: &AppState) -> Result<PathBuf, AppError> {
@@ -130,7 +141,7 @@ pub async fn list_swap_reports(
         })
         .collect();
 
-    // A report only gets written from inside `start_coinswap`. A swap the process never returned
+    // A report only gets written from inside `start_swap`. A swap the process never returned
     // from — the app was closed, or it crashed — is marked Failed by `cleanup_incomplete` at the
     // next launch, which writes no report at all. Those swaps really happened and may still be
     // holding funds, so listing only the report file understates what the wallet has done and
@@ -205,7 +216,7 @@ pub async fn get_swap_report(
 
     // Both sides of the route as outpoints. `proven_outpoint` is the incoming contract — the one
     // `verify_deniability` checks on-chain — and `outgoing_swapcoin` is what this wallet paid in.
-    let to_outpoint = |op: coinswap::bitcoin::OutPoint| Outpoint {
+    let to_outpoint = |op: openswap::bitcoin::OutPoint| Outpoint {
         txid: op.txid.to_string(),
         vout: op.vout,
     };
@@ -237,8 +248,8 @@ pub async fn get_swap_report(
         mining_fee_sats: r.mining_fee,
         fee_percentage: r.fee_percentage,
         total_router_fees_sats: r.total_maker_fees,
-        outgoing_contract_txid: r.outgoing_contract_txid,
-        incoming_contract_txid: r.incoming_contract_txid,
+        outgoing_utxos: to_report_utxos(r.outgoing_utxos),
+        incoming_utxos: to_report_utxos(r.incoming_utxos),
         funding_txids: r.funding_txids,
         routers_count: r.makers_count,
         router_addresses: r.maker_addresses,
@@ -309,18 +320,15 @@ pub async fn get_incoming_swap_utxo(
                 )
             })?;
 
-        // The proof names the incoming contract outpoint exactly. Without one only the txid
-        // is known, and a Taproot contract output is not necessarily vout 0 — so the sweep is
-        // then matched on the whole transaction rather than on a guessed outpoint.
-        let contract = report
+        // The proof is the only record of the incoming contract outpoint — upstream PR #1006
+        // dropped the bare contract txids from the report — so a swap that produced no proof
+        // cannot be matched to its sweep at all.
+        let Some(contract) = report
             .deniability_proof
             .as_ref()
-            .map(|p| p.proven_outpoint());
-        let contract_txid = match (contract, report.incoming_contract_txid.as_deref()) {
-            (Some(outpoint), _) => outpoint.txid,
-            (None, Some(txid)) => Txid::from_str(txid)
-                .map_err(|e| AppError::internal(format!("bad contract txid: {e}")))?,
-            (None, None) => return Ok(None),
+            .map(|p| p.proven_outpoint())
+        else {
+            return Ok(None);
         };
 
         // Deliberately not `get_transactions`: the incoming contract's script is watched
@@ -365,11 +373,7 @@ pub async fn get_incoming_swap_utxo(
             let Ok(tx) = backend.get_raw_transaction(&txid, None) else {
                 continue;
             };
-            let spends_contract = tx.input.iter().any(|i| match contract {
-                Some(outpoint) => i.previous_output == outpoint,
-                None => i.previous_output.txid == contract_txid,
-            });
-            if !spends_contract {
+            if !tx.input.iter().any(|i| i.previous_output == contract) {
                 continue;
             }
             let Some(out) = tx.output.get(vout as usize) else {

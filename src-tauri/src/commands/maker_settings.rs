@@ -8,8 +8,8 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use coinswap::maker::MakerServerConfig;
-use coinswap::utill::get_maker_dir;
+use openswap::maker::MakerServerConfig;
+use openswap::utill::get_maker_dir;
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;

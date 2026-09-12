@@ -6,7 +6,7 @@ import {
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { getRouterSwapReport, verifyRouterDeniability } from "../../api/commands";
-import type { RouterSwapReportDetail } from "../../api/types";
+import type { ReportUtxo, RouterSwapReportDetail } from "../../api/types";
 import {
   BackButton,
   Card,
@@ -52,6 +52,50 @@ function Artifact({
         </code>
       </div>
       <ExternalLinkButton txid={txid} />
+    </div>
+  );
+}
+
+// The report names these coins by address and value only — no txid to link out to.
+function Coins({
+  label,
+  coins,
+  direction,
+}: {
+  label: string;
+  coins: ReportUtxo[];
+  direction: "incoming" | "outgoing";
+}) {
+  return (
+    <div className="flex items-start gap-4 rounded-control border border-line bg-surface/70 p-4">
+      <span
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-control ${
+          direction === "incoming"
+            ? "bg-success/10 text-success"
+            : "bg-warning/10 text-warning"
+        }`}
+      >
+        {direction === "incoming" ? (
+          <ArrowDownLeft size={19} />
+        ) : (
+          <ArrowUpRight size={19} />
+        )}
+      </span>
+      <div className="min-w-0 flex-1">
+        <MicroLabel>{label}</MicroLabel>
+        <div className="mt-1 flex flex-col gap-2">
+          {coins.map((coin, i) => (
+            <div key={`${coin.address}-${i}`} className="min-w-0">
+              <code className="block truncate font-mono text-[11px]" title={coin.address}>
+                {coin.address}
+              </code>
+              <span className="font-numeric text-[12px]">
+                <SatsAmount sats={coin.valueSats} />
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -116,16 +160,34 @@ export function RouterSwapReportPage() {
                 </h2>
               </div>
               <div className="space-y-3 p-5">
-                <Artifact
-                  label="Incoming contract"
-                  txid={report.incomingContractTxid}
-                  direction="incoming"
-                />
-                <Artifact
-                  label="Outgoing contract"
-                  txid={report.outgoingContractTxid}
-                  direction="outgoing"
-                />
+                {report.incomingContractOutpoint && (
+                  <Artifact
+                    label="Incoming contract"
+                    txid={report.incomingContractOutpoint.txid}
+                    direction="incoming"
+                  />
+                )}
+                {report.outgoingContractOutpoint && (
+                  <Artifact
+                    label="Outgoing contract"
+                    txid={report.outgoingContractOutpoint.txid}
+                    direction="outgoing"
+                  />
+                )}
+                {report.incomingUtxos.length > 0 && (
+                  <Coins
+                    label="Swept coins"
+                    coins={report.incomingUtxos}
+                    direction="incoming"
+                  />
+                )}
+                {report.outgoingUtxos.length > 0 && (
+                  <Coins
+                    label="Funding coins"
+                    coins={report.outgoingUtxos}
+                    direction="outgoing"
+                  />
+                )}
               </div>
             </Card>
             <Card className="border-line-strong">

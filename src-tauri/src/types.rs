@@ -94,6 +94,13 @@ pub struct TorStatus {
     pub authenticated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_progress: Option<u8>,
+    /// Tor's own one-line description of the phase it is in, e.g. "Loading relay descriptors".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_summary: Option<String>,
+    /// Why Tor itself says the bootstrap is struggling, present only when it reports a problem.
+    /// Distinct from `error`, which is Portal failing to reach or authenticate against Tor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_warning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Loopback ports Portal's own Tor was started on; freshly chosen each run.
@@ -158,7 +165,7 @@ pub struct RestoreSelectionView {
 // Wallet operations
 // ---------------------------------------------------------------------------
 
-/// Mirrors coinswap's `Balances` (all amounts in sats).
+/// Mirrors openswap's `Balances` (all amounts in sats).
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BalancesDto {
@@ -210,7 +217,7 @@ pub struct TxSummary {
     pub label: Option<String>,
 }
 
-/// One UTXO plus its coinswap-specific spend-type classification.
+/// One UTXO plus its openswap-specific spend-type classification.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UtxoEntry {
@@ -221,7 +228,7 @@ pub struct UtxoEntry {
     pub address: Option<String>,
     pub spendable: bool,
     pub solvable: bool,
-    /// Human category from coinswap's `UTXOSpendInfo` Display impl, e.g.
+    /// Human category from openswap's `UTXOSpendInfo` Display impl, e.g.
     /// "regular", "incoming swap", "outgoing swap", "timelock contract",
     /// "hashlock contract", "fidelity bond", "swept".
     pub spend_type: String,
@@ -234,6 +241,15 @@ pub struct Outpoint {
     pub vout: u32,
 }
 
+/// One coin named in a swap report. Mirrors the crate's `ReportUtxo`, which records where the
+/// money sat rather than which transaction moved it — there is no outpoint to carry.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportUtxo {
+    pub address: String,
+    pub value_sats: u64,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendResult {
@@ -242,7 +258,7 @@ pub struct SendResult {
 
 /// Structured equivalent of the crate's `Wallet::display_fidelity_bonds` string dump —
 /// `Wallet::get_fidelity_bonds()`/`calculate_bond_value` already expose everything needed
-/// directly, no coinswap-side change required (see `.claude/MAKER_INTEGRATION.md` §4).
+/// directly, no openswap-side change required (see `.claude/MAKER_INTEGRATION.md` §4).
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FidelityBondDto {
@@ -446,7 +462,7 @@ pub struct RouterProgressDto {
     pub milestones: Vec<RouterMilestoneDto>,
 }
 
-/// Live per-router detail read straight from `coinswap::taker::swap_tracker::SwapTracker`
+/// Live per-router detail read straight from `openswap::taker::swap_tracker::SwapTracker`
 /// (a public crate API — see `commands::taker_swap`'s module doc).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -466,7 +482,7 @@ pub struct SwapTrackerDto {
 
 /// How far `prepare_swap` has got, for a progress readout while it blocks.
 ///
-/// Read off `swap_tracker.cbor` rather than reported by the command: `prepare_coinswap` is one
+/// Read off `swap_tracker.cbor` rather than reported by the command: `prepare_swap` is one
 /// opaque call that holds the taker for its whole duration, but it persists the record as it
 /// goes, so the file is the only place its progress is visible from.
 #[derive(Debug, serde::Serialize)]
@@ -509,6 +525,26 @@ pub struct RecoveredContractDto {
     /// The transaction that claimed it back.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spending_txid: Option<String>,
+}
+
+/// One swap inside the recovery, for the list that stands in front of the detail view. Carries
+/// no contracts: the wallet reports its live contracts as one pool with no way to attribute them
+/// per swap from outside the crate.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverySummary {
+    pub swap_id: String,
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_at_phase: Option<String>,
+    pub router_count: usize,
+    pub send_amount_sats: u64,
+    /// How many of this swap's contracts recovery has already claimed back.
+    pub resolved_count: usize,
+    pub active: bool,
+    pub updated_at: u64,
 }
 
 /// Read entirely from `swap_tracker.cbor` plus the cached wallet handle — never through the taker
@@ -620,11 +656,11 @@ pub struct SwapReportDetail {
     /// The contract UTXO the route paid back, from the same proof.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incoming_contract_outpoint: Option<Outpoint>,
-    /// Kept for the swaps whose report predates the proof, where only the txid was recorded.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outgoing_contract_txid: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub incoming_contract_txid: Option<String>,
+    /// Wallet coins spent to fund the outgoing contract.
+    pub outgoing_utxos: Vec<ReportUtxo>,
+    /// Wallet coins the incoming swapcoin sweep created. Empty when the swap paid a
+    /// third-party receiver, whose settlement outputs this wallet never owns.
+    pub incoming_utxos: Vec<ReportUtxo>,
     pub funding_txids: Vec<Vec<String>>,
     pub routers_count: usize,
     pub router_addresses: Vec<String>,
@@ -783,7 +819,7 @@ pub struct MakerPortCheckDto {
 /// The maker's own perspective on one swap — one leg, not the whole
 /// multi-hop route a `SwapReportSummary`/`SwapReportDetail` (taker-side)
 /// describes, so this is a separate, simpler shape rather than reusing
-/// those. Mirrors `coinswap::wallet::MakerReport`.
+/// those. Mirrors `openswap::wallet::MakerReport`.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MakerSwapReportSummary {
@@ -808,8 +844,14 @@ pub struct MakerSwapReportDetail {
     pub incoming_amount_sats: u64,
     pub outgoing_amount_sats: u64,
     pub fee_earned_sats: u64,
-    pub incoming_contract_txid: String,
-    pub outgoing_contract_txid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incoming_contract_outpoint: Option<Outpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outgoing_contract_outpoint: Option<Outpoint>,
+    /// Wallet coins the incoming swapcoin sweep created.
+    pub incoming_utxos: Vec<ReportUtxo>,
+    /// Wallet coins spent to fund the outgoing contract.
+    pub outgoing_utxos: Vec<ReportUtxo>,
     pub timelock: u32,
     /// Raw pass-through of the crate's `DeniabilityProof` — see the same
     /// field's doc comment on `SwapReportDetail`.

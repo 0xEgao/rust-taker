@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { checkBackend, checkTor, getChainBackend, setChainBackend } from "../../api/commands";
+import {
+  checkBackend,
+  checkTor,
+  getChainBackend,
+  restartTorBootstrap,
+  setChainBackend,
+} from "../../api/commands";
 import type { ChainBackendConfig, ChainBackendKind, NodeBackend } from "../../api/types";
 import {
   SettingsSection,
@@ -19,11 +25,17 @@ import { IntroStage } from "../../components/ui/IntroStage";
 import { wait } from "../../lib/timing";
 import { useSessionStore } from "../../store/session";
 
-// A Tor with no cached consensus needs roughly a minute; the ceiling is for one that is
-// reaching the network but never converging, so the gate fails instead of hanging forever.
-const TOR_BOOTSTRAP_TIMEOUT_MS = 180_000;
 const TOR_POLL_MS = 1_200;
-// Consecutive probe misses tolerated before the panel calls it a failure.
+// Bootstrap is judged on whether it is still moving, never on total elapsed time: a cold Tor on
+// a slow network legitimately takes minutes, and an absolute ceiling fails the ones that would
+// have finished seconds later. Only a percentage that stops climbing for this long is a problem.
+//
+// Generous because the quiet gaps inside a *healthy* bootstrap are long: a cold start here sat
+// at 5% for 76 seconds before reaching 10%, and again at 14% for 75. Anything near that would
+// report a stall on a Tor that was working fine.
+const TOR_STALL_MS = 240_000;
+// Consecutive probe misses tolerated before the panel reports trouble. A miss against a busy,
+// still-bootstrapping Tor is routine, so this is about a run of them, not a single one.
 const TOR_MAX_CONSECUTIVE_FAILURES = 6;
 
 /**
@@ -44,7 +56,17 @@ export function ConnectPage() {
   const [node, setNode] = useState<NodeBackend | null>(null);
 
   const [torProgress, setTorProgress] = useState<number | null>(null);
+  // Tor's own account of itself: the phase it is in, and why it says it is struggling. Kept
+  // apart from `torError`, which is Portal failing to reach Tor rather than Tor failing.
+  const [torPhase, setTorPhase] = useState<string | null>(null);
+  const [torWarning, setTorWarning] = useState<string | null>(null);
   const [torError, setTorError] = useState<string | null>(null);
+  // Set when the percentage stops climbing. Not a terminal state — the poll keeps running
+  // underneath it, so a bootstrap that recovers on its own clears this without being asked to.
+  const [torStalled, setTorStalled] = useState(false);
+  const [torChecks, setTorChecks] = useState(0);
+  const [torRestarting, setTorRestarting] = useState(false);
+  const [torRestarts, setTorRestarts] = useState(0);
   // Null means nothing has been checked for the config on screen — which is what puts the
   // Test button back. Starts pending because the arrival probe below is already on its way,
   // and a button that appears for one frame and then vanishes reads as a glitch.
@@ -92,36 +114,47 @@ export function ConnectPage() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const deadline = Date.now() + TOR_BOOTSTRAP_TIMEOUT_MS;
       // A probe that misses is not a Tor that failed: checkTor re-runs the full readiness wait
       // on every call, so a single miss against a busy, still-bootstrapping Tor is routine.
       let consecutiveFailures = 0;
+      let best = -1;
+      let lastProgressAt = Date.now();
       for (;;) {
         if (cancelled) return;
         try {
           const status = await checkTor();
           if (cancelled) return;
+          setTorChecks((n) => n + 1);
           if (!(status.reachable && status.authenticated)) {
             throw new Error(status.error ?? "Tor control port unreachable.");
           }
           consecutiveFailures = 0;
           setTorError(null);
-          setTorProgress(status.bootstrapProgress ?? 0);
-          if (status.bootstrapProgress === 100) return;
-          if (Date.now() > deadline) {
-            throw new Error("Tor started but could not finish connecting to the network.");
+          const progress = status.bootstrapProgress ?? 0;
+          setTorProgress(progress);
+          setTorPhase(status.bootstrapSummary ?? null);
+          setTorWarning(status.bootstrapWarning ?? null);
+          if (progress === 100) {
+            setTorStalled(false);
+            return;
+          }
+          if (progress > best) {
+            best = progress;
+            lastProgressAt = Date.now();
+            setTorStalled(false);
+          } else {
+            setTorStalled(Date.now() - lastProgressAt > TOR_STALL_MS);
           }
         } catch (e) {
           if (cancelled) return;
           consecutiveFailures += 1;
-          const givingUp =
-            consecutiveFailures >= TOR_MAX_CONSECUTIVE_FAILURES || Date.now() > deadline;
-          if (!givingUp) {
-            await wait(TOR_POLL_MS);
-            continue;
+          if (consecutiveFailures >= TOR_MAX_CONSECUTIVE_FAILURES) {
+            setTorError((e as { message?: string })?.message ?? "Tor could not be started.");
+            // Deliberately keeps looping. Nothing here can restart Tor — `tor_main` only runs
+            // once per process — so the useful thing left is to keep watching the one that is
+            // already up, and let it clear its own error if it comes back.
+            consecutiveFailures = 0;
           }
-          setTorError((e as { message?: string })?.message ?? "Tor could not be started.");
-          return;
         }
         await wait(TOR_POLL_MS);
       }
@@ -130,6 +163,29 @@ export function ConnectPage() {
       cancelled = true;
     };
   }, [torAttempt]);
+
+  /** Makes Tor start its bootstrap over, then re-arms the poll against it. */
+  async function restartBootstrap() {
+    setTorRestarting(true);
+    try {
+      await restartTorBootstrap();
+      setTorRestarts((n) => n + 1);
+      setTorError(null);
+      setTorWarning(null);
+      setTorPhase(null);
+      setTorProgress(null);
+    } catch (e) {
+      setTorError(
+        (e as { message?: string })?.message ?? "Could not restart Tor's bootstrap.",
+      );
+    } finally {
+      setTorRestarting(false);
+      // Re-armed whatever happened, so the stall clock starts over with it: even a refused
+      // restart leaves a Tor running that is still worth watching.
+      setTorStalled(false);
+      setTorAttempt((n) => n + 1);
+    }
+  }
 
   const torReady = torProgress === 100;
 
@@ -356,22 +412,42 @@ export function ConnectPage() {
                       ? "Bootstrap complete — Tor is ready"
                       : torProgress === null
                         ? "Starting…"
-                        : `Bootstrapping — ${torProgress}%`,
+                        : // Tor's own phase text, so a long wait says which step it is on
+                          // rather than only that the number has not moved.
+                          `${torProgress}%${torPhase ? ` · ${torPhase}` : ""}`,
                 },
               ]}
             />
-            {torError && (
+            {!torReady && (torStalled || torWarning || torError) && (
+              <div className="flex flex-col gap-1.5 rounded-control border border-warning/30 bg-warning/[0.06] p-4">
+                {torWarning && (
+                  <p className="text-[12px] leading-5 text-foreground">
+                    Tor reports: {torWarning}
+                  </p>
+                )}
+                {torStalled && (
+                  <p className="text-[12px] leading-5 text-foreground">
+                    Stuck at {torProgress}% for over {Math.round(TOR_STALL_MS / 60_000)} minutes.
+                    Usually a slow or filtered network. Portal is still watching — this clears
+                    itself if Tor gets through.
+                  </p>
+                )}
+                <p className="text-[11.5px] text-subtle">
+                  {torChecks} {torChecks === 1 ? "check" : "checks"}
+                  {torRestarts > 0 &&
+                    ` · ${torRestarts} ${torRestarts === 1 ? "restart" : "restarts"}`}
+                </p>
+              </div>
+            )}
+            {!torReady && (
               <div>
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => {
-                    setTorError(null);
-                    setTorProgress(null);
-                    setTorAttempt((n) => n + 1);
-                  }}
+                  loading={torRestarting}
+                  onClick={() => void restartBootstrap()}
                 >
-                  Retry
+                  Restart bootstrap
                 </Button>
               </div>
             )}

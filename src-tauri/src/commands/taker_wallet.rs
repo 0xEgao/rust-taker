@@ -10,12 +10,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
-use coinswap::bitcoin::{Address, OutPoint, Txid};
-use coinswap::nostr_coinswap::NOSTR_RELAYS;
-use coinswap::taker::api::ConnectionType;
-use coinswap::taker::{Taker, TakerInitConfig};
-use coinswap::utill::get_taker_dir;
-use coinswap::wallet::{AddressType, Wallet};
+use openswap::bitcoin::{Address, OutPoint, Txid};
+use openswap::maker::nostr::NOSTR_RELAYS;
+use openswap::taker::api::ConnectionType;
+use openswap::taker::{Taker, TakerInitConfig};
+use openswap::utill::get_taker_dir;
+use openswap::wallet::{AddressType, Wallet};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
@@ -380,7 +380,7 @@ pub async fn restore_wallet(
     let backup_path = selection.path;
 
     tauri::async_runtime::spawn_blocking(move || {
-        coinswap::wallet::ffi::restore_wallet_gui_app(
+        openswap::wallet::ffi::restore_wallet_gui_app(
             Some(dir),
             Some(wallet_name),
             backend,
@@ -436,7 +436,7 @@ pub async fn backup_wallet(
             "backup destination is not a local filesystem path",
         )
     })?;
-    // The coinswap helper always replaces the selected extension with `.json`.
+    // The openswap helper always replaces the selected extension with `.json`.
     // Validate and pre-create that actual target so its first write is private too.
     let destination = destination.with_extension("json");
     if destination.exists()
