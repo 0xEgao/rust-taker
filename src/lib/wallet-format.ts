@@ -153,3 +153,13 @@ export const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
   unfinished: "text-warning",
   failed: "text-danger",
 };
+
+/** Bitcoin blocks aim for one every ten minutes; a refund lock is quoted in blocks. */
+const MINUTES_PER_BLOCK = 10;
+
+/** Turns a block count into the wall-clock wait a reader can plan around. */
+export function formatBlockWait(blocks: number): string {
+  const minutes = blocks * MINUTES_PER_BLOCK;
+  if (minutes < 90) return `about ${minutes} minutes`;
+  return `about ${Math.round(minutes / 60)} hours`;
+}

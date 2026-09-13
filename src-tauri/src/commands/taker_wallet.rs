@@ -150,6 +150,7 @@ pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
 /// starts background threads. Blocking; can take a few seconds.
 #[tauri::command]
 pub async fn init_taker(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     config: InitConfig,
 ) -> Result<InitResult, AppError> {
@@ -198,8 +199,13 @@ pub async fn init_taker(
     // Our own dual-role logger, not the crate's setup_taker_logger — see logging.rs.
     crate::logging::set_taker_dir(data_dir.clone());
 
-    let taker = tauri::async_runtime::spawn_blocking(move || Taker::init(init_cfg))
-        .await
+    // `Taker::init` runs startup recovery inline, which blocks on a block being mined and can
+    // hold this call for a block interval; the watcher is what lets the UI say which phase of it
+    // is running instead of showing one opaque spinner.
+    crate::logging::watch_init_phases(app);
+    let init = tauri::async_runtime::spawn_blocking(move || Taker::init(init_cfg)).await;
+    crate::logging::stop_watching_init_phases();
+    let taker = init
         .map_err(from_wallet_join_error)?
         .map_err(AppError::from)?;
 

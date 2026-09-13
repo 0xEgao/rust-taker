@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { dirname } from "@tauri-apps/api/path";
 import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
@@ -8,7 +9,7 @@ import { isAppError } from "../../api/types";
 import type { InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
-import { Checklist, type CheckState } from "../../components/ui/Checklist";
+import { Checklist } from "../../components/ui/Checklist";
 import { IntroStage } from "../../components/ui/IntroStage";
 import { MIN_WALLET_PASSWORD_LENGTH } from "../../lib/password-policy";
 import { withMinDelay } from "../../lib/timing";
@@ -30,15 +31,28 @@ interface CheckFailure {
   message: string;
 }
 
-interface Steps {
-  verify: CheckState;
-  init: CheckState;
+interface InitProgress {
+  /** Index into `INIT_STEPS`; -1 until `init_taker` reports its first phase. */
+  phase: number;
+  note: string | null;
+  failed: boolean;
 }
+
+/** Mirrors the phase indices `logging.rs` emits on `wallet://init-phase`. */
+const INIT_STEPS = [
+  "Connecting to the chain backend",
+  "Unlocking wallet",
+  "Starting the contract watcher",
+  "Loading the offerbook",
+];
+
+/** Phase `Taker::init` is inside when it rejects a password, so a wrong one fails that row. */
+const UNLOCK_STEP = 1;
 
 // The same curve IntroStage enters on, so the grid inherits the stage's motion signature.
 const RISE = [0.16, 1, 0.3, 1] as const;
 
-const IDLE_STEPS: Steps = { verify: "idle", init: "idle" };
+const IDLE_PROGRESS: InitProgress = { phase: -1, note: null, failed: false };
 
 function randomWalletName() {
   return `taker-wallet-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -84,7 +98,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   const [restoreName, setRestoreName] = useState(randomWalletName());
   const [restorePassword, setRestorePassword] = useState("");
 
-  const [steps, setSteps] = useState<Steps>(IDLE_STEPS);
+  const [progress, setProgress] = useState<InitProgress>(IDLE_PROGRESS);
   const [failure, setFailure] = useState<CheckFailure | null>(null);
   const [pendingWallet, setPendingWallet] = useState<WalletChoice | null>(null);
   const [retryPassword, setRetryPassword] = useState("");
@@ -92,6 +106,19 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   useEffect(() => {
     refreshWallets(dataDir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Phases only advance: `Taker::init`'s recovery pass re-logs lines the earlier phases also
+    // emit, and a late one must not walk the checklist backwards.
+    const unlisten = listen<{ phase: number; note: string | null }>("wallet://init-phase", (event) =>
+      setProgress((current) => ({
+        phase: Math.max(current.phase, event.payload.phase),
+        note: event.payload.note,
+        failed: false,
+      })),
+    );
+    return () => void unlisten.then((stop) => stop());
   }, []);
 
   async function refreshWallets(dir?: string) {
@@ -181,7 +208,9 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setPendingWallet(wallet);
     setFailure(null);
     setViewMode("checking");
-    setSteps({ verify: "running", init: "idle" });
+    // A restore runs its own sync before `init_taker` arms the phase watcher, so it starts
+    // behind the first reported phase rather than on it.
+    setProgress({ phase: wallet.mode === "restore" ? -1 : 0, note: null, failed: false });
 
     try {
       const result = await withMinDelay(
@@ -198,7 +227,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
         })(),
         MIN_STEP_MS,
       );
-      setSteps({ verify: "passed", init: "passed" });
+      setProgress({ phase: INIT_STEPS.length, note: null, failed: false });
       // Kick off a real offerbook sync now, in the background, so the Market page has fresh
       // router data by the time the user looks at it — not just whatever offerbook.json had from
       // the last session. Not awaited: this can take 30-60s+ and shouldn't block navigation.
@@ -208,13 +237,14 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       onSuccess(result, wallet.mode === "restore");
     } catch (e) {
       const err = isAppError(e) ? e : null;
-      // `init_taker` is what checks the password, so a wrong one failed verification and
-      // never reached initialization; anything else means the password was accepted.
+      // `init_taker` is what checks the password, so a wrong one failed at the unlock step
+      // however far the phase watcher had got; anything else failed where it stopped.
       const wrongPassword = err?.code === "WALLET_WRONG_PASSWORD";
-      setSteps({
-        verify: wrongPassword ? "failed" : "passed",
-        init: wrongPassword ? "idle" : "failed",
-      });
+      setProgress((current) => ({
+        phase: wrongPassword ? UNLOCK_STEP : Math.max(current.phase, 0),
+        note: null,
+        failed: true,
+      }));
       setFailure({
         message:
           wrongPassword ? "Incorrect password. Try again." : (err?.message ?? "Something went wrong."),
@@ -308,15 +338,31 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     </div>
   );
 
+  // A restore syncs the wallet before `init_taker` starts, so it gets a row of its own ahead
+  // of the phases the backend reports.
+  const restoring = pendingWallet?.mode === "restore";
+  const checklistSteps = restoring ? ["Restoring from backup", ...INIT_STEPS] : INIT_STEPS;
+  const active = restoring ? progress.phase + 1 : progress.phase;
   const checklist = (
-    <Checklist
-      steps={[
-        { label: "Verifying wallet password", state: steps.verify },
-        // `Taker::init` runs any outstanding recovery inline before it returns, so this step
-        // covers a chain round trip per unresolved contract and can sit here for a while.
-        { label: "Initializing wallet and resuming any recovery", state: steps.init },
-      ]}
-    />
+    <>
+      <Checklist
+        steps={checklistSteps.map((label, i) => ({
+          label,
+          state:
+            i < active
+              ? "passed"
+              : i > active
+                ? "idle"
+                : progress.failed
+                  ? "failed"
+                  : "running",
+        }))}
+      />
+      {/* Recovery has no step of its own — it does nothing on most launches — but it blocks on
+          a block being mined, so once the steps have all ticked it is the only thing that can
+          explain why the app has not opened yet. */}
+      {progress.note && <p className="mt-6 text-center text-[12.5px] text-muted">{progress.note}</p>}
+    </>
   );
 
   const failureModal = failure && (
