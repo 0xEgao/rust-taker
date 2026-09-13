@@ -1,11 +1,12 @@
 import { RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { listSwapReports } from "../../api/commands";
+import { getRecoveryStatus, listSwapReports } from "../../api/commands";
 import type { SwapReportSummary, SwapStatus } from "../../api/types";
 import { BackButton, Card, SatsAmount, StatStrip, StatusChip } from "../../components/ui/display";
 import { SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import {
+  formatBlockWait,
   formatDuration,
   formatRelativeTime,
   SWAP_STATUS_ICON,
@@ -39,6 +40,7 @@ const STATUS_TONE: Record<SwapStatus, "success" | "warning" | "danger"> = {
 export function SwapReportsPage() {
   const pushFailure = useToastStore((s) => s.pushFailure);
   const [reports, setReports] = useState<SwapReportSummary[] | null>(null);
+  const [blocksLeft, setBlocksLeft] = useState<number | undefined>(undefined);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortField, setSortField] = useState<SortField>("time");
   const [sortDir, setSortDir] = useState<Record<SortField, "asc" | "desc">>({ time: "desc", amount: "desc" });
@@ -55,6 +57,12 @@ export function SwapReportsPage() {
         setReports([]);
         pushFailure(e, "Failed to load swap reports.");
       });
+    // The wait is a property of the contract pool rather than of any one swap, so it comes from
+    // the recovery read rather than from the rows. Best-effort: a row without it simply shows no
+    // countdown, which is how it read before.
+    void getRecoveryStatus()
+      .then((status) => setBlocksLeft(status.blocksRemaining))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -168,7 +176,17 @@ export function SwapReportsPage() {
                         : formatRelativeTime(r.endTimestamp)}
                     </span>
                     <span className="font-mono text-[11.5px] text-subtle">
-                      {r.endTimestamp === undefined ? "—" : formatDuration(r.endTimestamp - r.startTimestamp)}
+                      {r.endTimestamp !== undefined ? (
+                        formatDuration(r.endTimestamp - r.startTimestamp)
+                      ) : r.status === "interrupted" && blocksLeft !== undefined ? (
+                        // A swap still in recovery has no duration to report, but it does have a
+                        // wait — which is the thing a reader actually wants off this row.
+                        <span className="text-warning" title={formatBlockWait(blocksLeft)}>
+                          ~{blocksLeft} blocks left
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </span>
                     <SatsAmount sats={r.outgoingAmountSats} className="text-[12.5px] font-semibold text-foreground" />
                     <span className="font-mono text-[12px] text-foreground">{r.routersCount}</span>
@@ -181,13 +199,18 @@ export function SwapReportsPage() {
                 );
                 const grid =
                   "grid grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] items-center gap-3 px-4.5 py-3 text-left outline-none transition-colors duration-200";
-                // A tracker-only row has no report to open, so it is not a link.
-                return r.reported ? (
-                  <Link
-                    key={r.swapId}
-                    to={`/swap/reports/${encodeURIComponent(r.swapId)}`}
-                    className={`${grid} cursor-pointer hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]`}
-                  >
+                const interactive =
+                  "cursor-pointer hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]";
+                // A tracker-only row has no report of its own, but it is a recovery — so it opens
+                // the recovery for that swap instead, finished ones included. Only a swap that
+                // never got as far as a recovery has nothing behind it at all.
+                const target = r.reported
+                  ? `/swap/reports/${encodeURIComponent(r.swapId)}`
+                  : r.status === "interrupted" || r.status === "recovered"
+                    ? `/swap/recovery/${encodeURIComponent(r.swapId)}`
+                    : null;
+                return target ? (
+                  <Link key={r.swapId} to={target} className={`${grid} ${interactive}`}>
                     {cells}
                   </Link>
                 ) : (

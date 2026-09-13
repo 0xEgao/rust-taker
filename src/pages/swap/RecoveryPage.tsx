@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getLogs, getRecoveryStatus, getSwapTracker, recoverSwap } from "../../api/commands";
 import { isAppError } from "../../api/types";
@@ -17,25 +17,44 @@ import {
   EmptyState,
   ExternalLinkButton,
   LogViewer,
+  MicroLabel,
   Notice,
   SatsAmount,
   StatusChip,
 } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
-import { truncateMiddle } from "../../lib/wallet-format";
+import { formatBlockWait, truncateMiddle } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { SwapCircuit } from "./circuit/SwapCircuit";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
 
 // The crate's recovery loop retries once a minute, so anything faster only re-reads the same file.
 const POLL_MS = 12_000;
-const MINUTES_PER_BLOCK = 10;
+const PHASE_LABEL: Record<string, string> = {
+  not_started: "Not started",
+  preimage_stamped: "Preimage stamped",
+  swapcoins_persisted: "Swapcoins persisted",
+  incoming_recovered: "Incoming leg reclaimed",
+  outgoing_recovered: "Outgoing leg reclaimed",
+  cleaned_up: "Fully reclaimed",
+};
 
-function wait(blocks: number) {
-  const minutes = blocks * MINUTES_PER_BLOCK;
-  if (minutes < 90) return `about ${minutes} minutes`;
-  return `about ${Math.round(minutes / 60)} hours`;
+const RESOLUTION_LABEL: Record<string, string> = {
+  hashlock: "Claimed with the preimage",
+  timelock: "Refunded after the lock",
+  key_path: "Swept with the key",
+  discarded: "Discarded",
+  unresolved: "Unresolved",
+};
+
+function Stat({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div>
+      <MicroLabel>{label}</MicroLabel>
+      <p className="mt-1.5 font-numeric text-[14px] text-foreground">{value}</p>
+    </div>
+  );
 }
 
 function ContractRow({ contract }: { contract: RecoveryContract }) {
@@ -133,6 +152,79 @@ export function RecoveryPage() {
     }
   }
 
+  // A finished recovery still has a story to tell — it is reachable from the history, where the
+  // question is "what happened to that swap?", not "is anything outstanding?".
+  if (status && !status.active && status.swapId) {
+    return (
+      <div className="h-full overflow-y-auto px-8 py-10">
+        <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
+          <BackButton to="/swap/recovery" label="Back to Recovery" />
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 grid h-10 w-10 flex-none place-items-center rounded-card border border-success/40 bg-success/[0.08] text-success">
+              <CheckCircle2 size={20} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h1 className="font-header text-[26px] font-bold text-foreground">
+                Recovered
+              </h1>
+              <p className="mt-1 max-w-2xl text-[13.5px] leading-6 text-muted">
+                This swap stopped after its funds were committed, and Portal has claimed every
+                contract back into your wallet. Nothing is outstanding.
+              </p>
+            </div>
+          </div>
+
+          <Card className="flex flex-col gap-4 border-line-strong p-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[12px] text-muted">{status.swapId}</span>
+              <CopyButton text={status.swapId} title="Copy swap id" />
+            </div>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Stat label="Amount" value={<SatsAmount sats={status.sendAmountSats} />} />
+              <Stat label="Routers" value={String(status.routerCount)} />
+              <Stat label="Contracts reclaimed" value={String(status.resolved.length)} />
+              <Stat label="Outcome" value={PHASE_LABEL[status.phase] ?? status.phase} />
+            </div>
+            {status.failureReason && (
+              <div>
+                <MicroLabel>Why it stopped</MicroLabel>
+                <p className="mt-1.5 break-words font-mono text-[11.5px] leading-5 text-muted">
+                  {status.failureReason}
+                </p>
+              </div>
+            )}
+          </Card>
+
+          {status.resolved.length > 0 && (
+            <Card className="flex flex-col border-line-strong p-5">
+              <h2 className="font-header text-[14px] font-bold text-foreground">
+                How each contract came back
+              </h2>
+              <div className="mt-1 divide-y divide-line">
+                {status.resolved.map((c) => (
+                  <div
+                    key={`${c.contractTxid}-${c.spendingTxid ?? ""}`}
+                    className="flex items-center justify-between gap-3 py-3"
+                  >
+                    <span className="flex min-w-0 flex-col gap-1.5">
+                      <span className="truncate font-mono text-[12px] text-muted" title={c.contractTxid}>
+                        {truncateMiddle(c.contractTxid, 10, 6)}
+                      </span>
+                      <StatusChip tone="success" className="self-start">
+                        {RESOLUTION_LABEL[c.resolution] ?? c.resolution}
+                      </StatusChip>
+                    </span>
+                    {c.spendingTxid && <ExternalLinkButton txid={c.spendingTxid} />}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (status && !status.active) {
     return (
       <div className="h-full overflow-y-auto px-8 py-10">
@@ -165,7 +257,7 @@ export function RecoveryPage() {
     },
     {
       label: waiting
-        ? `Waiting out the refund lock · ~${blocks} blocks (${wait(blocks)})`
+        ? `Waiting out the refund lock · ~${blocks} blocks (${formatBlockWait(blocks)})`
         : "Refund lock matured",
       state: waiting ? "running" : pendingCount > 0 || resolvedCount > 0 ? "passed" : "idle",
     },
@@ -248,11 +340,23 @@ export function RecoveryPage() {
               </Button>
             </Card>
 
-            {/* Recovery only advances while the app is running, and the wait can be hours — so
-                this is the one thing on the page the user can actually get wrong. */}
+            {/* The claim is signed with this wallet's key, so only Portal can make it — but it
+                is the maturing lock that gates it, not elapsed uptime. Telling the user to sit
+                through the whole wait would be both wrong and unusable at ten hours. */}
             <Notice tone="warning" icon={<AlertTriangle size={16} strokeWidth={2} />}>
-              Leave Portal open. The claim transactions are built here, so quitting pauses recovery
-              until the next launch — the funds stay safe either way.
+              {waiting ? (
+                <>
+                  You don't have to wait here. Portal claims the funds itself, but only while it is
+                  running — so quit if you like and reopen it once the lock has matured
+                  {blocks !== undefined && ` (${formatBlockWait(blocks)})`}. The contracts are
+                  unaffected by anything that happens in between.
+                </>
+              ) : (
+                <>
+                  Leave Portal open while it claims. The claim transactions are signed here, so
+                  quitting pauses recovery until the next launch — the funds stay safe either way.
+                </>
+              )}
             </Notice>
 
             <Card className="flex flex-col gap-2.5 border-line-strong p-4.5">

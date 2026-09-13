@@ -701,10 +701,18 @@ pub async fn get_recovery_status(
             })
             .collect();
         let record = match &swap_id {
-            Some(wanted) => candidates.iter().find(|r| &r.swap_id == wanted).copied(),
-            None => candidates.iter().max_by_key(|r| r.updated_at).copied(),
-        }
-        .cloned();
+            // Looked up directly rather than among the candidates: a recovery that has finished
+            // is dropped from `incomplete_swaps`, and reading one back by id is exactly how the
+            // history opens a recovery that is already done. Still has to have been a recovery —
+            // an ordinary completed swap is not one.
+            Some(wanted) => tracker
+                .get_record(wanted)
+                .filter(|r| {
+                    r.phase == SwapPhase::Failed || r.recovery.phase != RecoveryPhase::NotStarted
+                })
+                .cloned(),
+            None => candidates.iter().max_by_key(|r| r.updated_at).copied().cloned(),
+        };
 
         // The taker's own refund delay, taken across *every* unfinished swap rather than the
         // selected one: `pending` below is the wallet's whole contract pool, which cannot be
