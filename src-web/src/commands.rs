@@ -30,6 +30,17 @@ const fn op(name: &'static str, mutates: bool, run: Run) -> Operation {
     Operation { name, mutates, run }
 }
 
+/// Strips the server path from a result before it crosses to the browser.
+///
+/// Desktop shows it because the user picked the folder; on the web there is exactly one data
+/// root and nothing in the UI displays it — it only keys a per-wallet sync timestamp, which
+/// stays unique without it. Emptied rather than dropped because the field is not optional,
+/// and the frontend already coerces an absent one to the same thing.
+fn without_server_path(mut result: InitResult) -> InitResult {
+    result.data_dir = String::new();
+    result
+}
+
 fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, AppError> {
     let args = if args.is_null() { Value::Object(Default::default()) } else { args };
     serde_json::from_value(args)
@@ -303,7 +314,11 @@ pub static OPERATIONS: &[Operation] = &[
     op("get_session_state", false, |rt, args| {
         let _ = (&rt, &args);
         Box::pin(async move {
-            encode(&ops::taker_wallet::get_session_state(&rt))
+            // Desktop shows the path because the user chose it; a browser has no business
+            // learning where the server keeps its files, and nothing in the web UI reads it.
+            let mut state = ops::taker_wallet::get_session_state(&rt);
+            state.data_dir = None;
+            encode(&state)
         })
     }),
     op("get_wallet_info", false, |rt, args| {
@@ -571,7 +586,7 @@ pub static DURABLE: &[Operation] = &[
             let mut body: Args = parse(args)?;
             // Also repoints the debug log at the given directory, so it must be ours.
             body.config.data_dir = None;
-            encode(&ops::taker_wallet::init_taker(&rt, body.config).await?)
+            encode(&without_server_path(ops::taker_wallet::init_taker(&rt, body.config).await?))
         })
     }),
     op("prepare_swap", true, |rt, args| {

@@ -19,12 +19,13 @@ use portal_core::state::AppState;
 use crate::config::Config;
 use crate::state::WebState;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Deliberately not `#[tokio::main]`: the signal disposition is claimed before the runtime
+/// exists, so nothing that starts afterwards can be running while the process is unarmed.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::parse();
 
-    // Before validate(): a probe talks to an instance that is already running and needs no
-    // assets directory or access profile of its own.
+    // Before validate(), and before the mask: a probe talks to an instance that is already
+    // running, needs no assets directory or access profile of its own, and exits in seconds.
     if config.healthcheck {
         let url = format!("http://{}{}", config.bind, config.route("/health/live"));
         let ok = minreq::get(&url)
@@ -34,6 +35,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(if ok { 0 } else { 1 });
     }
 
+    portal_core::shutdown_signal::arm();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve(config))
+}
+
+async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
 
     // Resolved once, here: core is handed a path, never a client-supplied one. A configured
@@ -90,10 +100,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_timeout = state.config.shutdown_timeout_secs;
 
     let app = routes::router(state.clone()).merge(assets::router(&state).with_state(state.clone()));
-
-    // Before the first request, so a signal arriving during startup is not lost. Re-armed
-    // after Tor bootstraps, which is when its own handlers would otherwise take over.
-    portal_core::shutdown_signal::arm();
 
     // Tor comes up first and goes down last: everything that carries swap traffic binds to
     // its ports, and the teardown below halts it only after the routers and wallet are done

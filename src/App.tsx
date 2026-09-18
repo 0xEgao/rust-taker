@@ -71,19 +71,24 @@ function RestoreRuntime() {
   const setInitialized = useSessionStore((s) => s.setInitialized);
   const setNotInitialized = useSessionStore((s) => s.setNotInitialized);
   const setConnected = useSessionStore((s) => s.setConnected);
+  const [unreachable, setUnreachable] = useState(false);
 
   useEffect(() => {
-    if (initialized !== null) return;
+    if (initialized !== null || unreachable) return;
     void getSessionState()
       .then((state) => {
+        setUnreachable(false);
         if (!state.initialized) return setNotInitialized();
         setConnected();
         setInitialized({ walletName: state.walletName ?? "", dataDir: state.dataDir ?? "" });
       })
-      // Only a transport failure reaches here; an empty session is a successful answer.
-      .catch(() => setNotInitialized());
-  }, [initialized, setInitialized, setNotInitialized, setConnected]);
+      // The server answers this one even with no wallet open, so a rejection is the transport
+      // failing, not an empty session. Saying "no wallet" here would send someone with a live
+      // wallet to the role picker to unlock a second one over the top of it.
+      .catch(() => setUnreachable(true));
+  }, [initialized, unreachable, setInitialized, setNotInitialized, setConnected]);
 
+  if (unreachable) return <ServerUnreachable onRetry={() => setUnreachable(false)} />;
   // Nothing rather than a flash of the role picker: the answer decides which page is correct.
   if (initialized === null) return null;
   return <Outlet />;

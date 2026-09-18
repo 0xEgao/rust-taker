@@ -155,13 +155,10 @@ const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
 };
 
 /**
- * Presentation for a swap status, safe against a value this build has never heard of.
+ * Icon, tone and label for a swap status, with fallbacks for one this build does not know.
  *
- * `SwapStatus` is a closed union, but the value arrives from the openswap crate — a git
- * dependency that gets bumped. A variant added upstream reaches here before the union knows
- * about it, and indexing these maps directly then yields `undefined`. An `undefined` icon is
- * not a cosmetic problem: React refuses to render it and takes the entire page down with
- * error #130, so both swap pages go blank with nothing on screen to explain why.
+ * The value comes from a crate we bump, so a new variant can arrive before the union does;
+ * indexing the maps directly would yield an `undefined` icon and blank the page.
  */
 export function swapStatusPresentation(status: SwapStatus): {
   Icon: LucideIcon;

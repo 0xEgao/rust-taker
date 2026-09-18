@@ -49,7 +49,11 @@ export function present(error: unknown, fallback: string): Presentation {
   const appError = isAppError(error) ? (error as AppError) : null;
   // An error from before the backend carried a class, or a plain JS throw: treat it the way
   // everything was treated before, rather than guessing.
-  const cls = appError?.class;
+  // Checked against the table rather than trusted: `isAppError` only proves there is a code,
+  // so a class this build has never heard of would index `TONE` to `undefined` and produce a
+  // toast with no kind and no timeout — one that never goes away.
+  const raw = appError?.class;
+  const cls = raw && Object.prototype.hasOwnProperty.call(TONE, raw) ? raw : undefined;
   if (!appError || !cls) {
     const message = typeof appError?.message === "string" ? appError.message : fallback;
     return { show: true, tone: "error", message };

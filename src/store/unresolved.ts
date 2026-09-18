@@ -14,7 +14,8 @@ const RECHECK_MS = 60_000;
 
 interface UnresolvedState {
   blocking: UnresolvedOperation[];
-  /** Null until the first read, so the UI can avoid claiming "nothing is blocked" too early. */
+  /** Only ever true on an answer we actually received. A query that failed, or has not run
+   *  yet, leaves this false so "unknown" can never be read as "nothing is blocked". */
   checked: boolean;
   refresh: () => Promise<void>;
   acknowledge: (id: string) => Promise<void>;
@@ -23,11 +24,36 @@ interface UnresolvedState {
   reset: () => void;
 }
 
-export const useUnresolvedStore = create<UnresolvedState>((set, get) => ({
+// Bumped by every refresh and every reset; a query whose number is stale discards its answer.
+let generation = 0;
+
+/**
+ * Whether spending must be held. Unknown counts as blocked: the whole point of the gate is
+ * that a payment with an unresolved outcome must not be followed by another one.
+ */
+export function spendingBlocked(state: UnresolvedState): boolean {
+  return !state.checked || state.blocking.length > 0;
+}
+
+export const useUnresolvedStore = create<UnresolvedState>((set) => ({
   blocking: [],
   checked: false,
   refresh: async () => {
-    const blocking = await operations.blocking().catch(() => get().blocking);
+    const mine = ++generation;
+    let blocking: UnresolvedOperation[];
+    try {
+      blocking = await operations.blocking();
+    } catch {
+      // Keep whatever was known and stop claiming it was checked. The gate below reads an
+      // unavailable journal as "still blocked": answering "nothing outstanding" because the
+      // question could not be asked is how a second payment goes out over an unknown one.
+      if (mine === generation) set({ checked: false });
+      return;
+    }
+    // A slower earlier query, or one that was in flight when the wallet closed, must not
+    // write its answer over a newer one — it would restore a list that is no longer true,
+    // and after a switch that list belongs to the previous wallet.
+    if (mine !== generation) return;
     set({ blocking, checked: true });
     // Ask the server to re-read the chain for anything that still has a txid to look for.
     // Settling one clears it from the next refresh.
@@ -39,9 +65,13 @@ export const useUnresolvedStore = create<UnresolvedState>((set, get) => ({
   },
   acknowledge: async (id) => {
     await operations.acknowledge(id);
-    await get().refresh();
+    await useUnresolvedStore.getState().refresh();
   },
-  reset: () => set({ blocking: [], checked: false }),
+  reset: () => {
+    // Also retires any query still in flight, so its answer cannot land on the next wallet.
+    generation += 1;
+    set({ blocking: [], checked: false });
+  },
 }));
 
 /** Starts the recheck timer once for the app's lifetime. Safe to call from several places. */

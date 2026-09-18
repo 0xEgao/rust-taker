@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Button } from "../ui/inputs";
 import { Notice, SatsAmount } from "../ui/display";
 import { formatRelativeTime, truncateMiddle } from "../../lib/wallet-format";
-import { useUnresolvedStore } from "../../store/unresolved";
+import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 
 /**
  * Shown in place of a Send or Swap action when an earlier payment's outcome is unknown.
@@ -14,10 +14,25 @@ import { useUnresolvedStore } from "../../store/unresolved";
  */
 export function UnresolvedPayments({ verb }: { verb: "sending" | "swapping" }) {
   const blocking = useUnresolvedStore((s) => s.blocking);
+  const checked = useUnresolvedStore((s) => s.checked);
+  const held = useUnresolvedStore(spendingBlocked);
   const acknowledge = useUnresolvedStore((s) => s.acknowledge);
   const [working, setWorking] = useState<string | null>(null);
 
-  if (blocking.length === 0) return null;
+  if (!held) return null;
+
+  // Held without a list to show: the journal could not be read, so whether anything is
+  // outstanding is unknown. Say that, rather than leaving a disabled button unexplained.
+  if (!checked) {
+    return (
+      <Notice tone="warning" icon={<AlertTriangle size={16} strokeWidth={2} />}>
+        <p>
+          Portal cannot currently tell whether an earlier payment is still unconfirmed, so{" "}
+          {verb} is paused. It retries every minute.
+        </p>
+      </Notice>
+    );
+  }
 
   return (
     <Notice tone="warning" icon={<AlertTriangle size={16} strokeWidth={2} />}>

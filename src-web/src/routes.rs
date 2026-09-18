@@ -395,8 +395,14 @@ async fn durable(
             tokio::spawn(async move {
                 // Must be the first thing here, and nothing side-effecting may precede it:
                 // `Journal::open` treats a record still in `Accepted` as proof the operation
-                // never ran, which is what keeps a crash from blocking future spends.
-                let _ = journal.mark_running(&id);
+                // never ran, which is what keeps a crash from blocking future spends. So if
+                // this write fails, the work must not start either — running it anyway would
+                // spend against a record that recovery is entitled to read as unexecuted, and
+                // a later retry would move the funds a second time.
+                if let Err(e) = journal.mark_running(&id) {
+                    log::error!("refusing to start {id}: could not record it as running: {e:?}");
+                    return;
+                }
                 match run(runtime, args).await {
                     Ok(value) => {
                         let _ = journal.mark_succeeded(&id, value);

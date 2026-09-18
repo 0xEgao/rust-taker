@@ -329,18 +329,22 @@ impl Journal {
         apply: impl FnOnce(&mut OperationRecord),
     ) -> Result<(), AppError> {
         let mut index = self.index.lock()?;
-        let record = index.get_mut(operation_id).ok_or_else(|| {
+        let current = index.get(operation_id).ok_or_else(|| {
             AppError::new(ErrorCode::InvalidInput, "no such operation")
         })?;
-        if record.state.is_terminal() {
+        if current.state.is_terminal() {
             // A resolved financial key can never execute again.
             return Ok(());
         }
-        apply(record);
-        record.updated_at = now();
-        let snapshot = record.clone();
-        drop(index);
-        self.persist(&snapshot)
+        // Applied to a copy and committed only once it is on disk, the same order `admit`
+        // uses. Memory that ran ahead of disk would report a settled operation that the next
+        // start still reads as unsettled — and let a second fund-moving one past the block.
+        let mut next = current.clone();
+        apply(&mut next);
+        next.updated_at = now();
+        self.persist(&next)?;
+        index.insert(operation_id.to_string(), next);
+        Ok(())
     }
 
     pub fn mark_running(&self, operation_id: &str) -> Result<(), AppError> {
@@ -442,20 +446,22 @@ impl Journal {
 
     /// Records that the owner has seen an unresolved outcome and accepts it, so it stops
     /// holding up new work. The state is left alone: the outcome is still unknown.
+    /// Not routed through `update`: acknowledging is only ever done to a *terminal* record,
+    /// which `update` deliberately refuses to touch.
     pub fn acknowledge(&self, operation_id: &str) -> Result<OperationRecord, AppError> {
-        {
-            let mut index = self.index.lock()?;
-            let record = index
-                .get_mut(operation_id)
-                .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))?;
-            record.acknowledged = true;
-            record.updated_at = now();
-            let snapshot = record.clone();
-            drop(index);
-            self.persist(&snapshot)?;
-        }
-        self.get(operation_id)
-            .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))
+        let mut index = self.index.lock()?;
+        let current = index
+            .get(operation_id)
+            .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))?;
+        // Persist before committing: an acknowledgement held only in memory would drop the
+        // record out of `blocking_conflicts` while disk still shows it unsettled, clearing
+        // the way for another spend on the strength of a write that never landed.
+        let mut next = current.clone();
+        next.acknowledged = true;
+        next.updated_at = now();
+        self.persist(&next)?;
+        index.insert(operation_id.to_string(), next.clone());
+        Ok(next)
     }
 }
 
@@ -476,6 +482,12 @@ mod tests {
 
     fn key() -> String {
         uuid::Uuid::new_v4().to_string()
+    }
+
+    /// Makes every later write fail, by replacing the journal directory with a regular file.
+    fn block_persist(root: &Path) {
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::write(root, b"not a directory").unwrap();
     }
 
     fn request() -> serde_json::Value {
@@ -728,4 +740,54 @@ mod tests {
             fingerprint("send", &serde_json::json!({ "address": "bc1q", "amountSats": 2 }))
         );
     }
+    /// Memory must never run ahead of disk. A state the index reports as advanced while the
+    /// file still says otherwise is how a second fund-moving operation gets past the block,
+    /// and how the next start disagrees with the run that wrote it.
+    #[test]
+    fn a_rejected_write_does_not_advance_the_index() {
+        let (journal, root) = journal();
+        let id = key();
+        let Admission::Accepted(record) = journal
+            .admit(&id, "send_to_address", None, 0, &request())
+            .unwrap()
+        else {
+            panic!("first admission is accepted");
+        };
+
+        block_persist(&root);
+        assert!(journal.mark_running(&record.operation_id).is_err());
+        assert_eq!(
+            journal.get(&record.operation_id).unwrap().state,
+            OperationState::Accepted,
+            "a rejected write must leave the state where the file has it"
+        );
+    }
+
+    /// The same rule for the gate itself: acknowledging is what lets the next spend through.
+    #[test]
+    fn a_rejected_acknowledgement_keeps_the_block() {
+        let (journal, root) = journal();
+        let id = key();
+        let Admission::Accepted(record) = journal
+            .admit(&id, "send_to_address", None, 0, &request())
+            .unwrap()
+        else {
+            panic!("first admission is accepted");
+        };
+        journal.mark_running(&record.operation_id).unwrap();
+        journal
+            .mark_indeterminate(&record.operation_id, AppError::internal("no answer"))
+            .unwrap();
+        assert_eq!(journal.blocking_conflicts().len(), 1);
+
+        block_persist(&root);
+        assert!(journal.acknowledge(&record.operation_id).is_err());
+        assert!(!journal.get(&record.operation_id).unwrap().acknowledged);
+        assert_eq!(
+            journal.blocking_conflicts().len(),
+            1,
+            "the block must hold while the acknowledgement is not on disk"
+        );
+    }
+
 }

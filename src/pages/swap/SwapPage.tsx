@@ -1,6 +1,6 @@
 import { subscribe } from "../../api/transport";
 import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
-import { useUnresolvedStore } from "../../store/unresolved";
+import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import {
   AlertTriangle,
   ArrowLeftRight,
@@ -577,13 +577,14 @@ export function SwapPage() {
 
   // Same rule as Send: an unconfirmed earlier payment could be paid twice by starting more
   // on-chain work.
-  const unresolved = useUnresolvedStore((s) => s.blocking);
+  // See SendPage: an unreadable journal holds this as firmly as a populated one.
+  const paymentsHeld = useUnresolvedStore(spendingBlocked);
   const canStart =
     amountSats > 0 &&
     fundingEstimate !== null &&
     warnings.length === 0 &&
     !submitting &&
-    unresolved.length === 0;
+    !paymentsHeld;
 
   // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
   // dialog, bound to the authoritative prepared summary; there is no second renderer modal.

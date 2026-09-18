@@ -280,7 +280,8 @@ export function AddRouterPage() {
           <div className="border-t border-line px-5 py-4">
             <p className="text-[11.5px] leading-5 text-subtle">
               Ports, fees and limits are defaults and can be changed later from the router's
-              Settings tab. The fidelity bond cannot.
+              Settings tab. The fidelity bond is different: this bond keeps the amount and
+              timelock set here, and edits apply to the next one.
             </p>
           </div>
         </Card>

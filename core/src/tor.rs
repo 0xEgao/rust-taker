@@ -76,10 +76,6 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
     };
 
     if wait_until_ready(runtime.socks_port, runtime.control_port) {
-        // Only now: Tor installs its own SIGTERM/SIGINT handlers while it starts, and they
-        // replace the host's. Without this the first signal a supervisor sends reaches Tor
-        // alone and the app never shuts down. See `crate::shutdown_signal`.
-        crate::shutdown_signal::rearm_if_adopted();
         return Ok(runtime);
     }
     // Otherwise the cached runtime would be handed to every later call, which would wait on
@@ -296,10 +292,21 @@ fn start_embedded_tor(
         ))
         .start_background();
 
-    std::thread::spawn(move || match handle.join() {
-        Ok(Ok(code)) => log::info!("embedded tor exited with code {code}"),
-        Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
-        Err(_) => log::warn!("embedded tor thread panicked"),
+    std::thread::spawn(move || {
+        match handle.join() {
+            Ok(Ok(code)) => log::info!("embedded tor exited with code {code}"),
+            Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
+            Err(_) => log::warn!("embedded tor thread panicked"),
+        }
+        // `shutdown` clears the slot before Tor goes, so a slot still full means nobody here
+        // asked for this. During bootstrap that is how a SIGTERM looks from our side: Tor
+        // still owns the handler, catches it, and exits — and we would otherwise sit there
+        // until the supervisor lost patience. A genuine Tor crash lands here too, and is
+        // just as terminal: `tor_main` cannot be run a second time in this process.
+        if runtime().is_some() {
+            log::warn!("Portal's Tor exited on its own; shutting down");
+            crate::shutdown_signal::trip_if_adopted();
+        }
     });
     Ok(())
 }

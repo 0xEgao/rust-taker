@@ -278,7 +278,6 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
         }
         None => "stdout",
     };
-    LOGS_TO_FILE.store(root_appender == "taker_file", Ordering::SeqCst);
 
     builder
         .logger(Logger::builder().build("bitcoincore_rpc", log::LevelFilter::Off))
@@ -306,11 +305,18 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
 }
 
 fn rebuild() {
-    let config = build_config(TAKER_DIR.lock().unwrap().as_ref());
+    let dir = TAKER_DIR.lock().unwrap().clone();
+    let to_file = dir.as_ref().is_some_and(|d| file_appender(d).is_some());
+    let config = build_config(dir.as_ref());
+    // Set only once a logger is actually installed. A host reads this to decide whether it
+    // may silence stdout, and claiming the file is taking the output when installation
+    // failed would leave the diagnostics nowhere at all.
     if let Some(handle) = HANDLE.get() {
         handle.set_config(config);
+        LOGS_TO_FILE.store(to_file, Ordering::SeqCst);
     } else if let Ok(handle) = log4rs::init_config(config) {
         let _ = HANDLE.set(handle);
+        LOGS_TO_FILE.store(to_file, Ordering::SeqCst);
     }
 }
 
