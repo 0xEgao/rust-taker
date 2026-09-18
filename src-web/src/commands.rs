@@ -300,6 +300,12 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::taker_wallet::get_transactions(&rt, body.count, body.skip).await?)
         })
     }),
+    op("get_session_state", false, |rt, args| {
+        let _ = (&rt, &args);
+        Box::pin(async move {
+            encode(&ops::taker_wallet::get_session_state(&rt))
+        })
+    }),
     op("get_wallet_info", false, |rt, args| {
         let _ = (&rt, &args);
         Box::pin(async move {
@@ -372,10 +378,14 @@ pub static OPERATIONS: &[Operation] = &[
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
+            /// Accepted so the shared frontend can keep one call shape, and then discarded:
+            /// a browser naming a directory would enumerate `<anywhere>/wallets` on the host.
+            /// The contract calls this out as "redact paths".
+            #[allow(dead_code)]
             data_dir: Option<String>,
             }
-            let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::list_wallets(body.data_dir)?)
+            let _: Args = parse(args)?;
+            encode(&ops::taker_wallet::list_wallets(None)?)
         })
     }),
     op("poll_maker", true, |rt, args| {
@@ -475,6 +485,10 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::maker_wallet::sync_maker_wallet(&rt, body.router_id).await?)
         })
     }),
+    op("shutdown_taker", true, |rt, args| {
+        let _ = (&rt, &args);
+        Box::pin(async move { encode(&ops::taker_wallet::shutdown(&rt)?) })
+    }),
     op("sync_offerbook", true, |rt, args| {
         let _ = (&rt, &args);
         Box::pin(async move {
@@ -538,7 +552,11 @@ pub static DURABLE: &[Operation] = &[
             struct Args {
             config: MakerInitConfig,
             }
-            let body: Args = parse(args)?;
+            let mut body: Args = parse(args)?;
+            // Nested one level down, and just as much a client-supplied server path: a
+            // directory that does not exist yet is created, so this would write a wallet and
+            // a Tor data dir wherever the caller pointed.
+            body.config.data_dir = None;
             encode(&ops::maker::init_maker(&rt, body.config).await?)
         })
     }),
@@ -550,7 +568,9 @@ pub static DURABLE: &[Operation] = &[
             struct Args {
             config: InitConfig,
             }
-            let body: Args = parse(args)?;
+            let mut body: Args = parse(args)?;
+            // Also repoints the debug log at the given directory, so it must be ours.
+            body.config.data_dir = None;
             encode(&ops::taker_wallet::init_taker(&rt, body.config).await?)
         })
     }),
@@ -590,6 +610,9 @@ pub static DURABLE: &[Operation] = &[
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
+            /// Accepted and discarded — "no supplied server path", per this operation's
+            /// contract entry. The restore always lands in the server-resolved root.
+            #[allow(dead_code)]
             data_dir: Option<String>,
             wallet_name: String,
             socks_port: Option<u16>,
@@ -597,7 +620,7 @@ pub static DURABLE: &[Operation] = &[
             password: Option<String>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::restore_wallet(&rt, body.data_dir, body.wallet_name, body.socks_port, body.selection_id, body.password).await?)
+            encode(&ops::taker_wallet::restore_wallet(&rt, None, body.wallet_name, body.socks_port, body.selection_id, body.password).await?)
         })
     }),
     op("send_to_address", true, |rt, args| {

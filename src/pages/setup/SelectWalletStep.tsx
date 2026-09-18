@@ -48,6 +48,13 @@ const INIT_STEPS = [
 /** Phase `Taker::init` is inside when it rejects a password, so a wrong one fails that row. */
 const UNLOCK_STEP = 1;
 
+/**
+ * The wordmark sequence is worth 3.7s once, and irritating every time after: closing a wallet
+ * to switch, or a failed unlock, both return here. Module-level and deliberately not state
+ * — it should outlive this component, exactly as the router side already does.
+ */
+let introPlayed = false;
+
 // The same curve IntroStage enters on, so the grid inherits the stage's motion signature.
 const RISE = [0.16, 1, 0.3, 1] as const;
 
@@ -408,6 +415,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
         lead="Welcome to"
         accent="Portal"
         caption={CAPTIONS[viewMode]}
+        instant={introPlayed}
+        onDone={() => {
+          introPlayed = true;
+        }}
         // Withheld mid-checklist: leaving then would abandon an init that is already running.
         back={viewMode === "checking" ? undefined : { to: "/launch", label: "Portal", title: "Back to start" }}
         className="min-h-screen"

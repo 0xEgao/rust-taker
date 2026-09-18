@@ -1,4 +1,6 @@
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } from "lucide-react";
+import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
+import { useUnresolvedStore } from "../../store/unresolved";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress, verifyLastAddress } from "../../api/commands";
@@ -157,7 +159,15 @@ function SendPanel() {
   }, [recipient]);
 
   const walletReadyToSpend = walletSyncStatus === "synced";
-  const canSend = walletReadyToSpend && recipientValidation === "valid" && amountSats > 0 && feeRate > 0;
+  // An earlier payment whose outcome is unknown holds this: sending again could pay twice.
+  // Joins the existing readiness check rather than adding a separate gate.
+  const unresolved = useUnresolvedStore((s) => s.blocking);
+  const canSend =
+    walletReadyToSpend &&
+    recipientValidation === "valid" &&
+    amountSats > 0 &&
+    feeRate > 0 &&
+    unresolved.length === 0;
 
   async function submitSend() {
     if (useWalletCacheStore.getState().syncStatus !== "synced") {
@@ -367,6 +377,7 @@ function SendPanel() {
 
       <div className="flex-1" />
 
+      <UnresolvedPayments verb="sending" />
       <Button
         size="md"
         disabled={!canSend}

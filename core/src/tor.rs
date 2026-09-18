@@ -76,6 +76,10 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
     };
 
     if wait_until_ready(runtime.socks_port, runtime.control_port) {
+        // Only now: Tor installs its own SIGTERM/SIGINT handlers while it starts, and they
+        // replace the host's. Without this the first signal a supervisor sends reaches Tor
+        // alone and the app never shuts down. See `crate::shutdown_signal`.
+        crate::shutdown_signal::rearm_if_adopted();
         return Ok(runtime);
     }
     // Otherwise the cached runtime would be handed to every later call, which would wait on
@@ -276,6 +280,10 @@ fn start_embedded_tor(
     crate::security::fs::ensure_private_dir(&data_dir).map_err(|e| e.message)?;
 
     let handle = Tor::new()
+        // Tor writes its startup notices straight to the console before any Log config is
+        // applied, which buries whatever the host printed for the user to act on. The file
+        // log below is a separate setting and keeps working — nothing is lost, it moves.
+        .flag(TorFlag::Quiet())
         .flag(TorFlag::DataDirectory(
             data_dir.to_string_lossy().to_string(),
         ))

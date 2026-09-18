@@ -19,6 +19,9 @@ export interface HostSession {
 }
 
 export interface HostCapabilities {
+  /** Whether a Router Dashboard install can be read off this machine's disk. Desktop only:
+   *  the command is not registered on the web host, so asking there is a guaranteed 404. */
+  localDashboardImport: boolean;
   /** A native picker exists; the web host uploads instead and hides location controls. */
   nativeFilePicker: boolean;
   /** Quitting the process is offered. Web offers logout — the supervisor owns the daemon. */
@@ -28,11 +31,34 @@ export interface HostCapabilities {
   requiresLogin: boolean;
 }
 
+/** A durable operation whose outcome the server could not confirm. */
+export interface UnresolvedOperation {
+  operationId: string;
+  kind: string;
+  createdAt: number;
+  /** The request with secrets removed — carries `address` and `amountSats` for a send. */
+  request?: { address?: string; amountSats?: number };
+  /** Present only if a transaction id was recorded before the outcome was lost. Without
+   *  one there is nothing to look for on-chain, and only the owner can settle it. */
+  result?: { txid?: string };
+}
+
+export interface HostOperations {
+  /** Unresolved work that is holding up new spending. Empty on desktop, which has no
+   *  journal, so every caller degrades to "nothing is blocked". */
+  blocking(): Promise<UnresolvedOperation[]>;
+  /** Re-read chain evidence. Settles the operation if its transaction appears. */
+  reconcile(id: string): Promise<void>;
+  /** Record that the owner accepts an outcome that cannot be proven. */
+  acknowledge(id: string): Promise<void>;
+}
+
 export interface Host {
   invoke<T>(name: string, args?: Record<string, unknown>): Promise<T>;
   subscribe<T>(event: string, handler: (payload: T) => void): Promise<() => void>;
   capabilities: HostCapabilities;
   session: HostSession;
+  operations: HostOperations;
   openExternal(url: string): Promise<void>;
   pickDirectory(defaultPath?: string): Promise<string | null>;
   pickFile(defaultPath?: string): Promise<string | null>;

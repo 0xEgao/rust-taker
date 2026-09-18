@@ -31,9 +31,21 @@ pub async fn init_taker(
     taker_wallet::init_taker(&state, config).await
 }
 
+/// Releases the wallet so another can be unlocked, without stopping the process. Routers
+/// keep running: they are a separate role and do not belong to this wallet session.
+#[tauri::command]
+pub fn shutdown_taker(state: tauri::State<'_, Arc<AppState>>) -> Result<(), AppError> {
+    taker_wallet::shutdown(&state)
+}
+
 #[tauri::command]
 pub fn get_paths(state: tauri::State<'_, Arc<AppState>>) -> Result<PathsDto, AppError> {
     taker_wallet::get_paths(&state)
+}
+
+#[tauri::command]
+pub fn get_session_state(state: tauri::State<'_, Arc<AppState>>) -> SessionStateDto {
+    taker_wallet::get_session_state(&state)
 }
 
 #[tauri::command]

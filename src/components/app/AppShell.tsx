@@ -9,6 +9,7 @@ import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useSessionStore } from "../../store/session";
 import { useToastStore, type Toast } from "../../store/toast";
 import { IconButton } from "../ui/display";
+import { SwitchWallet } from "./SwitchWallet";
 
 /**
  * Read-only, because the backend is adopted at the connection gate and held for the session.
@@ -249,6 +250,7 @@ function TopNav({
                 <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
               )}
             />
+            <SwitchWallet />
             <NavLink
               to="/logs"
               title="Logs"
@@ -367,7 +369,8 @@ export function AppShell() {
   const reduceMotion = useReducedMotion();
   const routerMode = pathname.startsWith("/router");
   const atRouterRoot = pathname === "/router";
-  const walletUnlocked = useSessionStore((s) => s.initialized);
+  // Never null this deep — `RestoreRuntime` resolves it before anything here mounts.
+  const walletUnlocked = useSessionStore((s) => s.initialized === true);
   const refreshRecovery = useRecoveryStore((s) => s.refresh);
   const clearRecovery = useRecoveryStore((s) => s.clear);
 

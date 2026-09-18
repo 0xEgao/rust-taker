@@ -13,6 +13,11 @@ pub enum AccessProfile {
     DevelopmentLoopback,
     /// A TLS-terminating proxy in front; the backend port must not be reachable directly.
     TrustedTlsProxy,
+    /// A trusted proxy in front that does NOT terminate TLS, so the browser link is plain
+    /// HTTP: Umbrel's `app_proxy` on the LAN, or a published container port in development.
+    /// Session cookies therefore travel in clear, exactly as on the onion profile, which is
+    /// only acceptable because the proxy and the browser share a private network.
+    TrustedHttpProxy,
     /// Onion-only, enabled per release after its cookie/origin/bypass tests pass.
     OnlyOnion,
 }
@@ -93,7 +98,7 @@ impl Config {
                     );
                 }
             }
-            AccessProfile::TrustedTlsProxy | AccessProfile::OnlyOnion => {
+            AccessProfile::TrustedTlsProxy | AccessProfile::OnlyOnion | AccessProfile::TrustedHttpProxy => {
                 let origin = self
                     .public_origin
                     .as_deref()
@@ -107,6 +112,18 @@ impl Config {
                 }
                 if self.access_profile == AccessProfile::OnlyOnion && !origin.contains(".onion") {
                     return Err("onion-only requires an .onion --public-origin".into());
+                }
+                // Refused rather than silently downgraded: an https origin here would hand the
+                // browser a cookie without `Secure`, which is the one mistake this profile
+                // must not make quietly.
+                if self.access_profile == AccessProfile::TrustedHttpProxy
+                    && !origin.starts_with("http://")
+                {
+                    return Err(
+                        "trusted-http-proxy requires an http:// --public-origin; an https \
+                         origin belongs to trusted-tls-proxy"
+                            .into(),
+                    );
                 }
             }
         }
@@ -132,6 +149,27 @@ impl Config {
     /// onion pages as secure contexts for cookie purposes, so it is excluded here.
     pub fn secure_cookies(&self) -> bool {
         matches!(self.access_profile, AccessProfile::TrustedTlsProxy)
+    }
+
+    /// The URL to put in front of a person, which is not always what the socket is bound to.
+    /// A wildcard bind has no browsable form, and behind a proxy the browser never touches
+    /// this port at all \u2014 so a configured origin always wins.
+    pub fn browsable_url(&self) -> String {
+        let path = self.base_path.trim_end_matches('/');
+        if let Some(origin) = &self.public_origin {
+            return format!("{}{path}", origin.trim_end_matches('/'));
+        }
+        let ip = self.bind.ip();
+        let host = if ip.is_unspecified() {
+            // 0.0.0.0 is not an address anyone can open. Loopback is the one that always
+            // works from the machine the server is on, which is who reads this line.
+            if ip.is_ipv6() { "[::1]".to_string() } else { "127.0.0.1".to_string() }
+        } else if ip.is_ipv6() {
+            format!("[{ip}]")
+        } else {
+            ip.to_string()
+        };
+        format!("http://{host}:{}{path}", self.bind.port())
     }
 
     pub fn route(&self, suffix: &str) -> String {
@@ -189,6 +227,29 @@ mod tests {
             .is_err());
     }
 
+    /// The Umbrel `app_proxy` case: reachable bind, plain-HTTP origin, no `Secure` cookie.
+    #[test]
+    fn a_plain_http_proxy_binds_freely_but_refuses_an_https_origin() {
+        let umbrel = config(
+            AccessProfile::TrustedHttpProxy,
+            "0.0.0.0:3000",
+            Some("http://umbrel.local:3000"),
+        );
+        assert!(umbrel.validate().is_ok());
+        assert!(!umbrel.secure_cookies());
+        assert!(!umbrel.open_local());
+        assert!(config(
+            AccessProfile::TrustedHttpProxy,
+            "0.0.0.0:3000",
+            Some("https://portal.example")
+        )
+        .validate()
+        .is_err());
+        assert!(config(AccessProfile::TrustedHttpProxy, "0.0.0.0:3000", None)
+            .validate()
+            .is_err());
+    }
+
     #[test]
     fn onion_only_requires_an_onion_origin() {
         assert!(config(AccessProfile::OnlyOnion, "0.0.0.0:3000", Some("http://abc.onion"))
@@ -234,6 +295,31 @@ mod tests {
             "a reachable deployment always authenticates"
         );
         assert!(!config(AccessProfile::OnlyOnion, "0.0.0.0:3000", Some("http://a.onion")).open_local());
+    }
+
+    /// The line a person scrolls back to find, so it has to be openable as printed.
+    #[test]
+    fn the_browsable_url_is_one_a_browser_can_actually_open() {
+        // A wildcard bind is not an address; loopback is.
+        assert_eq!(
+            config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None).browsable_url(),
+            "http://127.0.0.1:3000"
+        );
+        let mut wildcard = config(AccessProfile::DevelopmentLoopback, "0.0.0.0:3000", None);
+        wildcard.public_origin = None;
+        assert_eq!(wildcard.browsable_url(), "http://127.0.0.1:3000");
+
+        // Behind a proxy the bind is irrelevant \u2014 the origin is what the browser uses.
+        let proxied = config(
+            AccessProfile::TrustedTlsProxy,
+            "0.0.0.0:3000",
+            Some("https://portal.example"),
+        );
+        assert_eq!(proxied.browsable_url(), "https://portal.example");
+
+        let mut based = config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None);
+        based.base_path = "/portal".into();
+        assert_eq!(based.browsable_url(), "http://127.0.0.1:3000/portal");
     }
 
     #[test]

@@ -7,13 +7,6 @@
  */
 import { host } from "@host";
 
-/** Raised for a failure the host could not express as an `AppError` envelope. */
-export interface HostFailure {
-  code: string;
-  message: string;
-  details?: unknown;
-}
-
 export interface Transport {
   /** Invoke one operation by its contract name. Callers go through `commands.ts`, which
    *  pairs each name with its own request and result types. */

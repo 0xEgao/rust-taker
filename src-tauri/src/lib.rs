@@ -6,11 +6,11 @@ use commands::{
     shutdown, taker_reports, taker_swap, taker_wallet,
 };
 use tauri::menu::{Menu, MenuItem};
+use tauri_plugin_dialog::DialogExt;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use std::sync::Arc;
 
 use portal_core::events::AppEvent;
-use tauri_plugin_dialog::DialogExt;
 use portal_core::state::AppState;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tokio::sync::broadcast::error::RecvError;
@@ -84,7 +84,9 @@ pub fn run() {
             // taker wallet lifecycle
             taker_wallet::list_wallets,
             taker_wallet::init_taker,
+            taker_wallet::shutdown_taker,
             taker_wallet::get_paths,
+            taker_wallet::get_session_state,
             taker_wallet::get_wallet_info,
             taker_wallet::choose_restore_backup,
             taker_wallet::restore_wallet,

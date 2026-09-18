@@ -66,6 +66,15 @@
       "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
     },
     {
+      "name": "shutdown_taker",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Releases the wallet so another can be unlocked. Refused while a swap is running; routers are unaffected."
+    },
+    {
       "name": "get_paths",
       "executionClass": "read",
       "desktop": true,
@@ -73,6 +82,15 @@
       "webAdaptation": "replaced",
       "retryClass": "none",
       "note": "Desktop only. Web receives opaque wallet IDs and a storage label through its session view, not server paths."
+    },
+    {
+      "name": "get_session_state",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Infallible probe run on every page load; reports whether a wallet is open so a reload does not restart the user at the role picker."
     },
     {
       "name": "get_wallet_info",

@@ -1,7 +1,7 @@
 // Ported from taker-app/src/js/coinswapHelpers.js so the new dashboard
 // classifies UTXOs/transactions exactly like the shipped app did.
 
-import { AlertCircle, CheckCircle2, XCircle, type LucideIcon } from "lucide-react";
+import { AlertCircle, CheckCircle2, CircleHelp, XCircle, type LucideIcon } from "lucide-react";
 import type { SwapStatus } from "../api/types";
 
 export function truncateMiddle(value: string, start = 12, end = 8): string {
@@ -134,7 +134,7 @@ export const LOG_LEVEL_TONE: Record<LogLevel, string> = {
 // Labels differ per page ("Success" vs "Completed") and stay local to each.
 // ---------------------------------------------------------------------------
 
-export const SWAP_STATUS_ICON: Record<SwapStatus, LucideIcon> = {
+const SWAP_STATUS_ICON: Record<SwapStatus, LucideIcon> = {
   success: CheckCircle2,
   recovery_hashlock: AlertCircle,
   recovery_timelock: AlertCircle,
@@ -144,7 +144,7 @@ export const SWAP_STATUS_ICON: Record<SwapStatus, LucideIcon> = {
   failed: XCircle,
 };
 
-export const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
+const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
   success: "text-success",
   recovery_hashlock: "text-warning",
   recovery_timelock: "text-warning",
@@ -153,6 +153,33 @@ export const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
   unfinished: "text-warning",
   failed: "text-danger",
 };
+
+/**
+ * Presentation for a swap status, safe against a value this build has never heard of.
+ *
+ * `SwapStatus` is a closed union, but the value arrives from the openswap crate — a git
+ * dependency that gets bumped. A variant added upstream reaches here before the union knows
+ * about it, and indexing these maps directly then yields `undefined`. An `undefined` icon is
+ * not a cosmetic problem: React refuses to render it and takes the entire page down with
+ * error #130, so both swap pages go blank with nothing on screen to explain why.
+ */
+export function swapStatusPresentation(status: SwapStatus): {
+  Icon: LucideIcon;
+  tone: string;
+  label: string;
+} {
+  return {
+    Icon: SWAP_STATUS_ICON[status] ?? CircleHelp,
+    tone: SWAP_STATUS_TEXT_TONE[status] ?? "text-muted",
+    label: humanizeSwapStatus(status),
+  };
+}
+
+/** Last resort for an unknown status: show the raw value rather than an empty space. */
+function humanizeSwapStatus(status: string): string {
+  const spaced = String(status).replace(/_/g, " ").trim();
+  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : "Unknown status";
+}
 
 /** Bitcoin blocks aim for one every ten minutes; a refund lock is quoted in blocks. */
 const MINUTES_PER_BLOCK = 10;

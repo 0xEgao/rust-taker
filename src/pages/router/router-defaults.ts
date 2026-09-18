@@ -1,8 +1,16 @@
 /**
  * Economics a router starts with. Quick create applies these silently and the full Add Router form
  * pre-fills them, so the two can never drift into producing differently-configured routers.
- * All of them are editable later from a router's Settings tab.
+ * The fees and limits are editable later from a router's Settings tab. The two fidelity
+ * values are not: they are burned into the bond transaction when it is created, and
+ * editing them afterwards only changes what the *next* bond uses, once this one's
+ * timelock runs out. Anything shown to the user has to say so — the money is locked.
  */
+/** Bitcoin targets a block every 10 minutes, so 144 a day. Approximate by construction. */
+export function timelockDays(blocks: number): number {
+  return Math.round(blocks / 144);
+}
+
 export const ROUTER_DEFAULTS = {
   minSwapAmount: 100_000,
   fidelityAmount: 100_000,

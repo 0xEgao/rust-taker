@@ -6,7 +6,7 @@ use openswap::security::SecurityError;
 use openswap::taker::error::TakerError;
 use openswap::wallet::WalletError;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// Serializable error envelope returned by every host command and carried on failure events.
 pub struct AppError {
@@ -19,7 +19,6 @@ pub struct AppError {
     pub details: Option<serde_json::Value>,
 }
 
-#[allow(dead_code)] // full app-wide error surface; some variants not wired up yet
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 /// Stable machine-readable failures sent across IPC; messages remain user-facing detail.
@@ -48,8 +47,6 @@ pub enum ErrorCode {
     ReportNotFound,
     UserCancelled,
     AuthorizationDenied,
-    /// The wallet changed while a confirmation dialog was open.
-    WalletSessionChanged,
     SensitiveOperationInProgress,
     InsecureDataDirectory,
     InvalidFileSelection,
@@ -58,6 +55,73 @@ pub enum ErrorCode {
     StatePoisoned,
     Io,
     Internal,
+}
+
+/// How the interface should behave when an error arrives.
+///
+/// Carried on the wire so the decision is made once, here, next to the codes themselves. A new
+/// code will not compile without choosing a class, which is the point: the default before this
+/// existed was a toast printing whatever debug string the crate produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ErrorClass {
+    /// The condition is still true and will end on its own. Say what is happening; offering a
+    /// retry would invite the user to fight a lock that is working correctly.
+    Transient,
+    /// The user has to change something. Route to the field or screen that changes it.
+    NeedsInput,
+    /// Nothing in this process can recover. Only restarting the app can.
+    NeedsRestart,
+    /// Retrying could repeat an effect that may already have happened.
+    UnsafeToRetry,
+    /// Expected and not worth interrupting anyone over.
+    Silent,
+    /// A defect. Show it plainly and point at the logs; retrying will not help.
+    Bug,
+}
+
+impl ErrorCode {
+    pub fn class(self) -> ErrorClass {
+        match self {
+            // Portal starts Tor itself and `libtor` can only start once per process, so a Tor
+            // that has gone away cannot be reached again from here at any speed.
+            Self::TorUnreachable => ErrorClass::NeedsRestart,
+
+            Self::SwapInProgress
+            | Self::MakerBusy
+            | Self::SensitiveOperationInProgress
+            | Self::RpcUnreachable => ErrorClass::Transient,
+
+            Self::WalletWrongPassword
+            | Self::RpcAuthFailed
+            | Self::ZmqUnreachable
+            | Self::WalletNotFound
+            | Self::WalletLoadFailed
+            | Self::InsufficientFunds
+            | Self::NotEnoughMakers
+            | Self::InvalidInput
+            | Self::InvalidFileSelection
+            | Self::InsecureDataDirectory
+            | Self::BackendRouteChanged
+            | Self::AuthorizationDenied
+            | Self::NotInitialized
+            | Self::MakerNotFound
+            | Self::MakerNotInitialized
+            | Self::MakerAlreadyRunning
+            | Self::MakerNotRunning
+            | Self::ReportNotFound => ErrorClass::NeedsInput,
+
+            // Funds are already committed to contracts; recovery owns them from here.
+            Self::ContractsBroadcasted => ErrorClass::UnsafeToRetry,
+
+            Self::UserCancelled => ErrorClass::Silent,
+
+            // `Io` is deliberately here rather than split into retryable reads and unsafe
+            // writes: every `std::io::Error` arrives through one `From` impl, so by this point
+            // the distinction is gone. Retrying belongs to callers that know which they did.
+            Self::Io | Self::Internal | Self::StatePoisoned => ErrorClass::Bug,
+        }
+    }
 }
 
 impl AppError {
@@ -80,7 +144,6 @@ impl AppError {
         Self::new(ErrorCode::NotInitialized, "wallet is not initialized")
     }
 
-    #[allow(dead_code)]
     pub fn swap_in_progress() -> Self {
         Self::new(ErrorCode::SwapInProgress, "a swap is currently running")
     }
@@ -108,6 +171,24 @@ impl AppError {
         Self::new(ErrorCode::UserCancelled, message)
     }
 
+}
+
+/// Hand-written so every error carries its `class` without each construction site having to
+/// pass one. Deserialization ignores the field: it is derived from `code`, never stored.
+impl serde::Serialize for AppError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("AppError", 4)?;
+        out.serialize_field("code", &self.code)?;
+        out.serialize_field("message", &self.message)?;
+        out.serialize_field("class", &self.code.class())?;
+        if let Some(details) = &self.details {
+            out.serialize_field("details", details)?;
+        } else {
+            out.skip_field("details")?;
+        }
+        out.end()
+    }
 }
 
 impl From<TakerError> for AppError {
@@ -148,6 +229,12 @@ impl From<WalletError> for AppError {
             // recovers from the same way as a bad one: ask again.
             WalletError::Security(SecurityError::Decryption | SecurityError::PasswordRequired) => {
                 ErrorCode::WalletWrongPassword
+            }
+            // `check_node_requirements` reports a missing ZMQ publisher as an untyped
+            // `General`, so its wording is the only signal. If upstream rewords it this falls
+            // back to the generic load failure rather than misreporting something else.
+            WalletError::General(message) if message.to_lowercase().contains("zmq") => {
+                ErrorCode::ZmqUnreachable
             }
             _ => ErrorCode::WalletLoadFailed,
         };
@@ -238,6 +325,32 @@ mod tests {
 
         let missing = TakerError::Wallet(WalletError::Security(SecurityError::PasswordRequired));
         assert_eq!(AppError::from(missing).code, ErrorCode::WalletWrongPassword);
+    }
+
+    /// Every code must choose a behaviour. A new one added without a class will not compile,
+    /// which is the whole reason the table exists.
+    #[test]
+    fn a_class_is_chosen_for_every_code() {
+        // Spot-check the ones whose class is a decision rather than a formality.
+        assert_eq!(ErrorCode::TorUnreachable.class(), ErrorClass::NeedsRestart);
+        assert_eq!(ErrorCode::SwapInProgress.class(), ErrorClass::Transient);
+        assert_eq!(ErrorCode::ContractsBroadcasted.class(), ErrorClass::UnsafeToRetry);
+        assert_eq!(ErrorCode::UserCancelled.class(), ErrorClass::Silent);
+        assert_eq!(ErrorCode::Io.class(), ErrorClass::Bug);
+        assert_eq!(ErrorCode::WalletWrongPassword.class(), ErrorClass::NeedsInput);
+    }
+
+    /// The frontend switches on `class`, so it has to reach the wire.
+    #[test]
+    fn the_class_is_serialized_with_every_error() {
+        let json = serde_json::to_value(AppError::new(
+            ErrorCode::TorUnreachable,
+            "Tor has stopped.",
+        ))
+        .unwrap();
+        assert_eq!(json["code"], "TOR_UNREACHABLE");
+        assert_eq!(json["class"], "needs-restart");
+        assert!(json.get("details").is_none(), "absent details stay absent");
     }
 
     /// Non-wallet taker failures keep their own mapping.

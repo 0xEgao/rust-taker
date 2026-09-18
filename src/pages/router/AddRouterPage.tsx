@@ -7,7 +7,7 @@ import { Card, Disclosure } from "../../components/ui/display";
 import { Button, LinkButton, PasswordField, SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
 import { validateNewPassword } from "../../lib/password-policy";
 import { useToastStore } from "../../store/toast";
-import { ROUTER_DEFAULTS, ROUTER_ID_PATTERN } from "./router-defaults";
+import { ROUTER_DEFAULTS, ROUTER_ID_PATTERN, timelockDays } from "./router-defaults";
 
 // Long enough that editing a port digit-by-digit doesn't fire a check per keystroke.
 const CHECK_DEBOUNCE_MS = 400;
@@ -270,11 +270,17 @@ export function AddRouterPage() {
               <SummaryRow label="Target amount" value={values.fidelityAmount} display={sats(values.fidelityAmount)} suffix="sats" onCommit={set("fidelityAmount")} />
               <SummaryRow label="Timelock" value={values.fidelityTimelock} display={sats(values.fidelityTimelock)} suffix="blocks" onCommit={set("fidelityTimelock")} />
             </>,
+            // The one group here that is not a default. Spelled out in days because nobody
+            // converts blocks into time in their head while deciding what to lock up.
+            `Unlike everything above, these two are fixed once the bond is created: ≈ ${timelockDays(
+              Number(values.fidelityTimelock) || ROUTER_DEFAULTS.fidelityTimelock,
+            )} days with the funds locked and unspendable. Editing them later applies only to the next bond, after this one expires.`,
           )}
 
           <div className="border-t border-line px-5 py-4">
             <p className="text-[11.5px] leading-5 text-subtle">
-              These are defaults. All of them can be changed later from the router's Settings tab.
+              Ports, fees and limits are defaults and can be changed later from the router's
+              Settings tab. The fidelity bond cannot.
             </p>
           </div>
         </Card>

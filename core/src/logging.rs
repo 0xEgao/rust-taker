@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use log4rs::append::console::ConsoleAppender;
@@ -20,6 +21,10 @@ use crate::events::{AppEvent, EventSink, InitPhase};
 
 static HANDLE: OnceLock<Handle> = OnceLock::new();
 static TAKER_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Whether the root logger is currently writing to the file rather than falling back to the
+/// console. A host that silences stdout must not do so while this is false, or an unopenable
+/// log file would mean no diagnostics anywhere at all.
+static LOGS_TO_FILE: AtomicBool = AtomicBool::new(false);
 static MAKERS: OnceLock<Mutex<HashMap<String, MakerLogTarget>>> = OnceLock::new();
 static MAKER_WRITE: Mutex<()> = Mutex::new(());
 
@@ -61,7 +66,7 @@ fn redact_token(line: &mut String, marker: &str) {
     }
 }
 
-pub fn redact_line(line: &str) -> String {
+fn redact_line(line: &str) -> String {
     let mut redacted = line.to_string();
     for marker in ["xprv", "tprv", "password=", "password:", "AUTHENTICATE "] {
         redact_token(&mut redacted, marker);
@@ -273,9 +278,18 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
         }
         None => "stdout",
     };
+    LOGS_TO_FILE.store(root_appender == "taker_file", Ordering::SeqCst);
 
     builder
         .logger(Logger::builder().build("bitcoincore_rpc", log::LevelFilter::Off))
+        // The watchtower re-announces the same handful of txids to every relay on every pass,
+        // at Info: in one short session on an empty wallet that was 293 of 390 lines, 270 of
+        // them three messages repeated ninety times each. Warn keeps the relay failures, which
+        // are the only part anyone reads, and leaves the file usable for everything else.
+        .logger(Logger::builder().build(
+            "openswap::watch_tower::nostr",
+            log::LevelFilter::Warn,
+        ))
         .logger(
             Logger::builder()
                 .appender("maker_router")
@@ -298,6 +312,12 @@ fn rebuild() {
     } else if let Ok(handle) = log4rs::init_config(config) {
         let _ = HANDLE.set(handle);
     }
+}
+
+/// True when the log file is open and taking the root logger's output, so the console is
+/// carrying nothing that would be lost by silencing it.
+pub fn logs_to_file() -> bool {
+    LOGS_TO_FILE.load(Ordering::SeqCst)
 }
 
 pub fn set_taker_dir(dir: PathBuf) {

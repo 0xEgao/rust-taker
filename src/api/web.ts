@@ -1,5 +1,5 @@
 /** Web host: same-origin HTTP command routes and one shared SSE stream per tab. */
-import type { Host, RestoreSelection } from "./host-contract";
+import type { Host, RestoreSelection, UnresolvedOperation } from "./host-contract";
 
 const API = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/v1`;
 
@@ -175,8 +175,25 @@ export const host: Host = {
   },
   capabilities: {
     nativeFilePicker: false,
+    // The server has no user's Router Dashboard to read; the command is desktop-only.
+    localDashboardImport: false,
     canQuit: false,
     requiresLogin: true,
+  },
+  operations: {
+    blocking: async () => {
+      const response = await fetch(`${API}/operations`, { credentials: "same-origin" });
+      if (!response.ok) return [];
+      const body = (await response.json()) as { blockingConflicts?: UnresolvedOperation[] };
+      return body.blockingConflicts ?? [];
+    },
+    reconcile: async (id) => {
+      await post(`/operations/${id}/reconcile`, {});
+    },
+    acknowledge: async (id) => {
+      const response = await post(`/operations/${id}/acknowledge`, {});
+      if (!response.ok) throw await toAppError(response);
+    },
   },
   session: {
     restore: async () => {

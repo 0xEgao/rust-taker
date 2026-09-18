@@ -9,7 +9,7 @@ import {
   formatBlockWait,
   formatDuration,
   formatRelativeTime,
-  SWAP_STATUS_ICON,
+  swapStatusPresentation,
   truncateMiddle,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
@@ -162,13 +162,13 @@ export function SwapReportsPage() {
                 </p>
               )}
               {filtered.map((r) => {
-                const Icon = SWAP_STATUS_ICON[r.status];
+                const { Icon, label: rawStatusLabel } = swapStatusPresentation(r.status);
                 const cells = (
                   <>
                     <StatusChip tone={STATUS_TONE[r.status]} shape="tile" className="h-[34px] w-[34px] justify-center px-0"><Icon size={17} strokeWidth={2} /></StatusChip>
                     <span className="flex min-w-0 flex-col gap-1">
                       <span className="truncate font-mono text-[12px] text-muted">{truncateMiddle(r.swapId, 10, 6)}</span>
-                      <StatusChip tone={STATUS_TONE[r.status]} className="self-start">{STATUS_LABEL[r.status]}</StatusChip>
+                      <StatusChip tone={STATUS_TONE[r.status] ?? "warning"} className="self-start">{STATUS_LABEL[r.status] ?? rawStatusLabel}</StatusChip>
                     </span>
                     <span className="font-mono text-[11.5px] text-subtle">
                       {r.endTimestamp === undefined

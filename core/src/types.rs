@@ -69,6 +69,10 @@ pub struct BackendStatus {
     pub reachable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Why it failed, structured. The message alone cannot be branched on, so without this
+    /// the gate could not tell a rejected password from a node that is simply down.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::error::ErrorCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +147,20 @@ pub struct InitConfig {
 pub struct InitResult {
     pub wallet_name: String,
     pub data_dir: String,
+}
+
+/// Whether a wallet is open, asked on every page load.
+///
+/// Separate from `WalletInfo` because "nothing is open" is the ordinary answer here, not a
+/// failure: a reload replaces the page but not the process, so the frontend has to ask what
+/// the process is already holding. Reporting that as an error would make a normal startup log
+/// a failed request in the browser console, every single time.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStateDto {
+    pub initialized: bool,
+    pub wallet_name: Option<String>,
+    pub data_dir: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]

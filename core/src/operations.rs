@@ -20,7 +20,7 @@ use crate::error::{AppError, ErrorCode};
 
 /// Bumped when the record shape changes incompatibly; a newer schema is refused rather than
 /// silently misread.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -57,11 +57,62 @@ pub struct OperationRecord {
     pub state: OperationState,
     pub created_at: u64,
     pub updated_at: u64,
+    /// The request with secret-bearing fields removed, so a blocked user can be told which
+    /// payment is holding things up rather than just that one is. Same redaction the
+    /// fingerprint uses, so nothing reaches disk here that was not already going to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<serde_json::Value>,
     /// Safe result metadata — a txid, a report reference. Never a key or a password.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AppError>,
+    /// The owner has seen this unresolved outcome and accepted it. Deliberately separate
+    /// from `state`: the outcome is still unknown, and recording it as failed or succeeded
+    /// would assert something nobody can prove. Only the gate consults this.
+    #[serde(default)]
+    pub acknowledged: bool,
+}
+
+/// Replaces a record atomically: written to a private temporary file, synced, then renamed
+/// over the target. A torn write would be worse than no write at all, and the plain
+/// truncating helper cannot give that guarantee.
+///
+/// Free rather than a method so `Journal::open` can write a record back before a `Journal`
+/// exists.
+fn persist_to(dir: &Path, record: &OperationRecord) -> Result<(), AppError> {
+    let target = dir.join(format!("{}.json", record.operation_id));
+    let temp = target.with_extension("json.partial");
+    let body = serde_json::to_vec(record).map_err(AppError::internal)?;
+    crate::security::fs::write_private(&temp, &body)?;
+    {
+        let file = std::fs::File::open(&temp)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&temp, &target)?;
+    // Directory sync so the rename itself survives power loss, not just the bytes.
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+    Ok(())
+}
+
+/// Operations that can put a transaction on-chain, and so could conflict with another spend
+/// while their outcome is unknown.
+///
+/// `recover_swap` is deliberately absent. It also broadcasts, but it is the remedy for a
+/// stuck swap — blocking it would strand the funds it exists to reclaim.
+pub fn moves_funds(kind: &str) -> bool {
+    matches!(kind, "send_to_address" | "start_swap")
+}
+
+/// `Interrupted` is no longer produced, but records written before that change still carry
+/// it and mean the same thing as `Indeterminate`.
+fn is_unsettled(record: &OperationRecord) -> bool {
+    matches!(
+        record.state,
+        OperationState::Indeterminate | OperationState::Interrupted
+    )
 }
 
 fn now() -> u64 {
@@ -170,6 +221,7 @@ impl Journal {
                     format!("operation record {} is unreadable: {e}", path.display()),
                 )
             })?;
+            let on_disk_state = record.state;
             if record.schema_version > SCHEMA_VERSION {
                 return Err(AppError::new(
                     ErrorCode::Io,
@@ -180,11 +232,31 @@ impl Journal {
                     ),
                 ));
             }
-            if matches!(record.state, OperationState::Accepted | OperationState::Running) {
-                // Running means a worker owned it when the process died. Whether the effect
-                // landed is exactly what we cannot know here.
-                record.state = OperationState::Interrupted;
-                record.updated_at = now();
+            match record.state {
+                // The worker persists `Running` before it starts, so a record still in
+                // `Accepted` proves nothing ran. There is nothing to reconcile and nothing
+                // to block. See the ordering note at the `mark_running` call site.
+                OperationState::Accepted => {
+                    record.state = OperationState::Failed;
+                    record.error = Some(AppError::new(
+                        ErrorCode::Internal,
+                        "interrupted before execution began; no effect",
+                    ));
+                    record.updated_at = now();
+                }
+                // A worker owned this when the process died. Whether the effect landed is
+                // exactly what cannot be known here.
+                OperationState::Running => {
+                    record.state = OperationState::Indeterminate;
+                    record.updated_at = now();
+                }
+                _ => {}
+            }
+            // Written back, not just remapped in memory: a record left saying `Running` on
+            // disk misreports what happened to anyone reading the directory, and loses the
+            // time at which the interruption was noticed.
+            if record.state != on_disk_state {
+                persist_to(&dir, &record)?;
             }
             index.insert(record.operation_id.clone(), record);
         }
@@ -194,28 +266,8 @@ impl Journal {
         })
     }
 
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{id}.json"))
-    }
-
-    /// Replaces a record atomically: written to a private temporary file, synced, then
-    /// renamed over the target. A torn write would be worse than no write at all, and the
-    /// plain truncating helper cannot give that guarantee.
     fn persist(&self, record: &OperationRecord) -> Result<(), AppError> {
-        let target = self.path_for(&record.operation_id);
-        let temp = target.with_extension("json.partial");
-        let body = serde_json::to_vec(record).map_err(AppError::internal)?;
-        crate::security::fs::write_private(&temp, &body)?;
-        {
-            let file = std::fs::File::open(&temp)?;
-            file.sync_all()?;
-        }
-        std::fs::rename(&temp, &target)?;
-        // Directory sync so the rename itself survives power loss, not just the bytes.
-        if let Ok(dir) = std::fs::File::open(&self.dir) {
-            let _ = dir.sync_all();
-        }
-        Ok(())
+        persist_to(&self.dir, record)
     }
 
     /// The gate every durable operation passes through.
@@ -256,11 +308,13 @@ impl Journal {
             wallet_id,
             generation,
             fingerprint,
+            request: Some(without_secrets(request)),
             state: OperationState::Accepted,
             created_at: now(),
             updated_at: now(),
             result: None,
             error: None,
+            acknowledged: false,
         };
         // Persisted before the caller is told it owns the work: a crash between these two
         // must leave evidence, never a silent gap.
@@ -335,17 +389,73 @@ impl Journal {
         all
     }
 
-    /// True while any operation could still have moved funds without us knowing. New spending
-    /// is refused until that is settled.
-    pub fn has_unresolved(&self) -> bool {
-        self.index.lock().is_ok_and(|index| {
-            index.values().any(|r| {
-                matches!(
-                    r.state,
-                    OperationState::Indeterminate | OperationState::Interrupted
-                )
-            })
-        })
+    /// Any operation whose outcome is still unknown, for the startup log only.
+    ///
+    /// Deliberately not the gate: an unresolved wallet initialization cannot conflict with a
+    /// spend, and gating on this indiscriminately locked the wallet out of its own recovery.
+    /// Use [`Self::blocking_conflicts`] to decide whether new work may proceed.
+    pub fn has_unsettled(&self) -> bool {
+        self.index
+            .lock()
+            .is_ok_and(|index| index.values().any(is_unsettled))
+    }
+
+    /// Unresolved work that could actually conflict with a new spend. Empty is the normal
+    /// case, including right after a crash.
+    pub fn blocking_conflicts(&self) -> Vec<OperationRecord> {
+        let Ok(index) = self.index.lock() else {
+            return Vec::new();
+        };
+        index
+            .values()
+            .filter(|r| moves_funds(&r.kind) && is_unsettled(r) && !r.acknowledged)
+            .cloned()
+            .collect()
+    }
+
+    /// Settles a record against evidence the caller gathered.
+    ///
+    /// Only ever moves a record to `Succeeded`. Nothing available here can prove a broadcast
+    /// did *not* happen, so an absent txid leaves the record exactly as it was.
+    pub fn reconcile(
+        &self,
+        operation_id: &str,
+        known_txids: &[String],
+    ) -> Result<OperationRecord, AppError> {
+        let record = self
+            .get(operation_id)
+            .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))?;
+        let txid = record
+            .result
+            .as_ref()
+            .and_then(|result| result.get("txid"))
+            .and_then(|txid| txid.as_str())
+            .map(str::to_string);
+        if let Some(txid) = txid {
+            if known_txids.iter().any(|known| known == &txid) {
+                self.update(operation_id, |r| r.state = OperationState::Succeeded)?;
+            }
+        }
+        self.get(operation_id)
+            .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))
+    }
+
+    /// Records that the owner has seen an unresolved outcome and accepts it, so it stops
+    /// holding up new work. The state is left alone: the outcome is still unknown.
+    pub fn acknowledge(&self, operation_id: &str) -> Result<OperationRecord, AppError> {
+        {
+            let mut index = self.index.lock()?;
+            let record = index
+                .get_mut(operation_id)
+                .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))?;
+            record.acknowledged = true;
+            record.updated_at = now();
+            let snapshot = record.clone();
+            drop(index);
+            self.persist(&snapshot)?;
+        }
+        self.get(operation_id)
+            .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))
     }
 }
 
@@ -435,13 +545,111 @@ mod tests {
 
         let reopened = Journal::open(&root).unwrap();
         let record = reopened.get(&id).unwrap();
-        assert_eq!(record.state, OperationState::Interrupted);
-        assert!(reopened.has_unresolved(), "must block new spending until settled");
+        assert_eq!(record.state, OperationState::Indeterminate);
+        assert!(reopened.has_unsettled(), "the outcome is still unknown");
         // And it still replays rather than starting fresh work.
         assert!(matches!(
             reopened.admit(&id, "send", None, 1, &request()).unwrap(),
             Admission::Replayed(_)
         ));
+    }
+
+    /// The worker persists `Running` before it starts, so an `Accepted` record at startup
+    /// proves nothing ran. Treating that as "might have spent" is what locked the wallet.
+    #[test]
+    fn accepted_at_crash_is_proven_to_have_had_no_effect() {
+        let (j, root) = journal();
+        let id = key();
+        j.admit(&id, "send_to_address", None, 1, &request()).unwrap();
+        drop(j);
+
+        let reopened = Journal::open(&root).unwrap();
+        assert_eq!(reopened.get(&id).unwrap().state, OperationState::Failed);
+        assert!(reopened.blocking_conflicts().is_empty());
+    }
+
+    #[test]
+    fn running_at_crash_cannot_be_proven_and_still_blocks() {
+        let (j, root) = journal();
+        let id = key();
+        j.admit(&id, "send_to_address", None, 1, &request()).unwrap();
+        j.mark_running(&id).unwrap();
+        drop(j);
+
+        let reopened = Journal::open(&root).unwrap();
+        assert_eq!(reopened.get(&id).unwrap().state, OperationState::Indeterminate);
+        assert_eq!(reopened.blocking_conflicts().len(), 1);
+    }
+
+    /// The lockout came from gating on operations that cannot conflict with a spend.
+    #[test]
+    fn only_fund_moving_operations_block() {
+        let (j, _) = journal();
+        let init = key();
+        j.admit(&init, "init_taker", None, 1, &request()).unwrap();
+        j.mark_indeterminate(&init, AppError::new(ErrorCode::TorUnreachable, "tor down"))
+            .unwrap();
+        assert!(j.has_unsettled());
+        assert!(
+            j.blocking_conflicts().is_empty(),
+            "an unresolved unlock cannot conflict with a spend"
+        );
+
+        let send = key();
+        j.admit(&send, "send_to_address", None, 1, &request()).unwrap();
+        j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "connection lost"))
+            .unwrap();
+        assert_eq!(j.blocking_conflicts().len(), 1);
+    }
+
+    /// Recovery is the remedy for a stuck swap. Blocking it would strand the funds it exists
+    /// to reclaim.
+    #[test]
+    fn recovery_is_never_treated_as_conflicting() {
+        assert!(!moves_funds("recover_swap"));
+        assert!(moves_funds("send_to_address"));
+        assert!(moves_funds("start_swap"));
+        assert!(!moves_funds("init_taker"));
+    }
+
+    #[test]
+    fn reconcile_settles_only_with_evidence() {
+        let (j, _) = journal();
+        let id = key();
+        j.admit(&id, "send_to_address", None, 1, &request()).unwrap();
+        j.mark_running(&id).unwrap();
+        // A result was written, then the outcome became unknowable.
+        j.update(&id, |r| r.result = Some(serde_json::json!({ "txid": "abc" })))
+            .unwrap();
+        j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost")).unwrap();
+
+        let unchanged = j.reconcile(&id, &["other".to_string()]).unwrap();
+        assert_eq!(unchanged.state, OperationState::Indeterminate);
+
+        let settled = j.reconcile(&id, &["abc".to_string()]).unwrap();
+        assert_eq!(settled.state, OperationState::Succeeded);
+        assert!(j.blocking_conflicts().is_empty());
+    }
+
+    /// Acknowledgement must not claim an outcome nobody can prove.
+    #[test]
+    fn acknowledging_clears_the_gate_without_claiming_success() {
+        let (j, root) = journal();
+        let id = key();
+        j.admit(&id, "send_to_address", None, 1, &request()).unwrap();
+        j.mark_running(&id).unwrap();
+        j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost")).unwrap();
+        assert_eq!(j.blocking_conflicts().len(), 1);
+
+        let acknowledged = j.acknowledge(&id).unwrap();
+        assert_eq!(acknowledged.state, OperationState::Indeterminate);
+        assert!(acknowledged.acknowledged);
+        assert!(j.blocking_conflicts().is_empty());
+
+        // And it survives a restart, so the gate does not come back.
+        drop(j);
+        let reopened = Journal::open(&root).unwrap();
+        assert!(reopened.blocking_conflicts().is_empty());
     }
 
     #[test]
@@ -452,7 +660,7 @@ mod tests {
         j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "connection lost after broadcast"))
             .unwrap();
         assert_eq!(j.get(&id).unwrap().state, OperationState::Indeterminate);
-        assert!(j.has_unresolved());
+        assert!(j.has_unsettled());
     }
 
     #[test]

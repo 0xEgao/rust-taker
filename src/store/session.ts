@@ -11,10 +11,14 @@ interface SessionState {
   /** The connection gate passed: a backend answered a chain query and Tor bootstrapped. */
   connected: boolean;
   setConnected: () => void;
-  initialized: boolean;
+  /** null until Rust has been asked. A reload replaces the page, not the process: the
+   *  wallet the user unlocked is still open in Rust, so this is restored rather than
+   *  assumed false. `false` means genuinely no wallet — asked and answered. */
+  initialized: boolean | null;
   walletName: string | null;
   dataDir: string | null;
   setInitialized: (result: InitResult) => void;
+  setNotInitialized: () => void;
   reset: () => void;
 }
 
@@ -25,9 +29,10 @@ export const useSessionStore = create<SessionState>((set) => ({
   setHasOwner: (hasOwner) => set({ hasOwner }),
   connected: false,
   setConnected: () => set({ connected: true }),
-  initialized: false,
+  initialized: null,
   walletName: null,
   dataDir: null,
+  setNotInitialized: () => set({ initialized: false }),
   setInitialized: (result) =>
     set({
       initialized: true,

@@ -4,6 +4,7 @@ import { host } from "@host";
 
 export const capabilities = host.capabilities;
 export const session = host.session;
+export const operations = host.operations;
 export const openExternal = host.openExternal;
 export const pickDirectory = host.pickDirectory;
 export const pickFile = host.pickFile;

@@ -29,7 +29,7 @@ use crate::state::PendingFileSelection;
 use crate::types::{
     AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
     InitResult, NewAddress, Outpoint, PathsDto, PriceEstimate, RestoreSelectionView, SendResult,
-    TxSummary, UtxoEntry, WalletInfo,
+    SessionStateDto, TxSummary, UtxoEntry, WalletInfo,
 };
 
 const BTC_PRICE_CACHE_FILE: &str = "btc-price-cache.json";
@@ -165,6 +165,10 @@ pub async fn init_taker(
         socks_port: tor.socks_port,
         password: config.wallet_password,
         connection_type,
+        // `None` leaves the crate's own config in charge, which defaults to off. Screening
+        // funding inputs against an address blocklist is a product decision for a privacy
+        // tool, not something to switch on because an upstream bump made the field required.
+        check_blocklist: None,
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
     };
     let wallet_name = config.wallet_name;
@@ -232,6 +236,27 @@ pub fn shutdown(state: &Arc<AppState>) -> Result<(), AppError> {
     state.pending_file_selections.lock()?.clear();
     *state.active_swap.lock()? = None;
     Ok(())
+}
+
+/// Infallible by design: every branch is a valid answer, so a fresh start never looks broken.
+pub fn get_session_state(state: &Arc<AppState>) -> SessionStateDto {
+    let wallet_name = state
+        .wallet
+        .read()
+        .ok()
+        .and_then(|w| w.clone())
+        .and_then(|w| w.read().ok().map(|w| w.get_name().to_string()));
+    let data_dir = state
+        .data_dir
+        .read()
+        .ok()
+        .and_then(|d| d.clone())
+        .map(|d| d.display().to_string());
+    SessionStateDto {
+        initialized: wallet_name.is_some(),
+        wallet_name,
+        data_dir,
+    }
 }
 
 pub fn get_wallet_info(state: &Arc<AppState>) -> Result<WalletInfo, AppError> {

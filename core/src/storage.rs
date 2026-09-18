@@ -80,15 +80,30 @@ pub fn lock_data_root(root: &Path) -> Result<RootLock, AppError> {
         .open(&path)?;
     // Non-blocking: waiting would just hang a start that is never going to succeed.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        // Name the holder. "Another Portal" is not enough to act on when the other one is a
+        // desktop window that has been open for hours and looks unrelated.
+        let holder = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .map(|pid| format!(" (process {pid})"))
+            .unwrap_or_default();
         return Err(AppError::new(
             ErrorCode::Io,
             format!(
-                "another Portal is already using {}. Close the other app or point this one \
-                 at a different data directory.",
+                "another Portal{holder} is already using {}. Quit it first — the desktop app \
+                 and the web server cannot share one data directory.",
                 root.display()
             ),
         ));
     }
+    // Recorded after the lock is held, so whoever fails to take it can say who has it.
+    // Best-effort: a missing or unreadable pid only costs the hint.
+    use std::io::{Seek, Write};
+    let mut file = file;
+    let _ = file.set_len(0);
+    let _ = file.rewind();
+    let _ = write!(file, "{}", std::process::id());
+    let _ = file.flush();
     Ok(RootLock { _file: file })
 }
 

@@ -112,6 +112,11 @@ impl Auth {
     /// Consumes the bootstrap secret and installs the owner verifier, atomically: two
     /// concurrent claims cannot both succeed.
     pub fn bootstrap(&self, secret: &str, new_password: &str) -> Result<(), &'static str> {
+        // The API is the real gate: the bootstrap endpoint needs no session, so the UI's
+        // own check is not in the path when a claim is scripted. This credential guards
+        // the whole wallet API on any reachable deployment.
+        portal_core::security::input::validate_password(new_password, "owner password")
+            .map_err(|_| "owner password must be at least 8 characters")?;
         let mut bootstrap = self.bootstrap.lock().map_err(|_| "auth state poisoned")?;
         let mut verifier = self.verifier.lock().map_err(|_| "auth state poisoned")?;
         if verifier.is_some() {
@@ -280,6 +285,18 @@ mod tests {
     #[test]
     fn an_unknown_token_is_never_valid() {
         assert!(owned().validate("not a real token", true).is_none());
+    }
+
+    /// The bootstrap endpoint needs no session, so the UI's own 8-character check is not in
+    /// the path when a claim is scripted. This credential guards the whole wallet API.
+    #[test]
+    fn a_trivial_owner_password_is_refused() {
+        let auth = Auth::load(None, None, None);
+        *auth.bootstrap.lock().unwrap() = Some("one-time".into());
+        assert!(auth.bootstrap("one-time", "").is_err());
+        assert!(auth.bootstrap("one-time", "short").is_err());
+        assert!(!auth.has_owner(), "a refused claim must not install an owner");
+        assert!(auth.bootstrap("one-time", "long-enough-password").is_ok());
     }
 
     #[test]

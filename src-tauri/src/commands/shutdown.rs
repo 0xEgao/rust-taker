@@ -108,18 +108,26 @@ fn shutdown_runtime(app: &AppHandle) {
 
     // Makers first: each one finishes its in-flight connections and a closing wallet sync,
     // and all of that traffic is still riding on Tor.
+    // Logged as well as emitted: the progress events reach a window that is closing, so the
+    // log is the only place the sequence can be checked afterwards.
     let _ = app.emit("app://quit-progress", "Stopping routers");
+    log::info!("shutdown phase start: routers");
     portal_core::ops::maker::shutdown_all(&state);
+    log::info!("shutdown phase done: routers");
 
     // Then the taker. Dropping it is the graceful path: the crate's `Drop` flushes the swap
     // tracker and stops the recovery loop and breach detector. A running swap holds the
     // taker mutex for its whole duration, so this cannot take it — the swap's own per-phase
     // writes are what the next launch recovers from.
     let _ = app.emit("app://quit-progress", "Stopping wallet");
+    log::info!("shutdown phase start: wallet");
     if let Err(e) = portal_core::ops::taker_wallet::shutdown(&state) {
-        log::warn!("taker did not shut down cleanly: {e:?}");
+        log::warn!("wallet did not shut down cleanly: {e:?}");
     }
+    log::info!("shutdown phase done: wallet");
 
     let _ = app.emit("app://quit-progress", "Stopping Tor");
+    log::info!("shutdown phase start: tor");
     portal_core::tor::shutdown();
+    log::info!("shutdown complete");
 }

@@ -1,3 +1,4 @@
+import { AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { checkTor, getSuggestedRouterPorts, initRouter } from "../../api/commands";
@@ -6,7 +7,7 @@ import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { validateNewPassword } from "../../lib/password-policy";
 import { withMinDelay } from "../../lib/timing";
-import { ROUTER_DEFAULTS, ROUTER_ID_PATTERN } from "./router-defaults";
+import { ROUTER_DEFAULTS, ROUTER_ID_PATTERN, timelockDays } from "./router-defaults";
 import { DashboardImport } from "./DashboardImport";
 
 // Each step usually resolves far quicker than it can be read.
@@ -120,7 +121,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                 autoFocus
                 required
                 error={malformed ? "Letters, numbers, hyphens and underscores only." : undefined}
-                hint={malformed ? undefined : "Names the router and its wallet. Everything else can change later."}
+                hint={malformed ? undefined : "Names the router and its wallet."}
               />
               <div className="mt-4 flex flex-col gap-3">
                 <PasswordField
@@ -141,6 +142,22 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                 <p className="text-[11.5px] leading-5 text-subtle">
                   Portal encrypts every router wallet it creates. This password cannot be recovered
                   if it is lost.
+                </p>
+                {/* Quick create applies the bond defaults without showing them. The amount and
+                    timelock cannot be changed once the bond exists, so they cannot be the one
+                    thing the user only finds out about afterwards. */}
+                <p className="flex items-start gap-1.5 text-[11.5px] leading-5 text-warning">
+                  <AlertTriangle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
+                  <span>
+                    This router bonds{" "}
+                    <strong className="font-semibold">
+                      {ROUTER_DEFAULTS.fidelityAmount.toLocaleString()} sats
+                    </strong>{" "}
+                    for {ROUTER_DEFAULTS.fidelityTimelock.toLocaleString()} blocks (≈{" "}
+                    {timelockDays(ROUTER_DEFAULTS.fidelityTimelock)} days). Those funds are locked
+                    and unspendable for that whole period, and the amount is fixed once the bond is
+                    created. To choose your own, use the full form below.
+                  </span>
                 </p>
               </div>
             </div>
@@ -190,7 +207,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
       </div>
 
       <p className="mt-4 text-[11.5px] text-subtle">
-        Need to set ports, fees, or storage yourself?{" "}
+        Need to set the bond amount, ports, fees, or storage yourself?{" "}
         <Link to="/router/new" className="text-primary hover:underline">
           Use the full form
         </Link>

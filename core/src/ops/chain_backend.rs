@@ -239,11 +239,17 @@ fn to_view(config: ChainBackendConfig) -> ChainBackendView {
     }
 }
 
+/// Fills in the password the browser was never sent, but only for the node it was saved
+/// against. Matching on identity is the whole point: without it, a caller can name any host
+/// and leave the password blank, and the saved credential is handed to that host instead
+/// — in the clear, since Core RPC is plaintext Basic auth.
 fn merge_preserved_password(mut config: ChainBackendConfig) -> ChainBackendConfig {
     if let Some(node) = config.node.as_mut() {
         if node.password.is_empty() {
             if let Some(saved) = load().node {
-                node.password = saved.password;
+                if saved.host == node.host && saved.port == node.port && saved.username == node.username {
+                    node.password = saved.password;
+                }
             }
         }
     }
@@ -267,6 +273,11 @@ pub async fn check_backend(
     socks_port: Option<u16>,
 ) -> Result<BackendStatus, AppError> {
     let config = config.map(merge_preserved_password).unwrap_or_else(load);
+    // The same rules `set_chain_backend` applies. Probing reaches the network with a
+    // credential attached, so it cannot be the lenient path — a caller-chosen host would
+    // otherwise receive the saved RPC password, and the reachability of arbitrary addresses
+    // would make this a scanner for whatever the server can see.
+    validate(&config)?;
     tokio::task::spawn_blocking(move || match config.kind {
         ChainBackendKind::Electrum => probe_electrum(&config.electrum, socks_port),
         ChainBackendKind::CoreRpc => match &config.node {
@@ -279,9 +290,14 @@ pub async fn check_backend(
 }
 
 fn unreachable(error: String) -> BackendStatus {
+    failed(ErrorCode::RpcUnreachable, error)
+}
+
+fn failed(failure: ErrorCode, error: String) -> BackendStatus {
     BackendStatus {
         reachable: false,
         error: Some(error),
+        failure: Some(failure),
         chain: None,
         blocks: None,
         synced: false,
@@ -303,6 +319,7 @@ fn probe_electrum(dto: &ElectrumBackendDto, socks_port: Option<u16>) -> BackendS
     match client.get_blockchain_info() {
         Ok(info) => BackendStatus {
             reachable: true,
+            failure: None,
             error: None,
             chain: Some(info.chain.to_string()),
             blocks: Some(info.blocks),
@@ -332,16 +349,20 @@ fn probe_core_rpc(node: &NodeBackendDto) -> BackendStatus {
         Ok(i) => i,
         Err(e) => {
             let msg = format!("{e:?}");
-            let hint = if msg.contains("401") || msg.to_lowercase().contains("auth") {
-                format!("authentication rejected by {url}")
-            } else {
-                msg
-            };
-            return unreachable(hint);
+            // Already distinguished here; it was being flattened into "unreachable" on the
+            // way out, leaving the gate unable to tell a wrong password from a dead node.
+            if msg.contains("401") || msg.to_lowercase().contains("auth") {
+                return failed(
+                    ErrorCode::RpcAuthFailed,
+                    format!("{url} rejected the RPC username or password"),
+                );
+            }
+            return unreachable(msg);
         }
     };
     BackendStatus {
         reachable: true,
+        failure: None,
         error: None,
         chain: Some(info.chain.to_string()),
         blocks: Some(info.blocks),
@@ -404,6 +425,51 @@ fn electrum_network(socks_port: Option<u16>) -> Option<Network> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn node(host: &str, port: u16, username: &str, password: &str) -> ChainBackendConfig {
+        ChainBackendConfig {
+            kind: ChainBackendKind::CoreRpc,
+            electrum: ChainBackendConfig::default().electrum,
+            node: Some(NodeBackendDto {
+                host: host.into(),
+                port,
+                username: username.into(),
+                password: password.into(),
+                zmq_port: 28332,
+            }),
+        }
+    }
+
+    /// Probing reaches the network with a credential attached, so it has to be held to the
+    /// same loopback rule as adopting a backend. Without this a caller names any host and
+    /// the saved RPC password is posted to it in the clear.
+    #[test]
+    fn probing_is_held_to_the_same_host_rule_as_adopting() {
+        assert!(validate(&node("127.0.0.1", 8332, "u", "p")).is_ok());
+        assert!(validate(&node("attacker.example", 80, "u", "p")).is_err());
+    }
+
+    /// The blank password means "reuse what I already gave you", and that answer is only
+    /// correct for the node it was given for.
+    #[test]
+    fn a_saved_password_never_follows_a_changed_destination() {
+        store(node("127.0.0.1", 8332, "alice", "s3cret-node-pw"));
+
+        let same = merge_preserved_password(node("127.0.0.1", 8332, "alice", ""));
+        assert_eq!(same.node.unwrap().password, "s3cret-node-pw");
+
+        for changed in [
+            node("attacker.example", 8332, "alice", ""),
+            node("127.0.0.1", 9999, "alice", ""),
+            node("127.0.0.1", 8332, "mallory", ""),
+        ] {
+            assert_eq!(
+                merge_preserved_password(changed).node.unwrap().password,
+                "",
+                "the saved credential must not follow a different node"
+            );
+        }
+    }
 
     #[test]
     fn onion_url_forces_tor_even_when_unchecked() {

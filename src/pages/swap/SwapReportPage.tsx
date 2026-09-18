@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, RefreshCw, Timer, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, RefreshCw, ShieldCheck, Timer, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -6,8 +6,8 @@ import { getIncomingSwapUtxo, getOffers, getSwapReport, verifyDeniability } from
 import type { ReportRouterFee, ReportUtxo, Offer, SwapReportDetail, SwapStatus, SwapUtxo } from "../../api/types";
 import { isAppError } from "../../api/types";
 import { BackButton, Card, CopyButton, Disclosure, ExternalLinkButton, IndeterminateBar, Modal, SatsAmount } from "../../components/ui/display";
-import { Button } from "../../components/ui/inputs";
-import { formatDuration, SATS_PER_BTC, SWAP_STATUS_ICON, SWAP_STATUS_TEXT_TONE, truncateMiddle } from "../../lib/wallet-format";
+import { Button, LinkButton } from "../../components/ui/inputs";
+import { formatDuration, SATS_PER_BTC, swapStatusPresentation, truncateMiddle } from "../../lib/wallet-format";
 
 const STATUS_LABEL: Record<SwapStatus, string> = {
   success: "Completed",
@@ -70,6 +70,17 @@ function TxArtifact({ label, caption, txid, vout, amountSats, accent, arrow }: {
 }
 
 // The report names these coins by address and value only, with no outpoint to link out to.
+/**
+ * The crate writes the literal string "Unknown" when it cannot resolve an address, and its
+ * Electrum backend never can — that backend builds every UTXO entry with `address: None`
+ * (`wallet/blockchain/electrum.rs`). Printing that word where an address belongs tells the
+ * reader nothing, so it is treated as absent everywhere it could reach the page.
+ */
+function identifiedAddress(utxo: { address: string }): string | null {
+  const address = utxo.address?.trim();
+  return address && address !== "Unknown" ? address : null;
+}
+
 function CoinRow({ label, caption, coins, accent, arrow }: {
   label: string;
   caption: string;
@@ -86,22 +97,29 @@ function CoinRow({ label, caption, coins, accent, arrow }: {
         {label}
       </h4>
       <div className="flex flex-col gap-3">
-        {coins.map((coin, i) => (
-          <div
-            key={`${coin.address}-${i}`}
-            className="grid grid-cols-[minmax(0,1fr)_34px] items-center gap-2.5"
-          >
-            <div className="min-w-0">
-              <p className="break-all font-mono text-[12px] leading-relaxed text-muted">
-                {coin.address}
-              </p>
-              <p className="mt-2 font-numeric text-[13px] text-foreground">
-                <SatsAmount sats={coin.valueSats} />
-              </p>
+        {coins.map((coin, i) => {
+          const address = identifiedAddress(coin);
+          return (
+            <div
+              key={`${coin.address}-${i}`}
+              className="grid grid-cols-[minmax(0,1fr)_34px] items-center gap-2.5"
+            >
+              <div className="min-w-0">
+                {address && (
+                  <p className="break-all font-mono text-[12px] leading-relaxed text-muted">
+                    {address}
+                  </p>
+                )}
+                <p
+                  className={`font-numeric text-[13px] text-foreground${address ? " mt-2" : ""}`}
+                >
+                  <SatsAmount sats={coin.valueSats} />
+                </p>
+              </div>
+              {address && <CopyButton text={address} title="Copy address" />}
             </div>
-            <CopyButton text={coin.address} title="Copy address" />
-          </div>
-        ))}
+          );
+        })}
       </div>
       <p className="mt-3 text-[11.5px] leading-5 text-subtle">{caption}</p>
     </div>
@@ -206,7 +224,9 @@ export function SwapReportPage() {
       .catch(() => setUtxoState("failed"));
   }, [swapId, utxoState]);
 
-  const reportedIncoming = report?.incomingUtxos ?? [];
+  // Only entries we can actually name. An unnamed one must not satisfy this, or the chain
+  // lookup below never runs and the page settles for showing nothing useful.
+  const reportedIncoming = (report?.incomingUtxos ?? []).filter(identifiedAddress);
   useEffect(() => {
     if (swapId && report && reportedIncoming.length === 0 && utxoState === "idle") {
       loadIncomingUtxo();
@@ -273,29 +293,57 @@ export function SwapReportPage() {
     );
   }
 
-  const Icon = SWAP_STATUS_ICON[report.status];
+  // Resolved together and with a fallback: an unknown status must degrade, not blank the page.
+  const { Icon, tone: statusTone, label: rawStatusLabel } = swapStatusPresentation(report.status);
   const isFailure = report.status === "failed";
+  // Everything that is not a completed swap, matching how the reports list counts them. A
+  // swap can stop in several ways and all of them can leave funds committed on-chain.
+  const didNotComplete = report.status !== "success";
 
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 pb-8 pt-2">
       <div className="flex shrink-0 items-center gap-3 pb-4">
         <BackButton to="/swap/reports" label="Back to Swap Reports" />
         <div className="flex items-center gap-2.5">
-          <Icon size={22} strokeWidth={2} className={SWAP_STATUS_TEXT_TONE[report.status]} />
+          <Icon size={22} strokeWidth={2} className={statusTone} />
           <div>
             <h1 className="font-header text-[20px] font-bold text-foreground">{truncateMiddle(report.swapId, 18, 10)}</h1>
-            <p className={`mt-0.5 text-[11.5px] font-medium ${SWAP_STATUS_TEXT_TONE[report.status]}`}>{STATUS_LABEL[report.status]}</p>
+            <p className={`mt-0.5 text-[11.5px] font-medium ${statusTone}`}>{STATUS_LABEL[report.status] ?? rawStatusLabel}</p>
           </div>
         </div>
       </div>
 
-      {isFailure && report.errorMessage && (
-        <div className="mb-4 flex shrink-0 items-start gap-3 rounded-control border border-danger/35 bg-danger/[0.06] px-4 py-3.5">
-          <AlertTriangle size={18} strokeWidth={2} className="mt-0.5 flex-none text-danger" />
-          <span className="flex flex-col gap-1">
-            <strong className="text-[13px] font-semibold text-foreground">Failure reason</strong>
-            <span className="break-words font-mono text-[11.5px] leading-relaxed text-danger">{report.errorMessage}</span>
-          </span>
+      {didNotComplete && (
+        <div className="mb-4 flex shrink-0 flex-wrap items-start justify-between gap-3 rounded-control border border-danger/35 bg-danger/[0.06] px-4 py-3.5">
+          <div className="flex min-w-0 items-start gap-3">
+            <AlertTriangle size={18} strokeWidth={2} className="mt-0.5 flex-none text-danger" />
+            <span className="flex min-w-0 flex-col gap-1">
+              <strong className="text-[13px] font-semibold text-foreground">
+                {report.errorMessage ? "Failure reason" : "This swap did not complete"}
+              </strong>
+              {report.errorMessage ? (
+                <span className="break-words font-mono text-[11.5px] leading-relaxed text-danger">
+                  {report.errorMessage}
+                </span>
+              ) : (
+                <span className="text-[11.5px] leading-relaxed text-muted">
+                  No reason was recorded for this one.
+                </span>
+              )}
+            </span>
+          </div>
+          {/* What the reader actually wants next. Funds committed to a contract come back
+              through recovery, and this page cannot tell them whether that finished — so it
+              hands them straight there instead of leaving them to find it in the nav. */}
+          <LinkButton
+            to={`/swap/recovery/${encodeURIComponent(report.swapId)}`}
+            size="sm"
+            variant="secondary"
+            className="flex-none"
+          >
+            <ShieldCheck size={14} strokeWidth={1.8} />
+            Track recovery
+          </LinkButton>
         </div>
       )}
 
@@ -368,13 +416,23 @@ export function SwapReportPage() {
               // is written, so it has to be read off the chain.
               <div className="flex flex-col gap-2 rounded-control border border-dashed border-line bg-surface-raised p-5">
                 <h4 className="text-[15px] font-extrabold text-foreground">Incoming UTXO</h4>
+                {/* The amount is recorded even when the outpoint is not, and it is the part
+                    worth reading — so the card always carries it rather than being nothing
+                    but an apology for what could not be resolved. */}
+                {report.receivedAmountSats > 0 && (
+                  <p className="font-numeric text-[13px] text-foreground">
+                    <SatsAmount sats={report.receivedAmountSats} />
+                    <span className="ml-1.5 text-[11.5px] text-subtle">received</span>
+                  </p>
+                )}
                 {utxoState === "failed" ? (
                   <p className="text-[11.5px] text-danger">
                     Could not reach the chain backend to find it.
                   </p>
                 ) : utxoState === "done" ? (
                   <p className="text-[11.5px] text-subtle">
-                    No sweep of the incoming contract was found yet.
+                    The exact coin can't be pinned down yet — the sweep that lands it may not
+                    have confirmed.
                   </p>
                 ) : (
                   <p className="text-[11.5px] text-subtle">Reading the chain…</p>

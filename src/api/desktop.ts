@@ -32,11 +32,19 @@ export const host: Host = {
   },
   capabilities: {
     nativeFilePicker: true,
+    localDashboardImport: true,
     // The desktop app owns its process; a browser session cannot stop the server.
     canQuit: true,
     // The process belongs to whoever launched it; a second password here would protect
     // nothing that the OS account does not already protect.
     requiresLogin: false,
+  },
+  // Desktop commands do not go through the operations journal, so nothing is ever blocked
+  // and there is nothing to settle.
+  operations: {
+    blocking: async () => [],
+    reconcile: async () => {},
+    acknowledge: async () => {},
   },
   session: {
     restore: async () => ({ authenticated: true, hasOwner: true }),

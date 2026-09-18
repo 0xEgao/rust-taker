@@ -88,9 +88,47 @@ pub(crate) fn authenticate(state: &WebState, headers: &HeaderMap, refresh: bool)
 
 /// Same-origin enforcement. A browser always sends `Origin` on a cross-origin request, so a
 /// mismatch is rejected; CORS stays off entirely rather than being widened for convenience.
+/// True for an origin served from this machine, whatever port it uses.
+///
+/// The port cannot be pinned down: in development the page is on Vite's port and the API is
+/// proxied, so the browser sends `http://localhost:1430` to a server bound to 3000. The host
+/// is the part that matters — a page from somewhere else on the internet can never present
+/// one of these. An opaque `null` origin (a sandboxed frame) is not one of them.
+fn is_loopback_origin(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let host = match rest.strip_prefix('[') {
+        // IPv6 literal: everything up to the closing bracket, port or not.
+        Some(after) => match after.split_once(']') {
+            Some((inside, tail)) if tail.is_empty() || tail.starts_with(':') => inside,
+            _ => return false,
+        },
+        None => rest.split(':').next().unwrap_or(""),
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
 pub(crate) fn check_origin(state: &WebState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let refused = || {
+        ApiError(
+            StatusCode::FORBIDDEN,
+            AppError::new(ErrorCode::AuthorizationDenied, "cross-origin request refused"),
+        )
+    };
+    // No configured origin means a local run, where the port the page is served from is not
+    // knowable here. Browsers attach `Origin` to every POST, same-origin ones included, so
+    // its mere presence proves nothing — but a hostile page on the public internet cannot
+    // forge a loopback one, which is the attack this closes.
     let Some(expected) = state.config.public_origin.as_deref() else {
-        return Ok(());
+        return match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+            None => Ok(()),
+            Some(origin) if is_loopback_origin(origin) => Ok(()),
+            Some(_) => Err(refused()),
+        };
     };
     match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
         Some(origin) if origin == expected => Ok(()),
@@ -142,6 +180,14 @@ pub fn router(state: WebState) -> Router {
         )
         .route(&c.route("/api/v1/operations"), get(operations))
         .route(&c.route("/api/v1/operations/{id}"), get(operation))
+        .route(
+            &c.route("/api/v1/operations/{id}/reconcile"),
+            post(reconcile_operation),
+        )
+        .route(
+            &c.route("/api/v1/operations/{id}/acknowledge"),
+            post(acknowledge_operation),
+        )
         .route(&c.route("/health/live"), get(live))
         .route(&c.route("/health/ready"), get(ready))
         .layer(RequestBodyLimitLayer::new(crate::files::MAX_UPLOAD_BYTES))
@@ -313,19 +359,24 @@ async fn durable(
         })?
         .to_string();
 
-    // An operation whose effect could not be proven may already have moved funds. Starting
-    // another that could conflict is exactly how the same coins get spent twice, so new
-    // financial work waits until the earlier one is settled. Reading an existing key is
-    // still allowed below — that is how it gets settled.
-    if state.journal.has_unresolved() && state.journal.get(&key).is_none() {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            AppError::new(
+    // A spend whose effect could not be proven may already have moved coins, so another
+    // spend could double it. Scoped deliberately: only fund-moving work is held, and only by
+    // other fund-moving work. Recovery is never held — it is the remedy for a stuck swap, and
+    // blocking it would strand the funds it exists to reclaim. Reading an existing key is
+    // still allowed, since that is how one gets settled.
+    if portal_core::operations::moves_funds(name) && state.journal.get(&key).is_none() {
+        let blocking = state.journal.blocking_conflicts();
+        if !blocking.is_empty() {
+            let mut error = AppError::new(
                 ErrorCode::SwapInProgress,
-                "An earlier operation's outcome is still unresolved. Check it before starting \
-                 new work — see the recovery page.",
-            ),
-        ));
+                "An earlier payment's outcome could not be confirmed. Check it before \
+                 spending again.",
+            );
+            error.details = Some(json!({
+                "blocking": blocking.iter().map(|r| &r.operation_id).collect::<Vec<_>>(),
+            }));
+            return Err(ApiError(StatusCode::CONFLICT, error));
+        }
     }
 
     match state.journal.admit(&key, name, None, 0, &args)? {
@@ -342,6 +393,9 @@ async fn durable(
             // Owned by the server from here: closing the tab or losing the connection does
             // not cancel work that has already been accepted.
             tokio::spawn(async move {
+                // Must be the first thing here, and nothing side-effecting may precede it:
+                // `Journal::open` treats a record still in `Accepted` as proof the operation
+                // never ran, which is what keeps a crash from blocking future spends.
                 let _ = journal.mark_running(&id);
                 match run(runtime, args).await {
                     Ok(value) => {
@@ -383,8 +437,47 @@ async fn operations(
     let recent = state.journal.recent(100);
     Ok(Json(json!({
         "operations": recent,
-        "hasUnresolved": state.journal.has_unresolved(),
+        "blockingConflicts": state.journal.blocking_conflicts(),
     })))
+}
+
+/// Re-reads chain evidence for one unresolved operation. Can only ever settle it as
+/// succeeded — nothing here can prove a broadcast did not happen.
+async fn reconcile_operation(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    check_origin(&state, &headers)?;
+    let caller = authenticate(&state, &headers, true)?;
+    check_csrf(&caller, &headers)?;
+
+    // The same evidence the wallet page reconciles pending sends against.
+    let known: Vec<String> = portal_core::ops::taker_wallet::get_transactions(
+        &state.runtime,
+        Some(200),
+        None,
+    )
+    .await
+    .map(|txs| txs.into_iter().map(|tx| tx.txid).collect())
+    .unwrap_or_default();
+
+    let record = state.journal.reconcile(&id, &known)?;
+    Ok(Json(serde_json::to_value(record).map_err(AppError::internal)?))
+}
+
+/// Records that the owner accepts an outcome that cannot be proven, so it stops holding up
+/// new spending. The operation's state is unchanged: it is still unknown.
+async fn acknowledge_operation(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    check_origin(&state, &headers)?;
+    let caller = authenticate(&state, &headers, true)?;
+    check_csrf(&caller, &headers)?;
+    let record = state.journal.acknowledge(&id)?;
+    Ok(Json(serde_json::to_value(record).map_err(AppError::internal)?))
 }
 
 async fn operation(
@@ -402,4 +495,42 @@ async fn operation(
         )
     })?;
     Ok(Json(serde_json::to_value(record).map_err(AppError::internal)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_origin;
+
+    /// Every one of these is a real browser `Origin` this app receives. Browsers attach the
+    /// header to same-origin POSTs too, so treating its presence as proof of a cross-site
+    /// request breaks the whole app — which is exactly what happened once.
+    #[test]
+    fn the_app_talking_to_itself_is_not_cross_origin() {
+        for origin in [
+            "http://127.0.0.1:3000",     // web:start, opened directly
+            "http://localhost:1430",     // web:dev, page on Vite proxying to 3000
+            "http://localhost:3000",
+            "http://[::1]:3000",
+            "https://localhost:8443",
+            "http://127.0.0.1",          // default port
+        ] {
+            assert!(is_loopback_origin(origin), "must be allowed: {origin}");
+        }
+    }
+
+    #[test]
+    fn a_page_from_anywhere_else_is_refused() {
+        for origin in [
+            "http://evil.example",
+            "https://evil.example:3000",
+            "null",                          // sandboxed frame
+            "http://127.0.0.1.evil.example", // suffix trick
+            "http://localhost.evil.example",
+            "http://[::1].evil.example",
+            "file://",
+            "",
+        ] {
+            assert!(!is_loopback_origin(origin), "must be refused: {origin}");
+        }
+    }
 }
