@@ -276,6 +276,10 @@ fn start_embedded_tor(
     crate::security::fs::ensure_private_dir(&data_dir).map_err(|e| e.message)?;
 
     let handle = Tor::new()
+        // Tor writes its startup notices straight to the console before any Log config is
+        // applied, which buries whatever the host printed for the user to act on. The file
+        // log below is a separate setting and keeps working — nothing is lost, it moves.
+        .flag(TorFlag::Quiet())
         .flag(TorFlag::DataDirectory(
             data_dir.to_string_lossy().to_string(),
         ))
@@ -288,10 +292,21 @@ fn start_embedded_tor(
         ))
         .start_background();
 
-    std::thread::spawn(move || match handle.join() {
-        Ok(Ok(code)) => log::info!("embedded tor exited with code {code}"),
-        Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
-        Err(_) => log::warn!("embedded tor thread panicked"),
+    std::thread::spawn(move || {
+        match handle.join() {
+            Ok(Ok(code)) => log::info!("embedded tor exited with code {code}"),
+            Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
+            Err(_) => log::warn!("embedded tor thread panicked"),
+        }
+        // `shutdown` clears the slot before Tor goes, so a slot still full means nobody here
+        // asked for this. During bootstrap that is how a SIGTERM looks from our side: Tor
+        // still owns the handler, catches it, and exits — and we would otherwise sit there
+        // until the supervisor lost patience. A genuine Tor crash lands here too, and is
+        // just as terminal: `tor_main` cannot be run a second time in this process.
+        if runtime().is_some() {
+            log::warn!("Portal's Tor exited on its own; shutting down");
+            crate::shutdown_signal::trip_if_adopted();
+        }
     });
     Ok(())
 }

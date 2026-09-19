@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { isAppError } from "../api/types";
+import { present } from "../lib/error-policy";
 
 export interface Toast {
   id: number;
@@ -58,14 +58,12 @@ export const useToastStore = create<ToastState>((set) => ({
     if (dismissAfterMs !== null) armDismiss(set, id, dismissAfterMs);
   },
   pushFailure: (error, fallback) => {
-    const appError = isAppError(error) ? error : null;
-    // Reaching a wallet command mid-swap is the protocol working as designed, not a fault:
-    // the swap holds the wallet for its whole duration.
-    const kind = appError?.code === "SWAP_IN_PROGRESS" ? "warning" : "error";
-    // `isAppError` only proves `code` is there. Rendering a non-string `message` would throw
-    // inside the toast rather than report whatever actually went wrong.
-    const message = typeof appError?.message === "string" ? appError.message : fallback;
-    useToastStore.getState().push(kind, message);
+    // One decision point for every failed command. The class comes from the backend, so a
+    // code added there arrives here already knowing how it should behave — rather than
+    // printing whatever debug string the protocol crate produced.
+    const { show, tone, message, guidance } = present(error, fallback);
+    if (!show) return;
+    useToastStore.getState().push(tone, guidance ? `${message} ${guidance}` : message);
   },
   dismiss: (id) => {
     const timer = timers.get(id);

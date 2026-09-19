@@ -4,7 +4,8 @@
 
 # Portal
 
-A desktop Bitcoin wallet that swaps your coins privately, over Tor, with no trusted third party.
+A Bitcoin wallet that swaps your coins privately, over Tor, with no trusted third party.
+Runs as a desktop app, or as a server you host yourself and reach from a browser.
 
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-citadelfoss.xyz-blue)](https://citadelfoss.xyz/)
@@ -17,7 +18,7 @@ This project is under active development. Mainnet use is **NOT recommended.**
 
 # About
 
-Portal is a desktop client for [OpenSwap](https://github.com/citadel-foss/openswap), a Bitcoin
+Portal is a client for [OpenSwap](https://github.com/citadel-foss/openswap), a Bitcoin
 swap protocol with no company or server in the middle — the marketplace lives on the Bitcoin
 blockchain itself.
 
@@ -77,8 +78,17 @@ Later runs are incremental.
 npm run tauri build
 ```
 
-Installers land in `src-tauri/target/release/bundle/` — `.dmg` on macOS, `.deb`/`.AppImage`/`.rpm`
+Installers land in `target/release/bundle/` — `.dmg` on macOS, `.deb`/`.AppImage`/`.rpm`
 on Linux, `.msi` on Windows. Tauri builds only for the platform you are on.
+
+## Run the web version
+
+```bash
+npm install
+npm run web:dev
+```
+
+Then open <http://localhost:1430>.
 
 ## First run
 
@@ -118,20 +128,25 @@ are seeded fresh each launch and held in memory only, so a node's RPC password i
 
 | Command | What it does |
 | --- | --- |
-| `npm run tauri dev` | Full app, real desktop window |
-| `npm run dev` | Vite alone — no Tauri, so no backend calls work. UI iteration only |
+| `npm run tauri dev` | Full desktop app, real window |
+| `npm run web:dev` | Web version, with hot reload |
+| `npm run web:build` | Web version, production build |
+| `npm run dev` | Vite alone — no host, so no backend calls work. UI iteration only |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run tauri build` | Production installers |
+| `npm run tauri build` | Production desktop installers |
+| `npm run sync` | Update the OpenSwap crate, reinstall, then verify |
 
-Backend, from `src-tauri/`: `cargo check`, `cargo clippy --all-targets`.
+Rust, from the repo root: `cargo check --workspace`, `cargo clippy --workspace --all-targets`,
+`cargo test --workspace`.
 
 ```
 src/          React frontend
-  api/        the single typed IPC boundary — components import from here, never invoke() directly
+  api/        the single typed boundary — components import from here, never invoke() directly
   pages/      one directory per screen
   components/ shared UI primitives
-src-tauri/    Rust backend
-  src/commands/  IPC commands, grouped by domain
+core/         wallet, swaps, Tor — shared by both hosts
+src-tauri/    desktop host
+src-web/      web host
 ```
 
 # Links

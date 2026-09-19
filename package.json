@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "sync": "scripts/sync.sh",
-    "sync:dev": "scripts/sync.sh --dev"
+    "sync:dev": "scripts/sync.sh --dev",
+    "web:dev": "scripts/web-dev.sh",
+    "web:build": "tsc --noEmit && vite build --mode web && cargo build --locked --release -p portal-web",
+    "web:start": "vite build --mode web && cargo run --release -p portal-web -- --assets-dir dist/web"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -31,6 +34,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "playwright-core": "^1.63.0",
     "tailwindcss": "^4",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"

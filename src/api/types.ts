@@ -75,10 +75,24 @@ export interface InitResult {
   dataDir: string;
 }
 
+/** Whether a wallet is open. Never an error — "nothing open" is the ordinary answer. */
+export interface SessionState {
+  initialized: boolean;
+  walletName: string | null;
+  dataDir: string | null;
+}
+
 export interface WalletInfo {
   walletName: string;
   walletPath: string;
   dataDir: string;
+}
+
+/** Desktop only. The web host reports a storage label through its session view instead —
+ *  a browser is never given a server path. */
+export interface Paths {
+  dataDir: string;
+  walletsDir: string;
 }
 
 export interface RestoreSelection {
@@ -90,8 +104,20 @@ export interface RestoreSelection {
 export interface AppError {
   code: ErrorCode;
   message: string;
+  /** How the UI should behave, decided once in Rust beside the codes themselves. Optional so
+   *  an error from an older backend still parses. */
+  class?: ErrorClass;
   details?: unknown;
 }
+
+/** Mirrors `ErrorClass` in `core/src/error.rs`. */
+export type ErrorClass =
+  | "transient"
+  | "needs-input"
+  | "needs-restart"
+  | "unsafe-to-retry"
+  | "silent"
+  | "bug";
 
 export function isAppError(e: unknown): e is AppError {
   return typeof e === "object" && e !== null && "code" in e;
@@ -117,7 +143,6 @@ export type ErrorCode =
   | "REPORT_NOT_FOUND"
   | "USER_CANCELLED"
   | "AUTHORIZATION_DENIED"
-  | "WALLET_SESSION_CHANGED"
   | "SENSITIVE_OPERATION_IN_PROGRESS"
   | "INSECURE_DATA_DIRECTORY"
   | "INVALID_FILE_SELECTION"
@@ -465,6 +490,8 @@ export interface RecoveryContract {
   confirmations: number;
   /** Blocks still to wait. Timelock only. */
   blocksRemaining?: number;
+  /** The refund delay in full, so progress through it can be shown. Timelock only. */
+  lockBlocks?: number;
 }
 
 /** A contract the recovery loop has already claimed back. */

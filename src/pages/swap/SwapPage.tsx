@@ -1,4 +1,6 @@
-import { listen } from "@tauri-apps/api/event";
+import { subscribe } from "../../api/transport";
+import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
+import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import {
   AlertTriangle,
   ArrowLeftRight,
@@ -231,22 +233,22 @@ export function SwapPage() {
     let unlistenFinished: (() => void) | undefined;
     let unlistenFailed: (() => void) | undefined;
     let unlistenRecovering: (() => void) | undefined;
-    void listen<string>("swap://finished", () => setPhase("finished")).then(
+    void subscribe<string>("swap://finished", () => setPhase("finished")).then(
       (fn) => {
         unlistenFinished = fn;
       },
     );
     // Only fires for a failure with nothing on-chain, which is a plain error with nothing to
     // recover. Anything past the funding broadcast arrives as swap://recovering instead.
-    void listen<AppError>("swap://failed", (e) => {
-      setFailure(e.payload);
+    void subscribe<AppError>("swap://failed", (e) => {
+      setFailure(e);
       setPhase("failed");
     }).then((fn) => {
       unlistenFailed = fn;
     });
     // The funds are in contracts and the crate is already claiming them back, so this page hands
     // itself back for the next swap and the recovery page takes over.
-    void listen("swap://recovering", () => {
+    void subscribe("swap://recovering", () => {
       resetWizard();
       pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
       navigate("/swap/recovery");
@@ -573,11 +575,16 @@ export function SwapPage() {
     ? `${selectedOutpoints.length} UTXO${selectedOutpoints.length === 1 ? "" : "s"} selected`
     : null;
 
+  // Same rule as Send: an unconfirmed earlier payment could be paid twice by starting more
+  // on-chain work.
+  // See SendPage: an unreadable journal holds this as firmly as a populated one.
+  const paymentsHeld = useUnresolvedStore(spendingBlocked);
   const canStart =
     amountSats > 0 &&
     fundingEstimate !== null &&
     warnings.length === 0 &&
-    !submitting;
+    !submitting &&
+    !paymentsHeld;
 
   // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
   // dialog, bound to the authoritative prepared summary; there is no second renderer modal.
@@ -1151,6 +1158,7 @@ export function SwapPage() {
             </div>
           )}
 
+          <UnresolvedPayments verb="swapping" />
           <Button
             size="md"
             disabled={!canStart}

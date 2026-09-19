@@ -24,3 +24,12 @@ CLAUDE.md
 *.njsproj
 *.sln
 *.sw?
+
+# Cargo (workspace target dir lives at the repo root)
+/target/
+
+# Container bootstrap secrets — never commit these.
+deploy/container/*.secret
+
+# Working notes and audits — local only, like .claude/
+docs/

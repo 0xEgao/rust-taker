@@ -2,6 +2,7 @@ import { Download, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { importDashboardRouters, listDashboardImports } from "../../api/commands";
 import { Button } from "../../components/ui/inputs";
+import { capabilities } from "../../platform";
 import { useToastStore } from "../../store/toast";
 
 const DISMISSED_KEY = "maker.dashboardImportDismissed";
@@ -28,6 +29,8 @@ export function DashboardImport({ onImported }: { onImported: () => void }) {
   const pushToast = useToastStore((state) => state.push);
 
   useEffect(() => {
+    // Asking a host that never registered the command is a guaranteed 404 on every mount.
+    if (!capabilities.localDashboardImport) return;
     void (async () => {
       try {
         const dismissed = loadDismissed();

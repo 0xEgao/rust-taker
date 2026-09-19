@@ -69,6 +69,10 @@ pub struct BackendStatus {
     pub reachable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Why it failed, structured. The message alone cannot be branched on, so without this
+    /// the gate could not tell a rejected password from a node that is simply down.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::error::ErrorCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +147,20 @@ pub struct InitConfig {
 pub struct InitResult {
     pub wallet_name: String,
     pub data_dir: String,
+}
+
+/// Whether a wallet is open, asked on every page load.
+///
+/// Separate from `WalletInfo` because "nothing is open" is the ordinary answer here, not a
+/// failure: a reload replaces the page but not the process, so the frontend has to ask what
+/// the process is already holding. Reporting that as an error would make a normal startup log
+/// a failed request in the browser console, every single time.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStateDto {
+    pub initialized: bool,
+    pub wallet_name: Option<String>,
+    pub data_dir: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -513,6 +531,11 @@ pub struct RecoveryContractDto {
     /// Blocks still to wait. Timelock contracts only; `None` means nothing left to wait for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks_remaining: Option<u32>,
+    /// The refund delay in full. Sent alongside the remainder so the UI can say how far
+    /// through the wait this is rather than only how much is left — "~60 blocks" with no
+    /// denominator reads the same on the first block as on the last.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_blocks: Option<u32>,
 }
 
 /// A contract the recovery loop has already spent back, as the tracker recorded it.
@@ -778,6 +801,23 @@ pub enum MakerPhase {
     },
 }
 
+/// Where this host keeps wallet data. The frontend must not derive these itself: the default
+/// comes from the crate and the active one may have been chosen by the user.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathsDto {
+    pub data_dir: String,
+    pub wallets_dir: String,
+}
+
+/// Emitted when the crate moves a failed swap into recovery rather than aborting it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryHandoff {
+    pub swap_id: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MakerPhaseEvent {
@@ -866,4 +906,34 @@ pub struct MakerSwapReportDetail {
 #[serde(rename_all = "camelCase")]
 pub struct LogLine {
     pub line: String,
+}
+
+/// Seeded on every launch and held in memory only: an edit is deliberately forgotten so a
+/// node's RPC password is never at rest.
+const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.citadelfoss.xyz:50002";
+const DEFAULT_NODE_HOST: &str = "127.0.0.1";
+const DEFAULT_NODE_RPC_PORT: u16 = 38332;
+const DEFAULT_NODE_ZMQ_PORT: u16 = 28332;
+const DEFAULT_NODE_USERNAME: &str = "user";
+const DEFAULT_NODE_PASSWORD: &str = "password";
+
+impl Default for ChainBackendConfig {
+    fn default() -> Self {
+        Self {
+            kind: ChainBackendKind::Electrum,
+            electrum: ElectrumBackendDto {
+                url: DEFAULT_ELECTRUM_URL.to_string(),
+                use_tor: false,
+            },
+            // Prefilled rather than `None` so the gate can show the standard node fields
+            // without the UI having to carry its own copy of the defaults.
+            node: Some(NodeBackendDto {
+                host: DEFAULT_NODE_HOST.to_string(),
+                port: DEFAULT_NODE_RPC_PORT,
+                username: DEFAULT_NODE_USERNAME.to_string(),
+                password: DEFAULT_NODE_PASSWORD.to_string(),
+                zmq_port: DEFAULT_NODE_ZMQ_PORT,
+            }),
+        }
+    }
 }

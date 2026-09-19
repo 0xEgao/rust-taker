@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./transport";
 import type {
   SwapPreparation,
   AddressType,
@@ -21,11 +21,11 @@ import type {
   NewAddress,
   OfferBookView,
   Outpoint,
+  Paths,
   PriceEstimate,
   ProtocolVersion,
   RecoveryStatus,
   RecoverySummary,
-  RestoreSelection,
   SendResult,
   SwapFundingEstimate,
   SwapProgress,
@@ -39,6 +39,7 @@ import type {
   TorStatus,
   TxSummary,
   UtxoEntry,
+  SessionState,
   WalletInfo,
 } from "./types";
 
@@ -84,6 +85,22 @@ export function initWallet(config: InitConfig): Promise<InitResult> {
   return invoke("init_taker", { config });
 }
 
+/** Releases the wallet so a different one can be unlocked, without stopping Portal. Refused
+ *  while a swap is running; routers keep running either way. */
+export function lockWallet(): Promise<void> {
+  return invoke("shutdown_taker");
+}
+
+/** Where this host keeps wallet data. Never derived in the frontend: only the backend knows
+ *  the crate's default and whether the session already points somewhere else. */
+export function getPaths(): Promise<Paths> {
+  return invoke("get_paths");
+}
+
+export function getSessionState(): Promise<SessionState> {
+  return invoke("get_session_state");
+}
+
 export function getWalletInfo(): Promise<WalletInfo> {
   return invoke("get_wallet_info");
 }
@@ -102,10 +119,6 @@ export function restoreWallet(
     selectionId,
     password,
   });
-}
-
-export function chooseRestoreBackup(): Promise<RestoreSelection> {
-  return invoke("choose_restore_backup");
 }
 
 export function backupWallet(

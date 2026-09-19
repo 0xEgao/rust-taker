@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use log4rs::append::console::ConsoleAppender;
@@ -15,10 +16,15 @@ use log4rs::append::rolling_file::policy::compound::CompoundPolicy;
 use log4rs::append::rolling_file::RollingFileAppender;
 use log4rs::config::{Appender, Config, Logger, Root};
 use log4rs::Handle;
-use tauri::Emitter;
+
+use crate::events::{AppEvent, EventSink, InitPhase};
 
 static HANDLE: OnceLock<Handle> = OnceLock::new();
 static TAKER_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Whether the root logger is currently writing to the file rather than falling back to the
+/// console. A host that silences stdout must not do so while this is false, or an unopenable
+/// log file would mean no diagnostics anywhere at all.
+static LOGS_TO_FILE: AtomicBool = AtomicBool::new(false);
 static MAKERS: OnceLock<Mutex<HashMap<String, MakerLogTarget>>> = OnceLock::new();
 static MAKER_WRITE: Mutex<()> = Mutex::new(());
 
@@ -60,7 +66,7 @@ fn redact_token(line: &mut String, marker: &str) {
     }
 }
 
-pub fn redact_line(line: &str) -> String {
+fn redact_line(line: &str) -> String {
     let mut redacted = line.to_string();
     for marker in ["xprv", "tprv", "password=", "password:", "AUTHENTICATE "] {
         redact_token(&mut redacted, marker);
@@ -181,13 +187,6 @@ const INIT_PHASE_NOTES: &[(&str, Option<&str>)] = &[
     ),
 ];
 
-/// The phase `Taker::init` has reached, and any note to show beneath that step.
-#[derive(Clone, Copy, PartialEq, serde::Serialize)]
-struct InitPhase {
-    phase: u8,
-    note: Option<&'static str>,
-}
-
 impl InitPhase {
     /// Folds one crate log line in, reporting whether it moved. Phases only ever advance: the
     /// recovery pass re-logs lines the earlier phases also emit, and those must not walk the
@@ -215,23 +214,23 @@ impl InitPhase {
 }
 
 struct InitPhaseWatch {
-    app: tauri::AppHandle,
+    sink: EventSink,
     at: InitPhase,
 }
 
 static INIT_PHASE: Mutex<Option<InitPhaseWatch>> = Mutex::new(None);
 
-/// Report `Taker::init`'s phase to the webview until [`stop_watching_init_phases`].
-pub fn watch_init_phases(app: tauri::AppHandle) {
+/// Report `Taker::init`'s phase through `sink` until [`stop_watching_init_phases`].
+pub fn watch_init_phases(sink: EventSink) {
     // Phase 0 is announced here rather than by a marker: it begins when `Taker::init` is
     // called, and a restore needs that edge to know its own step has finished.
     let at = InitPhase {
         phase: 0,
         note: None,
     };
-    let _ = app.emit("wallet://init-phase", at);
+    sink.publish(AppEvent::WalletInitPhase(at));
     if let Ok(mut guard) = INIT_PHASE.lock() {
-        *guard = Some(InitPhaseWatch { app, at });
+        *guard = Some(InitPhaseWatch { sink, at });
     }
 }
 
@@ -259,7 +258,7 @@ impl log::Log for InitPhaseWatcher {
             return;
         };
         if watch.at.advance(&record.args().to_string()) {
-            let _ = watch.app.emit("wallet://init-phase", watch.at);
+            watch.sink.publish(AppEvent::WalletInitPhase(watch.at));
         }
     }
 
@@ -282,6 +281,14 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
 
     builder
         .logger(Logger::builder().build("bitcoincore_rpc", log::LevelFilter::Off))
+        // The watchtower re-announces the same handful of txids to every relay on every pass,
+        // at Info: in one short session on an empty wallet that was 293 of 390 lines, 270 of
+        // them three messages repeated ninety times each. Warn keeps the relay failures, which
+        // are the only part anyone reads, and leaves the file usable for everything else.
+        .logger(Logger::builder().build(
+            "openswap::watch_tower::nostr",
+            log::LevelFilter::Warn,
+        ))
         .logger(
             Logger::builder()
                 .appender("maker_router")
@@ -298,12 +305,25 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
 }
 
 fn rebuild() {
-    let config = build_config(TAKER_DIR.lock().unwrap().as_ref());
+    let dir = TAKER_DIR.lock().unwrap().clone();
+    let to_file = dir.as_ref().is_some_and(|d| file_appender(d).is_some());
+    let config = build_config(dir.as_ref());
+    // Set only once a logger is actually installed. A host reads this to decide whether it
+    // may silence stdout, and claiming the file is taking the output when installation
+    // failed would leave the diagnostics nowhere at all.
     if let Some(handle) = HANDLE.get() {
         handle.set_config(config);
+        LOGS_TO_FILE.store(to_file, Ordering::SeqCst);
     } else if let Ok(handle) = log4rs::init_config(config) {
         let _ = HANDLE.set(handle);
+        LOGS_TO_FILE.store(to_file, Ordering::SeqCst);
     }
+}
+
+/// True when the log file is open and taking the root logger's output, so the console is
+/// carrying nothing that would be lost by silencing it.
+pub fn logs_to_file() -> bool {
+    LOGS_TO_FILE.load(Ordering::SeqCst)
 }
 
 pub fn set_taker_dir(dir: PathBuf) {
@@ -362,7 +382,7 @@ pub fn tail_lines(path: &Path, want: usize) -> std::io::Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_line, MakerLogRouter};
+    use super::{redact_line, InitPhase, MakerLogRouter};
 
     #[test]
     fn extracts_leading_bracketed_port() {
@@ -377,11 +397,11 @@ mod tests {
     /// re-emits wallet lines the earlier phases already matched.
     #[test]
     fn init_phases_advance_over_a_real_startup() {
-        let mut at = super::InitPhase {
+        let mut at = InitPhase {
             phase: 0,
             note: None,
         };
-        let seen = |at: &mut super::InitPhase, line: &str| {
+        let seen = |at: &mut InitPhase, line: &str| {
             at.advance(line);
             (at.phase, at.note)
         };
@@ -421,7 +441,7 @@ mod tests {
             "Waiting for 1 confirmation(s) on 1 transaction(s)...",
         );
         assert_eq!(phase, 4);
-        assert!(note.is_some_and(|note| note.contains("waiting for a block")));
+        assert!(note.is_some_and(|note: &str| note.contains("waiting for a block")));
         // The recovery pass re-logs a wallet line from an earlier phase; nothing may rewind.
         assert_eq!(seen(&mut at, "Sync Started for \"w\""), (phase, note));
     }
