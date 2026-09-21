@@ -390,15 +390,19 @@ fn default_router_count() -> usize {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapFundingEstimateDto {
+    /// The next three are totals across the planned funding split: the crate funds our own
+    /// hop from up to `tx_count` transactions, not one.
     pub input_count: usize,
     pub vbytes: u64,
     pub fee_sats: u64,
-    /// The crate's `MIN_FEE_RATE`, which both protocols hand to `create_funding_txes` and use
-    /// as the contract feerate. Reported because it is fixed: `SwapParams` has no field for it,
-    /// so a swap cannot be sped up or slowed down by paying more.
+    /// The swap feerate every transaction in the route is priced at. Reported because it is
+    /// the `SwapParams` default and nothing here overrides it, so a swap cannot be sped up or
+    /// slowed down by paying more.
     pub fee_rate_sats_per_vb: f64,
+    /// Ceiling on what one router deducts for miner fees: its funding splits at the full input
+    /// budget plus one cooperative claim per contract. The settled cost can only come in lower.
     pub route_mining_fee_per_router_sats: u64,
-    /// Fee for the final incoming-contract claim; not a full swap fee total.
+    /// Fee to claim the incoming contracts at the end; not a full swap fee total.
     pub sweep_fee_sats: u64,
 }
 
@@ -421,8 +425,10 @@ pub struct SwapSummaryDto {
     pub protocol: String,
     pub send_amount_sats: u64,
     pub routers: Vec<RouterFeeInfoDto>,
-    /// Estimated router fees plus route mining fees and the final sweep fee.
+    /// Ceiling: router fees, every hop's funding and sweep reimbursement at its negotiated
+    /// maximum, and the taker's own funding tx. The settled cost can only come in under it.
     pub total_estimated_fee_sats: u64,
+    /// What the taker gets back if every cost hits its ceiling, so a floor, not a forecast.
     pub estimated_receive_amount_sats: u64,
 }
 
@@ -496,6 +502,15 @@ pub struct SwapTrackerDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
     pub routers: Vec<RouterProgressDto>,
+    /// Contract transactions recorded so far on each kind of leg. A hop is funded by up to
+    /// `tx_count` splits rather than one transaction, so these are how many strands a leg
+    /// actually carries, and they fill in as the swap records each txid.
+    ///
+    /// `watchonly` covers every leg between two routers as one flat list — the crate keeps no
+    /// per-hop grouping — so it only attributes to a leg when it divides evenly across them.
+    pub outgoing_contract_count: usize,
+    pub incoming_contract_count: usize,
+    pub watchonly_contract_count: usize,
 }
 
 /// How far `prepare_swap` has got, for a progress readout while it blocks.
@@ -625,8 +640,8 @@ pub struct SwapReportSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_timestamp: Option<u64>,
     pub outgoing_amount_sats: u64,
-    /// outgoing_amount_sats - fee_paid_sats — the crate's own incoming_amount can be inconsistent
-    /// for non-Success outcomes, so this is derived here rather than passed through.
+    /// What actually landed back in the wallet, measured on-chain — not an estimate. See
+    /// `received_sats` in `ops::taker_reports` for the one case that still has to be derived.
     pub received_amount_sats: u64,
     pub fee_paid_sats: u64,
     pub routers_count: usize,
@@ -666,7 +681,7 @@ pub struct SwapReportDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub outgoing_amount_sats: u64,
-    /// outgoing_amount_sats - fee_paid_sats — see the same field's doc on `SwapReportSummary`.
+    /// See the same field's doc on `SwapReportSummary`.
     pub received_amount_sats: u64,
     pub fee_paid_sats: u64,
     pub mining_fee_sats: u64,

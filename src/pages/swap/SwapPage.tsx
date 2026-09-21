@@ -782,12 +782,6 @@ export function SwapPage() {
               </div>
             </div>
 
-            {phase === "finished" && summary && (
-              <AmountTile label="Received">
-                <SatsAmount sats={summary.estimatedReceiveAmountSats} />
-              </AmountTile>
-            )}
-
             {phase === "failed" && (
               <div className="flex flex-col gap-2.5 rounded-control border border-danger/35 bg-danger/[0.06] px-3.5 py-3">
                 <div className="flex items-start gap-2 text-[12px] text-danger">
@@ -1240,13 +1234,13 @@ export function SwapPage() {
                 </strong>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Funding tx size</span>
+                <span className="text-subtle">Funding size</span>
                 <strong className="font-mono text-foreground">
                   {fundingEstimate ? `${fundingEstimate.vbytes} vB` : "—"}
                 </strong>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Funding tx fee</span>
+                <span className="text-subtle">Funding fee</span>
                 <EstimatedSats
                   sats={feeSummary.fundingFee}
                   className="font-semibold text-foreground"
@@ -1255,7 +1249,9 @@ export function SwapPage() {
             </div>
 
             {/* The three rows below the divider are what comes out of the amount, so they read
-                straight down into "You receive"; the funding fee sits above it with its own tx. */}
+                straight down into "You receive"; the funding fee sits above it with its own tx.
+                Every one is the ceiling the crate quotes — routers billed at the full input
+                budget on every split — so the settled cost can only come in under it. */}
             <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-3 text-[12px]">
               <div className="flex items-center justify-between">
                 <span className="text-subtle">Router fees</span>
@@ -1279,7 +1275,7 @@ export function SwapPage() {
                 />
               </div>
               <div className="flex items-center justify-between border-t border-line pt-1.5">
-                <span className="text-subtle">Total cost</span>
+                <span className="text-subtle">Max total cost</span>
                 <EstimatedSats
                   sats={feeSummary.totalFee}
                   className="font-bold text-primary"
@@ -1287,7 +1283,7 @@ export function SwapPage() {
               </div>
             </div>
 
-            <AmountTile label="You receive">
+            <AmountTile label="You receive at least">
               <EstimatedSats
                 sats={feeSummary.receiveAmount}
                 className="text-success"

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Globe, KeyRound, Wallet } from "lucide-react";
 
-import { buildCircuit, labelAnchor, type CircuitGeometry } from "./geometry";
+import { buildCircuit, edgeStrands, labelAnchor, type CircuitGeometry } from "./geometry";
 import {
   ACT_LABEL,
   EDGE_STAGE_LABEL,
@@ -148,12 +148,15 @@ function CircuitEdge({
   const flowing = view.stage === "broadcast";
   const confirming = view.stage === "confirming";
   const label = labelAnchor(edge, geo.tier === "A" ? 30 : 18);
+  const strands = edgeStrands(geo, edge, view.contractCount);
 
   return (
     <g
       tabIndex={0}
       role="button"
-      aria-label={`Contract leg ${edge.index + 1}: ${EDGE_STAGE_LABEL[view.stage]}`}
+      aria-label={`Contract leg ${edge.index + 1}: ${EDGE_STAGE_LABEL[view.stage]}${
+        strands.length > 1 ? `, ${strands.length} transactions` : ""
+      }`}
       onMouseEnter={() => onHover?.({ kind: "edge", index: edge.index })}
       onMouseLeave={() => onHover?.(null)}
       onFocus={() => onHover?.({ kind: "edge", index: edge.index })}
@@ -168,31 +171,42 @@ function CircuitEdge({
       style={{ pointerEvents: "stroke", cursor: "pointer" }}
     >
       {/* Invisible fat stroke so the thin arc is actually hoverable. */}
-      <path d={edge.d} fill="none" stroke="transparent" strokeWidth={18} />
-      <motion.path
-        d={edge.d}
-        fill="none"
-        stroke={STROKE[view.tone]}
-        strokeWidth={2.5}
-        strokeLinecap="round"
-        // Analytic length from geometry.ts — never pathLength, which measures in JS and emits
-        // px dash values that WKWebView scales wrong.
-        strokeDasharray={flowing || confirming ? undefined : edge.length}
-        initial={reduceMotion ? false : { strokeDashoffset: edge.length }}
-        animate={{ strokeDashoffset: 0, opacity: view.stage === "pending" ? 0.35 : 1 }}
-        transition={
-          reduceMotion
-            ? { duration: 0 }
-            : { duration: 0.55, delay: edge.index * 0.05, ease: [0.16, 1, 0.3, 1] }
-        }
-        className={
-          flowing ? "circuit-edge-flowing" : confirming ? "circuit-edge-confirming" : undefined
-        }
-      />
+      <path d={edge.d} fill="none" stroke="transparent" strokeWidth={18 + (strands.length - 1) * 5} />
+      {strands.map((strand, i) => (
+        <motion.path
+          key={i}
+          d={strand.d}
+          fill="none"
+          stroke={STROKE[view.tone]}
+          // Split strands thin out so a pair reads as one leg carrying two txs rather than
+          // as two legs.
+          strokeWidth={strands.length > 1 ? 1.75 : 2.5}
+          strokeLinecap="round"
+          // Analytic length from geometry.ts — never pathLength, which measures in JS and emits
+          // px dash values that WKWebView scales wrong.
+          strokeDasharray={flowing || confirming ? undefined : strand.length}
+          initial={reduceMotion ? false : { strokeDashoffset: strand.length }}
+          animate={{ strokeDashoffset: 0, opacity: view.stage === "pending" ? 0.35 : 1 }}
+          // Strands are staggered so the eye counts them as they draw; without it a pair of
+          // parallel arcs animating in lockstep just looks like one thick stroke.
+          transition={
+            reduceMotion
+              ? { duration: 0 }
+              : { duration: 0.55, delay: edge.index * 0.05 + i * 0.12, ease: [0.16, 1, 0.3, 1] }
+          }
+          className={
+            flowing ? "circuit-edge-flowing" : confirming ? "circuit-edge-confirming" : undefined
+          }
+        />
+      ))}
       {geo.tier === "A" && (
         <EdgeLabel x={label.x} y={label.y} view={view} />
       )}
-      {view.stage === "confirmed" && !reduceMotion && <CoinToken d={edge.d} tone={view.tone} />}
+      {view.stage === "confirmed" &&
+        !reduceMotion &&
+        strands.map((strand, i) => (
+          <CoinToken key={i} d={strand.d} tone={view.tone} delay={i * 0.35} />
+        ))}
     </g>
   );
 }
@@ -217,6 +231,9 @@ function EdgeLabel({ x, y, view }: { x: number; y: number; view: EdgeView }) {
           style={{ font: "500 9px var(--font-numeric)" }}
         >
           {view.amountSats.toLocaleString()}
+          {/* The strands themselves are deliberately thin, so the count is spelled out too
+              rather than left to be read off the stroke. */}
+          {view.contractCount > 1 && ` ×${view.contractCount}`}
         </text>
       )}
       {badge && (
@@ -235,7 +252,7 @@ function EdgeLabel({ x, y, view }: { x: number; y: number; view: EdgeView }) {
 }
 
 /** One shot on confirmation — the value actually moving to the next hop. */
-function CoinToken({ d, tone }: { d: string; tone: Tone }) {
+function CoinToken({ d, tone, delay = 0 }: { d: string; tone: Tone; delay?: number }) {
   return (
     <motion.circle
       r={4}
@@ -243,7 +260,7 @@ function CoinToken({ d, tone }: { d: string; tone: Tone }) {
       style={{ offsetPath: `path("${d}")`, offsetRotate: "0deg" }}
       initial={{ offsetDistance: "0%", opacity: 0 }}
       animate={{ offsetDistance: "100%", opacity: [0, 1, 1, 0] }}
-      transition={{ duration: 0.9, ease: "easeInOut" }}
+      transition={{ duration: 0.9, delay, ease: "easeInOut" }}
     />
   );
 }
@@ -540,6 +557,9 @@ function EdgeBody({ edge, view }: { edge: EdgeView; view: CircuitView }) {
           <Row label="Amount" value={`${edge.amountSats.toLocaleString()} sats`} />
         )}
         <Row label="Status" value={EDGE_STAGE_LABEL[edge.stage]} />
+        {edge.contractCount > 1 && (
+          <Row label="Split over" value={`${edge.contractCount} transactions`} />
+        )}
         {edge.confirmedHeight !== undefined && (
           <Row label="Block" value={edge.confirmedHeight.toLocaleString()} />
         )}
@@ -548,7 +568,10 @@ function EdgeBody({ edge, view }: { edge: EdgeView; view: CircuitView }) {
         )}
       </div>
       <Sub>
-        {edge.txid ?? "Transaction id appears once the backend reports it"}
+        {edge.txid ??
+          (edge.contractCount > 1
+            ? "Transaction ids appear once the backend reports them"
+            : "Transaction id appears once the backend reports it")}
       </Sub>
     </>
   );

@@ -57,8 +57,8 @@ export const STAGE_LABEL: Record<RouterStage, string> = {
  */
 const PHASE_DOING: Record<TrackerPhase, string> = {
   routers_discovered: "Negotiating terms with the routers",
-  negotiated: "Building your funding transaction",
-  funding_created: "Broadcasting your funding transaction",
+  negotiated: "Building your funding transactions",
+  funding_created: "Broadcasting your funding transactions",
   funds_broadcast: "Routing your funds into the first contract",
   contracts_exchanged: "Waiting for the routed contracts to confirm",
   finalizing: "Exchanging private keys around the route",
@@ -103,6 +103,8 @@ export interface EdgeView {
   amountSats?: number;
   /** From `RouterFeeInfo.locktime` — the refund window on this contract, in blocks. */
   locktimeBlocks?: number;
+  /** Contract transactions on this leg. A hop may be funded by several splits, not one tx. */
+  contractCount: number;
   txid?: string;
   confirmedHeight?: number;
 }
@@ -221,6 +223,24 @@ export function useSwapCircuit(
               : "idle";
     });
 
+    // How many contract txs each leg carries. Only the two legs touching the wallet are
+    // recorded per-leg; everything between two routers arrives as one flat list, so it can
+    // only be attributed when it divides evenly across those legs. Until a leg's txids are
+    // recorded its count reads 0, and one strand stands in for the unknown.
+    const betweenRouters = Math.max(0, routerCount - 1);
+    const watchonly = tracker?.watchonlyContractCount ?? 0;
+    const perIntermediate =
+      betweenRouters > 0 && watchonly % betweenRouters === 0 ? watchonly / betweenRouters : 0;
+    const contractCountFor = (index: number) =>
+      Math.max(
+        1,
+        index === 0
+          ? (tracker?.outgoingContractCount ?? 0)
+          : index === routerCount
+            ? (tracker?.incomingContractCount ?? 0)
+            : perIntermediate,
+      );
+
     // Edge k carries the value leaving slot k. Amounts descend as each router takes its fee.
     let running = summary?.sendAmountSats ?? tracker?.sendAmountSats;
     const edges: EdgeView[] = Array.from({ length: routerCount + 1 }, (_, index) => {
@@ -255,6 +275,7 @@ export function useSwapCircuit(
         tone,
         amountSats,
         locktimeBlocks: index === 0 ? undefined : summary?.routers[index - 1]?.locktime,
+        contractCount: contractCountFor(index),
       };
     });
 

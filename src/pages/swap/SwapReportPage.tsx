@@ -355,6 +355,13 @@ export function SwapReportPage() {
             </span>
             <SatsAmount sats={report.outgoingAmountSats} glyphScale={0.5} className="my-4 text-[clamp(38px,6vw,58px)] leading-none text-foreground" />
             <p className="mb-6 font-mono text-[14px] text-muted">≈ {satsToBtc(report.outgoingAmountSats)} BTC</p>
+            {/* The settled figure, measured on-chain. The swap screen can only ever quote the
+                pre-swap ceiling, so this is the first place the real number exists. */}
+            {!isFailure && report.receivedAmountSats > 0 && (
+              <p className="-mt-3 mb-6 font-mono text-[13px] text-subtle">
+                <SatsAmount sats={report.receivedAmountSats} className="text-success" /> received
+              </p>
+            )}
             <div className="flex flex-wrap items-center justify-center gap-2.5">
               <span className="inline-flex items-center gap-2 rounded-full border border-primary/45 bg-primary/[0.12] px-4.5 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-primary-hover">
                 <Timer size={15} strokeWidth={1.8} />

@@ -61,10 +61,15 @@ export function NowPanel({ view }: { view: CircuitView }) {
       {edge && (
         <p className="font-mono text-[11px] text-foreground">
           {edge.index === 0
-            ? "Your funding transaction"
+            ? `Your funding transaction${edge.contractCount > 1 ? "s" : ""}`
             : edge.index === view.routerCount
-              ? `Router ${edge.index}'s contract — the one that pays you`
+              ? `Router ${edge.index}'s contract${
+                  edge.contractCount > 1 ? "s" : ""
+                } — the one${edge.contractCount > 1 ? "s" : ""} that pay${
+                  edge.contractCount > 1 ? "" : "s"
+                } you`
               : `Router ${edge.index} → Router ${edge.index + 1}`}
+          {edge.contractCount > 1 && ` · ${edge.contractCount} splits`}
           {" · "}
           {EDGE_STAGE_LABEL[edge.stage]}
           {edge.amountSats !== undefined && ` · ${edge.amountSats.toLocaleString()} sats`}
