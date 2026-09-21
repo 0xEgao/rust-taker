@@ -64,6 +64,19 @@ pub(crate) fn to_report_utxos(utxos: Vec<openswap::wallet::ReportUtxo>) -> Vec<R
         .collect()
 }
 
+/// What the wallet actually got back, in sats.
+///
+/// `incoming_amount` is the swept total the crate measured on-chain, so it is the real figure
+/// wherever it exists. It is absent on a PaySwap (the receiver was paid, nothing came back) and
+/// on reports written before upstream #1015 fixed the fee accounting, hence the fallback.
+fn received_sats(r: &TakerReport) -> u64 {
+    if r.incoming_amount > 0 {
+        r.incoming_amount
+    } else {
+        r.outgoing_amount.saturating_sub(r.fee_paid)
+    }
+}
+
 fn resolve_report_path(state: &Arc<AppState>) -> Result<PathBuf, AppError> {
     let data_dir = state
         .data_dir
@@ -177,7 +190,7 @@ pub async fn list_swap_reports(
             start_timestamp: r.start_timestamp,
             end_timestamp: Some(r.end_timestamp),
             outgoing_amount_sats: r.outgoing_amount,
-            received_amount_sats: r.outgoing_amount.saturating_sub(r.fee_paid),
+            received_amount_sats: received_sats(r),
             fee_paid_sats: r.fee_paid,
             routers_count: r.makers_count,
         })
@@ -242,6 +255,7 @@ pub async fn get_swap_report(
             )
         })?;
 
+    let received_amount_sats = received_sats(&r);
     let router_fee_info = r
         .maker_fee_info
         .into_iter()
@@ -284,7 +298,7 @@ pub async fn get_swap_report(
         end_timestamp: r.end_timestamp,
         error_message: r.error_message,
         outgoing_amount_sats: r.outgoing_amount,
-        received_amount_sats: r.outgoing_amount.saturating_sub(r.fee_paid),
+        received_amount_sats,
         fee_paid_sats: r.fee_paid,
         mining_fee_sats: r.mining_fee,
         fee_percentage: r.fee_percentage,

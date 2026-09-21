@@ -373,13 +373,15 @@ export interface SwapRequest {
 }
 
 export interface SwapFundingEstimate {
+  /** The next three are totals across the wallet's funding split, which may be several txs. */
   inputCount: number;
   vbytes: number;
   feeSats: number;
-  /** Fixed by the protocol — the same rate funds the route and signs every contract. */
+  /** Agreed once for the whole swap — the same rate funds the route and signs every contract. */
   feeRateSatsPerVb: number;
+  /** Ceiling: a router's funding splits at the full input budget plus one claim per contract. */
   routeMiningFeePerRouterSats: number;
-  /** Claiming the incoming contract at the end of the swap; depends on the protocol. */
+  /** Claiming the incoming contracts at the end of the swap; depends on the protocol. */
   sweepFeeSats: number;
 }
 
@@ -398,8 +400,10 @@ export interface SwapSummary {
   protocol: string;
   sendAmountSats: number;
   routers: RouterFeeInfo[];
-  /** Router fees plus route mining fees and the final incoming-contract sweep. */
+  /** Ceiling: router fees, every hop's funding and sweep reimbursement at its negotiated
+   * maximum, and the wallet's own funding tx. The settled cost can only come in under it. */
   totalEstimatedFeeSats: number;
+  /** What the wallet gets back if every cost hits its ceiling, so a floor, not a forecast. */
   estimatedReceiveAmountSats: number;
 }
 
@@ -456,6 +460,14 @@ export interface SwapTrackerProgress {
   routerCount: number;
   failureReason?: string;
   routers: RouterProgress[];
+  /**
+   * Contract transactions recorded so far on each kind of leg — a hop is funded by up to
+   * `txCount` splits, not one transaction, and these fill in as each txid is recorded.
+   * `watchonly` is one flat list across every router-to-router leg, with no per-hop grouping.
+   */
+  outgoingContractCount: number;
+  incomingContractCount: number;
+  watchonlyContractCount: number;
 }
 
 /** How far a blocking `prepareSwap` has got, read off the crate's own tracker file. */

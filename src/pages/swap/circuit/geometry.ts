@@ -26,6 +26,9 @@ export interface CircuitEdgeGeometry {
   label: Point;
   /** Outward unit normal at the midpoint, so labels push away from the centre. */
   normal: Point;
+  /** Kept so `edgeStrands` can redraw the same span on a wider or narrower circle. */
+  fromAngle: number;
+  toAngle: number;
 }
 
 export interface CircuitSlotGeometry {
@@ -151,6 +154,8 @@ export function buildCircuit(routerCount: number, size: number): CircuitGeometry
       length: radius * (toAngle - fromAngle),
       label: pointOnCircle(center, radius, midAngle),
       normal: { x: Math.cos(midAngle), y: Math.sin(midAngle) },
+      fromAngle,
+      toAngle,
     };
   });
 
@@ -168,6 +173,35 @@ export function buildCircuit(routerCount: number, size: number): CircuitGeometry
     walletWidth: wallet.width,
     walletHeight: wallet.height,
   };
+}
+
+/** Gap between two strands of a split leg, in px of radius. */
+const STRAND_GAP = 5;
+
+/**
+ * One arc per contract transaction on a leg, drawn as concentric strands centred on the ring.
+ * A hop funded by two splits is two transactions, and one stroke would say it was one.
+ *
+ * Each strand is a true arc of its own circle rather than an offset copy of the base path, so
+ * its length stays analytic — see this file's header for why that matters in WKWebView.
+ */
+export function edgeStrands(
+  geo: CircuitGeometry,
+  edge: CircuitEdgeGeometry,
+  count: number,
+): { d: string; length: number }[] {
+  const strands = Math.max(1, count);
+  return Array.from({ length: strands }, (_, i) => {
+    const radius = geo.radius + (i - (strands - 1) / 2) * STRAND_GAP;
+    return {
+      d: arc(
+        pointOnCircle(geo.center, radius, edge.fromAngle),
+        pointOnCircle(geo.center, radius, edge.toAngle),
+        radius,
+      ),
+      length: radius * (edge.toAngle - edge.fromAngle),
+    };
+  });
 }
 
 /** Where a label should sit so it clears the ring rather than overlapping the stroke. */

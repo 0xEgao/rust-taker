@@ -17,8 +17,8 @@ use openswap::taker::swap_tracker::{
     RecoveryPhase, SwapPhase, SwapRecord, SwapTracker, TaprootExchangeProgress,
 };
 use openswap::taker::{SwapParams, SwapSummary};
-use openswap::utill::{estimate_funding_tx_fee_sats, MIN_FEE_RATE};
-use openswap::wallet::{AddressType, UTXOSpendInfo};
+use openswap::utill::{funding_fee_policy_sats, sweep_fee_policy_sats};
+use openswap::wallet::UTXOSpendInfo;
 use crate::events::AppEvent;
 
 use crate::error::{AppError, ErrorCode};
@@ -187,19 +187,20 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
         router_count: r.maker_count,
         failure_reason: r.failure_reason.clone(),
         routers,
+        outgoing_contract_count: r.outgoing_contract_txids.len(),
+        incoming_contract_count: r.incoming_contract_txids.len(),
+        watchonly_contract_count: r.watchonly_contract_txids.len(),
     }
 }
 
-/// Mirrors `contract_and_timelock_vsize(_, ContractSpend { cooperative: true })`, which is
-/// `pub(crate)` along with its size constants. Cooperative is the success path — the
-/// script-path sizes only apply to hashlock recovery, which a quote isn't describing.
-const TAPROOT_SWEEP_VBYTES: u64 = 112;
-const LEGACY_SWEEP_VBYTES: u64 = 150;
-
-/// Quote every on-chain cost the taker bears directly: the initial funding transaction (same
-/// wallet coin selection and fixed protocol fee rate the swap itself uses), the per-hop mining
-/// fee each maker deducts from the routed amount, and the sweep that claims the incoming
-/// contract at the end.
+/// Quote every on-chain cost the taker bears directly: our own funding transactions, the
+/// per-hop mining fee each maker deducts from the routed amount, and the sweep that claims
+/// the incoming contracts at the end.
+///
+/// Every route figure is the ceiling `prepare_swap` will quote — the crate prices a hop at the
+/// full `max_input_budget` on every one of `tx_count` splits — so the settled cost can only
+/// come in under it. The fee rate, split count and input budget all come from `SwapParams`
+/// rather than being restated here, since `prepare_swap` sends it the same defaults.
 pub async fn estimate_swap_funding(
     state: &Arc<AppState>,
     amount_sats: u64,
@@ -207,10 +208,12 @@ pub async fn estimate_swap_funding(
     outpoints: Option<Vec<crate::types::Outpoint>>,
 ) -> Result<SwapFundingEstimateDto, AppError> {
     let wallet = get_wallet_handle(state)?;
-    let sweep_vbytes = match protocol {
-        ProtocolVersionDto::Taproot => TAPROOT_SWEEP_VBYTES,
-        ProtocolVersionDto::Legacy => LEGACY_SWEEP_VBYTES,
+    let protocol = match protocol {
+        ProtocolVersionDto::Legacy => ProtocolVersion::Legacy,
+        ProtocolVersionDto::Taproot => ProtocolVersion::Taproot,
     };
+    // Only the fee defaults are read off this; the hop count never reaches a quote.
+    let params = SwapParams::new(protocol, Amount::from_sat(amount_sats), 2);
     let outpoints = outpoints
         .map(|items| {
             items
@@ -225,37 +228,58 @@ pub async fn estimate_swap_funding(
         .transpose()?;
 
     tokio::task::spawn_blocking(move || -> Result<SwapFundingEstimateDto, AppError> {
-        let wallet = wallet.read()?;
-        let selected = wallet.coin_select(
+        let feerate = params.feerate as f64;
+        let price_err = || AppError::internal("fee policy price overflow");
+        // Each split is billed at the full input budget, and each of the hop's contracts costs
+        // the maker one cooperative claim: the same two prices `prepare_swap` sums per hop.
+        let split_funding_sats = funding_fee_policy_sats(
+            params.max_input_budget as usize,
+            params.max_input_budget,
+            feerate,
+        )
+        .ok_or_else(price_err)?;
+        let sweep_per_contract_sats =
+            sweep_fee_policy_sats(params.protocol, feerate).ok_or_else(price_err)?;
+        let route_mining_fee_per_router_sats = params.tx_count as u64
+            * split_funding_sats
+                .checked_add(sweep_per_contract_sats)
+                .ok_or_else(price_err)?;
+
+        // The very plan `prepare_swap` will replay: our own hop pays its fee on top of the
+        // amount, so it runs with no input budget and no over-budget guard.
+        let splits = wallet.read()?.plan_funding(
             Amount::from_sat(amount_sats),
-            MIN_FEE_RATE,
-            AddressType::P2TR,
+            params.tx_count,
+            feerate,
+            u32::MAX,
+            None,
             outpoints,
             None,
         )?;
 
-        // Exact weight constants used by Wallet::coin_select: base transaction,
-        // selected inputs, one P2TR swap output, and one P2TR change output.
-        const BASE_TX_WEIGHT: u64 = 42;
-        const INPUT_BASE_WEIGHT: u64 = 164;
-        const P2TR_OUTPUT_WEIGHT: u64 = 172;
-        let input_weight: u64 = selected
+        // `utill::funding_tx_vsize` is `pub(crate)`: overhead 11 + payment output 43 + P2TR
+        // change 43, plus 68 per input. It is the shape `funding_fee_policy_sats` prices, so
+        // the two have to stay in step.
+        const FUNDING_TX_BASE_VBYTES: u64 = 97;
+        const FUNDING_TX_INPUT_VBYTES: u64 = 68;
+        let input_count: usize = splits.iter().map(|split| split.utxos.len()).sum();
+        let vbytes = splits.len() as u64 * FUNDING_TX_BASE_VBYTES
+            + input_count as u64 * FUNDING_TX_INPUT_VBYTES;
+        let fee_sats = splits
             .iter()
-            .map(|(_, spend)| INPUT_BASE_WEIGHT + spend.estimate_witness_size() as u64)
-            .sum();
-        let weight = BASE_TX_WEIGHT + input_weight + 2 * P2TR_OUTPUT_WEIGHT;
-        let vbytes = weight.div_ceil(4);
-        let fee_sats = (vbytes as f64 * MIN_FEE_RATE).ceil() as u64;
+            .try_fold(0u64, |acc, split| {
+                funding_fee_policy_sats(split.utxos.len(), u32::MAX, feerate)
+                    .and_then(|fee| acc.checked_add(fee))
+            })
+            .ok_or_else(price_err)?;
 
         Ok(SwapFundingEstimateDto {
-            input_count: selected.len(),
+            input_count,
             vbytes,
             fee_sats,
-            fee_rate_sats_per_vb: MIN_FEE_RATE,
-            route_mining_fee_per_router_sats: estimate_funding_tx_fee_sats(),
-            // Truncating, not rounded up: matches the crate's own
-            // `Amount::from_sat((feerate * vsize as f64) as u64)`.
-            sweep_fee_sats: (sweep_vbytes as f64 * MIN_FEE_RATE) as u64,
+            fee_rate_sats_per_vb: feerate,
+            route_mining_fee_per_router_sats,
+            sweep_fee_sats: params.tx_count as u64 * sweep_per_contract_sats,
         })
     })
     .await
