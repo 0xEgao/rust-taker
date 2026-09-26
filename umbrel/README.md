@@ -30,24 +30,44 @@ docker build -f umbrel/Dockerfile -t portal:umbrel-test .
 docker save portal:umbrel-test | docker exec -i portal-umbrel-test docker load
 ```
 
-The two Docker engines have separate image stores. Loading into Umbrel's engine
-is required even though the outer OrbStack engine already has the image.
-
-After completing Umbrel onboarding, copy `portal/` into the recognized app-store
-source in the disposable test instance. For the current official store checkout:
+The two Docker engines have separate image stores. Umbrel 2.0 also pulls images
+unconditionally during installation, so loading a local tag alone is insufficient.
+Start a loopback-only registry inside the test instance (once):
 
 ```sh
-docker cp umbrel/portal portal-umbrel-test:/home/umbrel/umbrel/app-stores/getumbrel-umbrel-apps-github-53f74447/portal
-docker exec portal-umbrel-test umbreld client appStore.registry.query
+docker exec portal-umbrel-test docker run -d --name portal-test-registry \
+  --restart unless-stopped -p 127.0.0.1:5001:5000 \
+  -v portal-test-registry:/var/lib/registry registry:2
+```
+
+For each build, after loading it, publish it to this local registry:
+
+```sh
+docker exec portal-umbrel-test docker tag portal:umbrel-test localhost:5001/portal:umbrel-test
+docker exec portal-umbrel-test docker push localhost:5001/portal:umbrel-test
+```
+
+This publishes only to the local test instance, not a public registry. The package
+references `localhost:5001/portal:umbrel-test`, which Umbrel's Docker engine can pull.
+
+After completing Umbrel onboarding, copy the package using tar through `docker exec`.
+`docker cp` cannot access the runtime-mounted store path in this container setup.
+Run these commands from the Portal repository root:
+
+```sh
+COPYFILE_DISABLE=1 tar -C umbrel -cf - portal | docker exec --user 1000:1000 -i portal-umbrel-test \
+  tar --no-same-owner -xf - -C /home/umbrel/umbrel/app-stores/getumbrel-umbrel-apps-github-53f74447
 docker exec portal-umbrel-test umbreld client apps.install.mutate --appId portal
 ```
 
-Confirm Portal appears in the registry before installing. The copy command is for
-the first copy into a missing `portal` directory; for subsequent changes sync its
-contents rather than creating a nested `portal/portal`. A store refresh may replace
-local edits; this is a disposable local test workflow, not a publication method.
+Extract as Umbrel's UID/GID 1000:1000 and ignore the archive's macOS ownership;
+otherwise Portal cannot write its mounted data directory.
 
-Open Portal from the Umbrel dashboard, normally at `http://umbrel.local:3100`.
+The tar copy overlays package files without nesting `portal/portal` or deleting
+other apps. A store refresh may replace local edits; this is a disposable local
+test workflow, not a publication method.
+
+Open Portal from the Umbrel dashboard, normally at `http://umbrel.local:3101`.
 Use the configured device hostname, not localhost or an IP alias: Portal checks
 the browser origin. This package targets the HTTP LAN route behind Umbrel auth;
 HTTPS and onion browser access require separate origin/profile configuration and
@@ -63,7 +83,7 @@ use `compose.local.yaml` for a standalone smoke test.
 
 ## Public registry and App Store submission
 
-The checked-in package currently uses `portal:umbrel-test`. It is **not yet a
+The checked-in package currently uses `localhost:5001/portal:umbrel-test`. It is **not yet a
 public release package**. Before submission:
 
 1. Build and publish both architectures to a registry namespace you control:

@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   FileText,
   LifeBuoy,
-  Gauge,
   RefreshCw,
   ShieldAlert,
   XCircle,
@@ -20,6 +19,7 @@ import {
   getLogs,
   getOffers,
   getSwapPreparation,
+  getRecoveryStatus,
   getSwapProgress,
   getSwapTracker,
   prepareSwap,
@@ -62,7 +62,7 @@ import {
   estimateRouteRouterFees,
   routerName,
 } from "../../lib/market-format";
-import { classifySpendType, formatDuration, formatFeeRate, formatNumber, formatUnitAmount, SATS_PER_BTC, satsToUnitString, type Unit, unitStringToSats } from "../../lib/wallet-format";
+import { classifySpendType, formatDuration, formatNumber, formatUnitAmount, SATS_PER_BTC, satsToUnitString, type Unit, unitStringToSats } from "../../lib/wallet-format";
 import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
@@ -238,13 +238,7 @@ export function SwapPage() {
         setFailure(e);
         setPhase("failed");
       }),
-      // The funds are in contracts and the crate is already claiming them back, so this page
-      // hands itself back for the next swap and the recovery page takes over.
-      subscribe("swap://recovering", () => {
-        resetWizard();
-        pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
-        navigate("/swap/recovery");
-      }),
+      subscribe("swap://recovering", () => handOffToRecovery()),
     ];
     return () => {
       void Promise.all(unlisteners).then((fns) => fns.forEach((fn) => fn()));
@@ -265,12 +259,28 @@ export function SwapPage() {
     let cancelled = false;
     const poll = () => {
       void Promise.all([getSwapTracker(), getSwapProgress()])
-        .then(([next, progress]) => {
+        .then(async ([next, progress]) => {
           if (cancelled) return;
-          setTracker(next);
-          if (progress === null) {
-            setPhase(next?.phase === "completed" ? "finished" : "failed");
+          // A handoff to recovery releases the swap slot, and the tracker read with it; keeping
+          // the last one leaves the circuit where the swap actually stopped.
+          if (next) setTracker(next);
+          if (progress !== null) return;
+          if (next?.phase === "completed") {
+            setPhase("finished");
+            return;
           }
+          // The slot also empties when the swap hands off to recovery. `swap://recovering` says
+          // so, but a missed event must not read as a failure while recovery is already
+          // claiming the funds back.
+          // An unreadable status is not an inactive one: settle on nothing and ask again next poll.
+          const recovery = swapId
+            ? await getRecoveryStatus(swapId).catch(() => undefined)
+            : null;
+          if (cancelled || recovery === undefined) return;
+          // Settles once: a poll still in flight must not repeat the handoff and its toast.
+          cancelled = true;
+          if (recovery?.active) handOffToRecovery();
+          else setPhase("failed");
         })
         .catch(() => {});
     };
@@ -280,7 +290,8 @@ export function SwapPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [phase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, swapId]);
 
   // One more read on the terminal transition — the last 2s-cadence poll can be a beat stale by
   // the time swap://finished|failed fires, so refresh once more for the final per-router state.
@@ -663,6 +674,14 @@ export function SwapPage() {
     }
   }
 
+  // The funds are in contracts and the crate is already claiming them back, so this page
+  // hands itself back for the next swap and the recovery page takes over.
+  function handOffToRecovery() {
+    resetWizard();
+    pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
+    navigate("/swap/recovery");
+  }
+
   function resetWizard() {
     setPhase("configure");
     setSummary(null);
@@ -1023,29 +1042,6 @@ export function SwapPage() {
               {manualRouters
                 ? `Route pinned to ${selectedRouters.length} specific router${selectedRouters.length === 1 ? "" : "s"} in advanced options — pick a count to go back to automatic.`
                 : "More routers means stronger privacy and higher fees."}
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
-            <div className="flex items-center justify-between gap-3 rounded-control border border-dashed border-line bg-surface px-3.5 py-3">
-              <span className="flex items-center gap-2.5">
-                <Gauge size={15} strokeWidth={1.9} className="text-subtle" />
-                <span className="text-[13px] text-muted">Network fee rate</span>
-              </span>
-              <span className="flex items-baseline gap-2.5">
-                <strong className="font-numeric text-[13.5px] text-foreground">
-                  {fundingEstimate
-                    ? `${formatFeeRate(fundingEstimate.feeRateSatsPerVb)} s/vB`
-                    : "—"}
-                </strong>
-                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-subtle">
-                  Fixed
-                </span>
-              </span>
-            </div>
-            <p className="text-[11.5px] text-subtle">
-              Every hop signs the same contract transactions in advance, so all of them have to
-              agree on one rate before any funds move.
             </p>
           </div>
 

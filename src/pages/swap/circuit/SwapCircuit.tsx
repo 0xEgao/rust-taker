@@ -122,13 +122,20 @@ export function SwapCircuit({
   );
 }
 
+/**
+ * Hops are legs, not routers — two routers make three — so the leg still waiting on the chain is
+ * the one to count, as the headline does. Once every leg has confirmed, the key exchange walks
+ * the routers, and the router being settled is what is left to count.
+ */
+function currentHop(view: CircuitView) {
+  return (view.liveEdgeIndex ?? view.focusIndex ?? 0) + 1;
+}
+
 function circuitLabel(view: CircuitView) {
   const total = view.routerCount + 1;
-  if (view.failed) return `Swap circuit: failed at hop ${(view.focusIndex ?? 0) + 1} of ${total}`;
+  if (view.failed) return `Swap circuit: failed at hop ${currentHop(view)} of ${total}`;
   if (view.focusIndex === null) return `Swap circuit: complete, ${total} of ${total} hops confirmed`;
-  return `Swap circuit: ${view.hopsConfirmed} of ${total} hops confirmed, working on hop ${
-    view.focusIndex + 1
-  }`;
+  return `Swap circuit: ${view.hopsConfirmed} of ${total} hops confirmed, working on hop ${currentHop(view)}`;
 }
 
 function CircuitEdge({
@@ -504,15 +511,16 @@ function StageBody({ view }: { view: CircuitView }) {
       ? "var(--color-success)"
       : "var(--color-primary)";
 
+  const hop = currentHop(view);
   const line = view.failed
-    ? `Stopped at hop ${(view.focusIndex ?? 0) + 1} of ${view.routerCount + 1}`
+    ? `Stopped at hop ${hop} of ${view.routerCount + 1}`
     : done
       ? `${view.routerCount + 1} hops through ${view.routerCount} routers`
       : view.focusIndex === null
         // Every hop has settled but the swap has not finished — the incoming contract is still
         // being swept — so there is no hop to count.
         ? `${view.routerCount + 1} hops settled`
-        : `Hop ${(view.focusIndex ?? 0) + 1} of ${view.routerCount + 1}`;
+        : `Hop ${hop} of ${view.routerCount + 1}`;
 
   return (
     <>

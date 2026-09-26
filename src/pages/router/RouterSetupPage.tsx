@@ -8,6 +8,7 @@ import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
+import { FaucetButton } from "../../components/app/FaucetButton";
 import { copyText } from "../../lib/clipboard";
 
 /**
@@ -226,11 +227,14 @@ export function RouterSetupPage() {
             <div className="border-t border-line px-8 py-6 text-left">
               <div className="flex items-baseline justify-between gap-4">
                 <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Deposit address</span>
-                {deposit && (
-                  <span className="text-[12px] text-muted">
-                    Send at least <SatsAmount sats={deposit.sats} className="font-numeric text-foreground" />
-                  </span>
-                )}
+                <span className="flex items-center gap-3">
+                  {deposit && (
+                    <span className="text-[12px] text-muted">
+                      Send at least <SatsAmount sats={deposit.sats} className="font-numeric text-foreground" />
+                    </span>
+                  )}
+                  <FaucetButton />
+                </span>
               </div>
               {deposit ? (
                 <button

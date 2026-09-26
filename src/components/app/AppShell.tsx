@@ -12,8 +12,7 @@ import { useToastStore, type Toast } from "../../store/toast";
 import { useTxNoticeStore } from "../../store/tx-notifications";
 import { getSwapProgress } from "../../api/commands";
 import { formatDuration } from "../../lib/wallet-format";
-import { IconButton, SatsAmount } from "../ui/display";
-import { SwitchWallet } from "./SwitchWallet";
+import { IconButton, SatsAmount, Tooltip } from "../ui/display";
 import { SignOut } from "./SignOut";
 
 /** Signet and testnet coins are worthless; mainnet coins are not. Which chain you are on is the
@@ -141,30 +140,31 @@ function Logo({
         : ["/launch", "Back to start"];
 
   return (
+    <Tooltip content={title}>
     <NavLink
       to={to}
-      title={title}
+      aria-label={title}
       className="group flex items-center gap-3 rounded-control outline-none focus-visible:shadow-ring"
     >
-      {routerMode ? (
-        <span className="flex items-center gap-2 font-header text-[15px] font-bold text-foreground transition-colors group-hover:text-primary">
-          <ArrowLeft size={16} strokeWidth={2} className="text-primary" /> Portal
-        </span>
-      ) : (
-        <>
-          <img
-            src={logoUrl}
-            alt=""
-            aria-hidden="true"
-            className="h-9 w-9 flex-none rounded-full bg-white p-0.5 shadow-[0_6px_16px_-8px_rgba(0,0,0,0.9)]"
-          />
-          <div className="min-w-0 leading-tight">
-            <div className="font-header text-[15px] font-bold text-foreground">Portal</div>
-            <div className="text-[11px] text-subtle">Wallet</div>
-          </div>
-        </>
+      {routerMode && (
+        <ArrowLeft
+          size={18}
+          strokeWidth={2}
+          className="-mr-1 flex-none text-subtle transition-colors group-hover:text-primary"
+        />
       )}
+      <img
+        src={logoUrl}
+        alt=""
+        aria-hidden="true"
+        className="h-9 w-9 flex-none rounded-full bg-white p-0.5 shadow-[0_6px_16px_-8px_rgba(0,0,0,0.9)]"
+      />
+      <div className="min-w-0 leading-tight">
+        <div className="font-header text-[15px] font-bold text-foreground">Portal</div>
+        <div className="text-[11px] text-subtle">{routerMode ? "Router" : "Wallet"}</div>
+      </div>
     </NavLink>
+    </Tooltip>
   );
 }
 
@@ -289,10 +289,10 @@ function TopNav({
                 <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
               )}
             />
-            <SwitchWallet />
+            <Tooltip content="Logs">
             <NavLink
               to="/logs"
-              title="Logs"
+              aria-label="Logs"
               className={({ isActive }) =>
                 `flex h-9 w-9 items-center justify-center rounded-control border border-line bg-surface-raised shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] outline-none transition-colors duration-200 focus-visible:shadow-ring active:translate-y-px ${
                   isActive ? "text-primary" : "text-muted hover:text-foreground"
@@ -301,6 +301,7 @@ function TopNav({
             >
               <ScrollText size={16} strokeWidth={1.8} />
             </NavLink>
+            </Tooltip>
           </>
         )}
         <SignOut />

@@ -32,6 +32,10 @@ use crate::types::{
     SwapSummaryDto, SwapTrackerDto,
 };
 
+/// How far back the wallet history is searched for our funding txs. They are the swap's most
+/// recent sends, so a short window always holds them.
+const OUTGOING_LOOKBACK: usize = 50;
+
 fn protocol_label(p: ProtocolVersion) -> &'static str {
     match p {
         ProtocolVersion::Legacy => "legacy",
@@ -202,6 +206,7 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
             .iter()
             .map(Txid::to_string)
             .collect(),
+        outgoing_confirmed: false,
         payment_address: r.payment_address.clone(),
         payment_amount_sats: r.payment_amount_sat,
     }
@@ -604,10 +609,27 @@ pub async fn get_swap_tracker(
         return Ok(None);
     };
     let data_dir = taker.data_dir.clone();
+    let wallet = taker.wallet.clone();
 
     tokio::task::spawn_blocking(move || -> Result<Option<SwapTrackerDto>, AppError> {
         let tracker = SwapTracker::load_or_create(&data_dir)?;
-        Ok(tracker.get_record(&swap_id).map(to_tracker_dto))
+        let Some(record) = tracker.get_record(&swap_id) else {
+            return Ok(None);
+        };
+        let mut dto = to_tracker_dto(record);
+        // Taproot's outgoing contract txs are our funding txs, so the wallet's own history has
+        // their confirmations. Legacy's are pre-signed and never broadcast; it reports this
+        // itself through `prev_funding_confirmed`. `try_read`: a swap step holding the wallet
+        // only delays the answer to the next poll.
+        if record.phase == SwapPhase::FundsBroadcast && !record.outgoing_contract_txids.is_empty() {
+            if let Ok(w) = wallet.try_read() {
+                let txs = w.get_transactions(Some(OUTGOING_LOOKBACK), None)?;
+                dto.outgoing_confirmed = record.outgoing_contract_txids.iter().all(|txid| {
+                    txs.iter().any(|tx| tx.info.txid == *txid && tx.info.confirmations > 0)
+                });
+            }
+        }
+        Ok(Some(dto))
     })
     .await
     .map_err(AppError::internal)?

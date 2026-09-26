@@ -15,7 +15,6 @@ export interface HostSession {
   login(password: string): Promise<void>;
   /** Set the owner password on an unowned installation, then log in. */
   claim(password: string): Promise<void>;
-  logout(): Promise<void>;
 }
 
 export interface HostCapabilities {
@@ -24,7 +23,7 @@ export interface HostCapabilities {
   localDashboardImport: boolean;
   /** A native picker exists; the web host uploads instead and hides location controls. */
   nativeFilePicker: boolean;
-  /** Quitting the process is offered. Web offers logout — the supervisor owns the daemon. */
+  /** Quitting the process is offered. Never on the web: the supervisor owns the daemon. */
   canQuit: boolean;
 }
 
