@@ -272,8 +272,13 @@ export function SwapPage() {
           // The slot also empties when the swap hands off to recovery. `swap://recovering` says
           // so, but a missed event must not read as a failure while recovery is already
           // claiming the funds back.
-          const recovery = swapId ? await getRecoveryStatus(swapId).catch(() => null) : null;
-          if (cancelled) return;
+          // An unreadable status is not an inactive one: settle on nothing and ask again next poll.
+          const recovery = swapId
+            ? await getRecoveryStatus(swapId).catch(() => undefined)
+            : null;
+          if (cancelled || recovery === undefined) return;
+          // Settles once: a poll still in flight must not repeat the handoff and its toast.
+          cancelled = true;
           if (recovery?.active) handOffToRecovery();
           else setPhase("failed");
         })

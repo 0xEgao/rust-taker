@@ -9,7 +9,6 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::SystemTime;
 
 use openswap::maker::MakerServerConfig;
 use openswap::utill::MIN_RELAY_FEE_RATE;
@@ -114,23 +113,24 @@ fn maker_data_dir(settings: &MakerSettingsDto) -> Result<PathBuf, AppError> {
     }
 }
 
-/// Parsed configs keyed by file, reused until the file's mtime moves. Every registry read goes
-/// through here and the router pages poll the registry every few seconds; the crate logs a line
-/// per parse.
-static RUNTIME_CONFIGS: Mutex<Option<HashMap<PathBuf, (SystemTime, MakerServerConfig)>>> =
-    Mutex::new(None);
+/// Parsed configs keyed by file, reused while the file's bytes are unchanged. Every registry read
+/// goes through here and the router pages poll the registry every few seconds; the crate logs a
+/// line per parse. Keyed on content, not mtime: an edit that keeps the mtime would otherwise be
+/// served stale and then written back over by `write_runtime_config`.
+type RuntimeConfigCache = HashMap<PathBuf, (Vec<u8>, MakerServerConfig)>;
+static RUNTIME_CONFIGS: Mutex<Option<RuntimeConfigCache>> = Mutex::new(None);
 
 fn read_runtime_config(path: &Path) -> Result<MakerServerConfig, AppError> {
-    let modified = std::fs::metadata(path).and_then(|m| m.modified()).map_err(AppError::internal)?;
+    let bytes = std::fs::read(path).map_err(AppError::internal)?;
     let mut cache = RUNTIME_CONFIGS.lock()?;
     let cache = cache.get_or_insert_with(HashMap::new);
-    if let Some((at, config)) = cache.get(path) {
-        if *at == modified {
+    if let Some((cached, config)) = cache.get(path) {
+        if *cached == bytes {
             return Ok(config.clone());
         }
     }
     let config = MakerServerConfig::new(Some(path)).map_err(AppError::from)?;
-    cache.insert(path.to_path_buf(), (modified, config.clone()));
+    cache.insert(path.to_path_buf(), (bytes, config.clone()));
     Ok(config)
 }
 

@@ -10,7 +10,7 @@ export function LogsPage() {
         <div>
           <h1 className="font-header text-[26px] font-bold text-foreground">Logs</h1>
           <p className="mt-1 text-[13.5px] text-muted">
-            This wallet's debug.log — the file itself has the full history.
+            This wallet's active debug.log. Older entries rotate out as it grows.
           </p>
         </div>
       </div>

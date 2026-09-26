@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LogLine } from "../../api/types";
 import { logLevel, type LogLevel } from "../../lib/wallet-format";
 import { Card, LogViewer, SkeletonLines } from "../ui/display";
@@ -26,21 +26,49 @@ export function LogPanel({
   className?: string;
 }) {
   const [lines, setLines] = useState<LogLine[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [threshold, setThreshold] = useState<Threshold>("info");
   const [autoRefresh, setAutoRefresh] = useState(true);
 
+  // The source whose answers may still be shown: a slow read for the previous one must not land
+  // after the switch.
+  const current = useRef(load);
+  current.current = load;
+  const fetchLines = useCallback(
+    () =>
+      void load(MAX_LINES)
+        .then((next) => {
+          if (current.current !== load) return;
+          setLines(next);
+          setError(null);
+        })
+        .catch((e) => {
+          if (current.current !== load) return;
+          setError((e as { message?: string })?.message ?? "Could not read the log.");
+        }),
+    [load],
+  );
+
+  // A new source — another router — replaces what is shown even while refresh is paused, or its
+  // heading would sit over the previous router's lines.
+  useEffect(() => {
+    setLines(null);
+    setError(null);
+    fetchLines();
+  }, [fetchLines]);
+
   useEffect(() => {
     if (!autoRefresh) return;
-    const fetch = () => void load(MAX_LINES).then(setLines).catch(() => {});
-    fetch();
-    const id = setInterval(fetch, REFRESH_MS);
+    const id = setInterval(fetchLines, REFRESH_MS);
     return () => clearInterval(id);
-  }, [load, autoRefresh]);
+  }, [fetchLines, autoRefresh]);
 
   // A line with no level of its own — a wrapped message, a panic's backtrace — belongs to the
-  // record above it, so it is shown and hidden with that record.
+  // record above it, so it is shown and hidden with that record. The tail can open mid-record,
+  // with that record's header cut off; those leading lines are only shown under Debug, since
+  // what they belong to is unknown.
   const leveled = useMemo(() => {
-    let current: Threshold = "info";
+    let current: Threshold = "debug";
     return (lines ?? []).map((line) => {
       const level = logLevel(line.line);
       if (level !== "other") current = level;
@@ -99,7 +127,9 @@ export function LogPanel({
           />
         </div>
       </div>
-      {lines === null ? (
+      {lines === null && error !== null ? (
+        <p className="py-6 text-center text-[13px] text-danger">{error}</p>
+      ) : lines === null ? (
         <SkeletonLines count={10} />
       ) : (
         <LogViewer
