@@ -12,7 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Link,
   useNavigate,
@@ -43,7 +43,6 @@ import type {
   AddressType,
   Balances,
   FidelityBond,
-  LogLine,
   RouterSettings,
   RouterStatus,
   RouterSwapReportSummary,
@@ -58,7 +57,6 @@ import {
   ExternalLinkButton,
   IconButton,
   Identifier,
-  LogViewer,
   Modal,
   SatsAmount,
   SettingsSection,
@@ -74,12 +72,9 @@ import {
 } from "../../components/ui/inputs";
 import { formatTorEndpoint } from "../../lib/market-format";
 import { copyText } from "../../lib/clipboard";
-import {
-  formatRelativeTime,
-  logLevel,
-  type LogLevel,
-} from "../../lib/wallet-format";
+import { formatRelativeTime } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
+import { LogPanel } from "../../components/app/LogPanel";
 
 type Tab = "overview" | "wallet" | "logs" | "settings";
 const TAB_OPTIONS: { value: Tab; label: string }[] = [
@@ -638,87 +633,9 @@ function WalletPanel({
   );
 }
 
-type RouterLogFilter = "all" | "info" | "warn" | "error";
-
 function LogsPanel({ routerId }: { routerId: string }) {
-  const [lines, setLines] = useState<LogLine[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [levelFilter, setLevelFilter] = useState<RouterLogFilter>("all");
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setLines(await getRouterLogs(routerId, 500));
-    } finally {
-      setLoading(false);
-    }
-  }, [routerId]);
-  useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 3000);
-    return () => clearInterval(timer);
-  }, [load]);
-  const counts = useMemo(
-    () =>
-      lines.reduce(
-        (result, row) => {
-          const level = logLevel(row.line);
-          result[level] += 1;
-          return result;
-        },
-        { error: 0, warn: 0, info: 0, debug: 0, other: 0 } as Record<LogLevel, number>,
-      ),
-    [lines],
-  );
-  const filteredLines = useMemo(
-    () =>
-      levelFilter === "all"
-        ? lines
-        : lines.filter((line) => logLevel(line.line) === levelFilter),
-    [levelFilter, lines],
-  );
-  return (
-    <Card className="flex h-[580px] flex-col border-line-strong">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
-        <div>
-          <h2 className="font-header text-[14px] font-bold">Router logs</h2>
-          <span className="text-[10px] text-subtle">
-            Latest 500 lines · refreshes every 3 seconds
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <SegmentedToggle
-            groupId={`router-log-level-${routerId}`}
-            subdued
-            value={levelFilter}
-            onChange={setLevelFilter}
-            options={[
-              { value: "all", label: "All", suffix: <span className="font-mono text-[9px] opacity-60">{lines.length}</span> },
-              { value: "info", label: "Info", suffix: <span className="font-mono text-[9px] opacity-60">{counts.info}</span> },
-              { value: "warn", label: "Warn", suffix: <span className="font-mono text-[9px] opacity-60">{counts.warn}</span> },
-              { value: "error", label: "Error", suffix: <span className="font-mono text-[9px] opacity-60">{counts.error}</span> },
-            ]}
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void load()}
-            loading={loading}
-          >
-            <RefreshCw size={13} />
-            Refresh
-          </Button>
-        </div>
-      </div>
-      <LogViewer
-        lines={filteredLines}
-        emptyMessage={
-          lines.length === 0
-            ? "No log lines yet."
-            : `No ${levelFilter} log entries in the latest 500 lines.`
-        }
-      />
-    </Card>
-  );
+  const load = useCallback((lines: number) => getRouterLogs(routerId, lines), [routerId]);
+  return <LogPanel title="Router logs" load={load} className="h-[580px]" />;
 }
 
 // Tor's ports are Portal's to choose, not the router's: `build_config` overrides whatever a
@@ -733,6 +650,7 @@ const EDITABLE_SETTING_KEYS = [
   "timeRelativeFeePct",
   "fidelityAmount",
   "fidelityTimelock",
+  "fidelityFeerate",
 ] as const;
 type EditableSettingKey = (typeof EDITABLE_SETTING_KEYS)[number];
 type SettingsForm = Record<EditableSettingKey, string>;
@@ -780,6 +698,8 @@ function parseSettingsForm(
     return "Fidelity amount must be greater than zero.";
   if (values.requiredConfirms < 1)
     return "Required confirmations must be at least one.";
+  if (values.fidelityFeerate < 1)
+    return "Fidelity fee rate must be at least 1 sat/vB.";
   if (values.fidelityTimelock < 12_960 || values.fidelityTimelock > 25_920) {
     return "Fidelity timelock must be between 12,960 and 25,920 blocks.";
   }
@@ -1036,6 +956,10 @@ function SettingsPanel({
             <SummaryGroup title="Bond defaults">
               {row("fidelityAmount", "Target amount", { suffix: "sats" })}
               {row("fidelityTimelock", "Timelock", { suffix: "blocks" })}
+              {row("fidelityFeerate", "Fee rate", {
+                suffix: "sat/vB",
+                inputMode: "decimal",
+              })}
             </SummaryGroup>
           </div>
         </SettingsSection>

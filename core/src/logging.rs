@@ -429,6 +429,9 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
 
     builder
         .logger(Logger::builder().build("bitcoincore_rpc", log::LevelFilter::Off))
+        // The protocol crate's own Debug lines are what the log views' Debug filter shows. Only
+        // the crate's: Debug from its dependencies (HTTP, TLS, Tor) would bury everything else.
+        .logger(Logger::builder().build("openswap", log::LevelFilter::Debug))
         // The watchtower re-announces the same handful of txids to every relay on every pass,
         // at Info: in one short session on an empty wallet that was 293 of 390 lines, 270 of
         // them three messages repeated ninety times each. Warn keeps the relay failures, which
@@ -441,7 +444,7 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
             Logger::builder()
                 .appender("maker_router")
                 .additive(false)
-                .build("openswap::maker", log::LevelFilter::Info),
+                .build("openswap::maker", log::LevelFilter::Debug),
         )
         .build(
             Root::builder()

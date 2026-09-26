@@ -28,6 +28,7 @@ const INITIAL_VALUES = {
   requiredConfirms: "",
   fidelityAmount: "",
   fidelityTimelock: "",
+  fidelityFeerate: "",
 };
 
 type Values = typeof INITIAL_VALUES;
@@ -83,6 +84,7 @@ export function useRouterForm(): RouterForm {
           requiredConfirms: String(d.requiredConfirms),
           fidelityAmount: String(d.fidelityAmount),
           fidelityTimelock: String(d.fidelityTimelock),
+          fidelityFeerate: String(d.fidelityFeerate),
         })),
       )
       .catch(() => {});
@@ -141,6 +143,7 @@ export function useRouterForm(): RouterForm {
       if (Object.values(values).some((v) => v.trim() === "")) return null;
       if (Object.values(numbers).some((n) => !Number.isFinite(n) || n < 0)) return null;
       if (numbers.requiredConfirms < 1) return null;
+      if (numbers.fidelityFeerate < 1) return null;
       return {
         routerId,
         // A router's wallet is its own, so the id doubles as the wallet name unless overridden.
@@ -158,6 +161,7 @@ export function useRouterForm(): RouterForm {
         requiredConfirms: numbers.requiredConfirms,
         fidelityAmount: numbers.fidelityAmount,
         fidelityTimelock: numbers.fidelityTimelock,
+        fidelityFeerate: numbers.fidelityFeerate,
       };
     },
   };
@@ -204,6 +208,14 @@ export function FidelityFields({ form }: { form: RouterForm }) {
         suffix="blocks"
         hint={timelock > 0 ? `≈ ${timelockDays(timelock)} days locked` : undefined}
         onCommit={form.set("fidelityTimelock")}
+      />
+      <SummaryRow
+        label="Fee rate"
+        value={form.values.fidelityFeerate}
+        display={form.values.fidelityFeerate || "…"}
+        suffix="sat/vB"
+        inputMode="decimal"
+        onCommit={form.set("fidelityFeerate")}
       />
     </SummaryGroup>
   );

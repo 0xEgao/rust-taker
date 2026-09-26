@@ -9,8 +9,10 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use openswap::maker::MakerServerConfig;
+use openswap::utill::MIN_RELAY_FEE_RATE;
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
@@ -50,6 +52,8 @@ struct DashboardMakerSettings {
     fidelity_amount: u64,
     #[serde(default = "default_fidelity_timelock")]
     fidelity_timelock: u32,
+    #[serde(default = "default_fidelity_feerate")]
+    fidelity_feerate: f64,
     #[serde(default = "default_required_confirms")]
     required_confirms: u32,
     #[serde(default = "default_base_fee")]
@@ -81,6 +85,9 @@ fn default_fidelity_amount() -> u64 {
 fn default_fidelity_timelock() -> u32 {
     15_000
 }
+pub(crate) fn default_fidelity_feerate() -> f64 {
+    MIN_RELAY_FEE_RATE
+}
 fn default_required_confirms() -> u32 {
     1
 }
@@ -107,12 +114,32 @@ fn maker_data_dir(settings: &MakerSettingsDto) -> Result<PathBuf, AppError> {
     }
 }
 
+/// Parsed configs keyed by file, reused until the file's mtime moves. Every registry read goes
+/// through here and the router pages poll the registry every few seconds; the crate logs a line
+/// per parse.
+static RUNTIME_CONFIGS: Mutex<Option<HashMap<PathBuf, (SystemTime, MakerServerConfig)>>> =
+    Mutex::new(None);
+
+fn read_runtime_config(path: &Path) -> Result<MakerServerConfig, AppError> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).map_err(AppError::internal)?;
+    let mut cache = RUNTIME_CONFIGS.lock()?;
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((at, config)) = cache.get(path) {
+        if *at == modified {
+            return Ok(config.clone());
+        }
+    }
+    let config = MakerServerConfig::new(Some(path)).map_err(AppError::from)?;
+    cache.insert(path.to_path_buf(), (modified, config.clone()));
+    Ok(config)
+}
+
 fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError> {
     let config_path = maker_data_dir(settings)?.join("config.toml");
     if !config_path.exists() {
         return Ok(());
     }
-    let config = MakerServerConfig::new(Some(&config_path)).map_err(AppError::from)?;
+    let config = read_runtime_config(&config_path)?;
     settings.network_port = config.network_port;
     settings.rpc_port = config.rpc_port;
     settings.socks_port = config.socks_port;
@@ -120,6 +147,7 @@ fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError>
     settings.min_swap_amount = config.min_swap_amount;
     settings.fidelity_amount = config.fidelity_amount;
     settings.fidelity_timelock = config.fidelity_timelock;
+    settings.fidelity_feerate = config.fidelity_feerate;
     settings.required_confirms = config.required_confirms;
     settings.base_fee = config.base_fee;
     settings.amount_relative_fee_pct = config.amount_relative_fee_pct;
@@ -132,7 +160,7 @@ fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError>
 pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), AppError> {
     let config_path = maker_data_dir(settings)?.join("config.toml");
     let mut config = if config_path.exists() {
-        MakerServerConfig::new(Some(&config_path)).map_err(AppError::from)?
+        read_runtime_config(&config_path)?
     } else {
         MakerServerConfig::default()
     };
@@ -143,6 +171,7 @@ pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), Ap
     config.min_swap_amount = settings.min_swap_amount;
     config.fidelity_amount = settings.fidelity_amount;
     config.fidelity_timelock = settings.fidelity_timelock;
+    config.fidelity_feerate = settings.fidelity_feerate;
     config.required_confirms = settings.required_confirms;
     config.base_fee = settings.base_fee;
     config.amount_relative_fee_pct = settings.amount_relative_fee_pct;
@@ -216,6 +245,7 @@ fn load_dashboard_registrations(
                 min_swap_amount: settings.min_swap_amount,
                 fidelity_amount: settings.fidelity_amount,
                 fidelity_timelock: settings.fidelity_timelock,
+                fidelity_feerate: settings.fidelity_feerate,
                 required_confirms: settings.required_confirms,
                 base_fee: settings.base_fee,
                 amount_relative_fee_pct: settings.amount_relative_fee_pct,
@@ -415,6 +445,7 @@ mod tests {
             min_swap_amount: 10_000,
             fidelity_amount: 10_000,
             fidelity_timelock: 15_000,
+            fidelity_feerate: 2.0,
             required_confirms: 1,
             base_fee: 500,
             amount_relative_fee_pct: 0.0025,
@@ -441,6 +472,7 @@ mod tests {
         saved.rpc_port = 6203;
         saved.min_swap_amount = 42_000;
         saved.base_fee = 777;
+        saved.fidelity_feerate = 3.5;
         write_runtime_config(&saved).unwrap();
 
         let mut registry_copy = settings();
@@ -450,6 +482,7 @@ mod tests {
         assert_eq!(registry_copy.rpc_port, 6203);
         assert_eq!(registry_copy.min_swap_amount, 42_000);
         assert_eq!(registry_copy.base_fee, 777);
+        assert_eq!(registry_copy.fidelity_feerate, 3.5);
 
         std::fs::remove_dir_all(data_dir).unwrap();
     }

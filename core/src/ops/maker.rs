@@ -9,6 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use openswap::maker::api::MIN_SWAP_AMOUNT;
+use openswap::utill::MIN_RELAY_FEE_RATE;
 use openswap::maker::{start_server, MakerServer, MakerServerConfig};
 use openswap::wallet::Wallet;
 use crate::events::AppEvent;
@@ -78,6 +79,13 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
             "minSwapAmount must be at least {MIN_SWAP_AMOUNT} sats"
         )));
     }
+    // The crate only clamps this when parsing config.toml; a value handed to it directly goes
+    // into the bond transaction as-is, and below the relay floor that transaction never confirms.
+    if !config.fidelity_feerate.is_finite() || config.fidelity_feerate < MIN_RELAY_FEE_RATE {
+        return Err(invalid(format!(
+            "fidelityFeerate must be at least {MIN_RELAY_FEE_RATE} sats/vB"
+        )));
+    }
     if config.fidelity_amount == 0 {
         return Err(invalid("fidelityAmount must be greater than 0".to_string()));
     }
@@ -102,6 +110,7 @@ pub fn router_defaults() -> crate::types::RouterDefaultsDto {
         min_swap_amount: core.min_swap_amount,
         fidelity_amount: core.fidelity_amount,
         fidelity_timelock: core.fidelity_timelock,
+        fidelity_feerate: core.fidelity_feerate,
         required_confirms: core.required_confirms,
         base_fee: core.base_fee,
         amount_relative_fee_pct: core.amount_relative_fee_pct,
@@ -127,6 +136,7 @@ fn build_config(
         required_confirms: config.required_confirms,
         fidelity_amount: config.fidelity_amount,
         fidelity_timelock: config.fidelity_timelock,
+        fidelity_feerate: config.fidelity_feerate,
         backend,
         wallet_name: config.wallet_name,
         control_port: tor.control_port,

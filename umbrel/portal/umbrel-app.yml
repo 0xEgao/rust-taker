@@ -4,6 +4,9 @@ category: bitcoin
 name: Portal
 version: "0.1.0"
 tagline: A Bitcoin wallet with private swaps over Tor
+# Umbrel's own gallery has no Portal entry, so without this the dashboard tile is blank.
+# Remove for an official App Store submission: Umbrel hosts the icon itself there.
+icon: https://raw.githubusercontent.com/citadel-foss/portal/main/umbrel/icon.png
 description: >-
   Portal is under active development. Mainnet use is not recommended.
 
@@ -22,12 +25,18 @@ website: https://citadelfoss.xyz
 dependencies: []
 repo: https://github.com/citadel-foss/portal
 support: https://github.com/citadel-foss/portal/issues
-# Local test port. Recheck availability in the current App Store before submission.
-port: 3100
+# Free in getumbrel/umbrel-apps as of 2026-09; the linter's port_unique check re-verifies it.
+port: 3101
 gallery: []
 path: ""
 defaultUsername: ""
 defaultPassword: ""
+# Regenerated on every start: Tor state and the Portal process log. Wallets, the swap tracker
+# and router state stay in the backup.
+backupIgnore:
+  - data/portal/home/.openswap/tor-cache/*
+  - data/portal/home/.openswap/tor-manager-*
+  - data/portal/home/.openswap/debug.log
 submitter: Citadel FOSS
 # Fill in the actual App Store PR URL after opening the PR.
 submission: ""

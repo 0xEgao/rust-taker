@@ -40,6 +40,8 @@ export interface RouterDefaults {
   minSwapAmount: number;
   fidelityAmount: number;
   fidelityTimelock: number;
+  /** sats/vB for the bond transaction; the crate's relay minimum is also the floor. */
+  fidelityFeerate: number;
   requiredConfirms: number;
   baseFee: number;
   amountRelativeFeePct: number;
@@ -312,6 +314,8 @@ export interface RouterSettings {
   minSwapAmount: number;
   fidelityAmount: number;
   fidelityTimelock: number;
+  /** sats/vB for the bond transaction; the crate's relay minimum is also the floor. */
+  fidelityFeerate: number;
   requiredConfirms: number;
   baseFee: number;
   amountRelativeFeePct: number;
@@ -519,6 +523,8 @@ export interface SwapTrackerProgress {
   outgoingContractTxids: string[];
   incomingContractTxids: string[];
   watchonlyContractTxids: string[];
+  /** Our own funding has confirmed — the only signal taproot gives for the first leg. */
+  outgoingConfirmed: boolean;
   /** Echoed from the tracker, so a remounted page knows a PaySwap without the prepared quote. */
   paymentAddress?: string;
   paymentAmountSats?: number;

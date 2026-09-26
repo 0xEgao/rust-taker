@@ -72,6 +72,7 @@ pub struct RouterDefaultsDto {
     pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
+    pub fidelity_feerate: f64,
     pub required_confirms: u32,
     pub base_fee: u64,
     pub amount_relative_fee_pct: f64,
@@ -572,6 +573,9 @@ pub struct SwapTrackerDto {
     pub outgoing_contract_txids: Vec<String>,
     pub incoming_contract_txids: Vec<String>,
     pub watchonly_contract_txids: Vec<String>,
+    /// Our own funding has confirmed. Taproot records nothing per maker until that maker's
+    /// contract confirms, so without this the first router's wait swallows ours.
+    pub outgoing_confirmed: bool,
     /// PaySwap receiver, echoed from the tracker so a remounted page still knows where the
     /// coins are going without the prepared quote.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -794,6 +798,7 @@ pub struct MakerInitConfig {
     pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
+    pub fidelity_feerate: f64,
     pub required_confirms: u32,
     pub base_fee: u64,
     pub amount_relative_fee_pct: f64,
@@ -817,6 +822,9 @@ pub struct MakerSettingsDto {
     pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
+    // Registrations saved before this field existed; `config.toml` overrides it on load anyway.
+    #[serde(default = "crate::ops::maker_settings::default_fidelity_feerate")]
+    pub fidelity_feerate: f64,
     pub required_confirms: u32,
     pub base_fee: u64,
     pub amount_relative_fee_pct: f64,
@@ -837,6 +845,7 @@ impl MakerSettingsDto {
             min_swap_amount: c.min_swap_amount,
             fidelity_amount: c.fidelity_amount,
             fidelity_timelock: c.fidelity_timelock,
+            fidelity_feerate: c.fidelity_feerate,
             required_confirms: c.required_confirms,
             base_fee: c.base_fee,
             amount_relative_fee_pct: c.amount_relative_fee_pct,
@@ -857,6 +866,7 @@ impl MakerSettingsDto {
             min_swap_amount: self.min_swap_amount,
             fidelity_amount: self.fidelity_amount,
             fidelity_timelock: self.fidelity_timelock,
+            fidelity_feerate: self.fidelity_feerate,
             required_confirms: self.required_confirms,
             base_fee: self.base_fee,
             amount_relative_fee_pct: self.amount_relative_fee_pct,

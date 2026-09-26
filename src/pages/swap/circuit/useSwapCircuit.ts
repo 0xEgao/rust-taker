@@ -264,11 +264,12 @@ export function useSwapCircuit(
 
       let stage: EdgeStage = "pending";
       if (index === 0) {
-        // Your own funding transaction. Legacy reports its confirmation directly; taproot never
-        // does, but a maker won't fund its own contract until ours has confirmed, so its hop
-        // reaching `routed` says so after the fact.
+        // Your own funding transaction. Legacy reports its confirmation directly; for taproot the
+        // backend reads it off the wallet's history. The first hop reaching `routed` implies it
+        // too, since a maker won't fund its own contract until ours has confirmed.
         const ours = hops[0]?.milestones.find((m) => m.key === "prev_funding_confirmed");
-        if (ours?.done || (hops[0] && atLeast(hops[0].stage, "routed"))) stage = "confirmed";
+        if (ours?.done || tracker?.outgoingConfirmed || (hops[0] && atLeast(hops[0].stage, "routed")))
+          stage = "confirmed";
         else if (committed) stage = "broadcast";
         else if (phase === "funding_created") stage = "built";
       } else {

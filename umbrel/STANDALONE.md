@@ -13,7 +13,7 @@ docker compose -f umbrel/compose.local.yaml up --build
 ```
 
 Then open <http://localhost:3000>. Ctrl+C runs the same ordered teardown a supervisor would
-trigger; the log is inside the volume at `/data/home/.openswap/taker/debug.log`.
+trigger; the log is inside the volume at `/data/home/.openswap/debug.log (each wallet also has its own at `/data/home/.openswap/takers/<wallet>/debug.log`)`.
 
 This uses the `trusted-http-proxy` profile, which is the shape an app-store wrapper installs
 under: a reachable bind, a plain-HTTP origin, and no `Secure` on the session cookie. Keep it
@@ -28,13 +28,14 @@ PORTAL_PUBLIC_ORIGIN=https://portal.example docker compose -f umbrel/compose.sta
 
 Open the origin and choose the owner password; every later visit signs in with it. Until that
 first visit, whoever reaches the page first sets it, so open it yourself straight after the
-first start. Forgot it? Stop the container, delete `/data/home/.openswap/taker/portal/auth/owner`
+first start. Forgot it? Stop the container, delete `/data/home/.openswap/portal/auth/owner`
 and start it again — wallets are untouched, each still behind its own wallet password.
 
 ## What is where
 
-`/data` is the only volume worth backing up. It holds `home/.openswap/` — wallets, swap
-tracker, reports, router registrations and the login verifier.
+`/data` is the only volume worth backing up. It holds `home/.openswap/` — `takers/` (one
+directory per wallet: wallet file, swap tracker, reports), `makers/` and `makers.json` (routers),
+and `portal/auth/owner` (the login verifier).
 
 An encrypted wallet export is **not** a service backup: it has no tracker, recovery or router
 state. Take a service backup with the container stopped.

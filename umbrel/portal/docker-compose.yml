@@ -5,10 +5,10 @@ services:
       APP_PORT: 3000
 
   web:
-    # Local testing: load this image into Umbrel's own Docker engine first.
+    # Local testing: push to the loopback registry inside Umbrel (see ../README.md).
     # Before submission, replace with a public multi-arch image tag AND index digest:
     # ghcr.io/<owner>/portal:0.1.0@sha256:<manifest-index-digest>
-    image: portal:umbrel-test
+    image: localhost:5001/portal:umbrel-test
     restart: on-failure
     environment:
       PORTAL_BIND: 0.0.0.0:3000

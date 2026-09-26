@@ -367,9 +367,9 @@ export function ExternalLinkButton({ txid, address }: { txid?: string; address?:
   const url = address ? explorerAddressUrl(address) : txid ? explorerTxUrl(txid) : null;
   if (!url) return null;
   return (
+    <Tooltip content={address ? "View address on explorer" : "View on explorer"} align="right">
     <button
       type="button"
-      title={address ? "View address on explorer" : "View on explorer"}
       onClick={(e) => {
         e.stopPropagation();
         void openExternal(url);
@@ -379,6 +379,7 @@ export function ExternalLinkButton({ txid, address }: { txid?: string; address?:
     >
       <ExternalLink size={16} strokeWidth={1.8} />
     </button>
+    </Tooltip>
   );
 }
 
@@ -398,9 +399,9 @@ export function CopyButton({
   }, [copied]);
 
   return (
+    <Tooltip content={copied ? "Copied" : title} align="right">
     <button
       type="button"
-      title={title}
       onClick={(e) => {
         e.stopPropagation();
         void copyText(text).then(setCopied);
@@ -418,6 +419,7 @@ export function CopyButton({
         <Copy size={16} strokeWidth={1.8} />
       )}
     </button>
+    </Tooltip>
   );
 }
 
@@ -821,6 +823,7 @@ export function IconButton({
   disabled,
   size = "md",
   className = "",
+  tooltipAlign,
 }: {
   icon: ReactNode;
   label: string;
@@ -828,18 +831,21 @@ export function IconButton({
   disabled?: boolean;
   size?: "sm" | "md";
   className?: string;
+  tooltipAlign?: "center" | "right";
 }) {
+  // Not a native `title`: WKWebView shows those late or not at all, and an icon is all there is.
   return (
+    <Tooltip content={label} align={tooltipAlign}>
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={label}
       aria-label={label}
       className={`inline-grid place-items-center rounded-control border border-line bg-surface-raised text-muted shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] outline-none transition-[box-shadow,background-color,border-color,transform,color] hover:border-line-strong hover:bg-[var(--color-hover)] hover:text-foreground focus-visible:shadow-ring active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 ${size === "sm" ? "h-8 w-8" : "h-9 w-9"} ${className}`}
     >
       {icon}
     </button>
+    </Tooltip>
   );
 }
 
@@ -855,11 +861,13 @@ export function Tooltip({
   children: ReactNode;
 }) {
   return (
-    <span className="group relative inline-flex">
+    // A named group: plain `group-hover` fires for any hovered ancestor `.group`, which would open
+    // every tooltip in a hovered card or row at once.
+    <span className="group/tip relative inline-flex">
       {children}
       <span
         role="tooltip"
-        className={`pointer-events-none absolute top-[calc(100%+9px)] z-20 w-max max-w-[260px] translate-y-1.5 rounded-card border border-line-strong bg-bg px-2.5 py-2 text-left text-[11.5px] font-medium normal-case leading-snug tracking-normal text-foreground opacity-0 shadow-lg transition-[opacity,transform] group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100 ${align === "right" ? "right-0" : "left-1/2 -translate-x-1/2"}`}
+        className={`pointer-events-none absolute top-[calc(100%+9px)] z-20 w-max max-w-[260px] translate-y-1.5 rounded-card border border-line-strong bg-bg px-2.5 py-2 text-left text-[11.5px] font-medium normal-case leading-snug tracking-normal text-foreground opacity-0 shadow-lg transition-[opacity,transform] group-hover/tip:translate-y-0 group-hover/tip:opacity-100 group-focus-within/tip:translate-y-0 group-focus-within/tip:opacity-100 ${align === "right" ? "right-0" : "left-1/2 -translate-x-1/2"}`}
       >
         {content}
       </span>

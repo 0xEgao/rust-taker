@@ -76,6 +76,13 @@ const PHASE_CLASS: Record<RouterPhase["phase"], string> = {
     "bg-danger shadow-[0_0_10px_color-mix(in_oklab,var(--color-danger)_45%,transparent)]",
 };
 
+/** A router still setting up — waiting on its deposit or its bond's confirmation — is up and
+ *  working toward live, so it counts as running, not stopped. */
+function isRunning(router: OwnedRouter) {
+  const phase = router.status?.phase.phase;
+  return phase === "running" || phase === "starting";
+}
+
 function phaseLabel(phase: RouterPhase["phase"]): string {
   return phase.replace(/([A-Z])/g, " $1").toLowerCase();
 }
@@ -116,7 +123,7 @@ function RouterCard({
   const [unlockError, setUnlockError] = useState<string | undefined>();
   const { settings, status, balances } = router;
   const phase = status?.phase.phase ?? "notConfigured";
-  const running = phase === "running" || phase === "starting";
+  const running = isRunning(router);
   const transitioning = ["initializing", "starting", "stopping"].includes(
     phase,
   );
@@ -372,9 +379,7 @@ export function RouterPage() {
   }, [refresh]);
 
   const stats = useMemo(() => {
-    const running = routers.filter(
-      (router) => router.status?.phase.phase === "running",
-    ).length;
+    const running = routers.filter(isRunning).length;
     return {
       running,
       stopped: routers.length - running,
@@ -393,9 +398,7 @@ export function RouterPage() {
       routers.filter(
         (router) =>
           filter === "all" ||
-          (filter === "running"
-            ? router.status?.phase.phase === "running"
-            : router.status?.phase.phase !== "running"),
+          (filter === "running" ? isRunning(router) : !isRunning(router)),
       ),
     [filter, routers],
   );

@@ -52,7 +52,6 @@ export const host: Host = {
       await host.invoke("auth_claim", { password });
       await host.invoke("auth_login", { password });
     },
-    logout: () => host.invoke("auth_logout"),
   },
   openExternal: (url) => openUrl(url),
   pickDirectory: async (defaultPath) => {

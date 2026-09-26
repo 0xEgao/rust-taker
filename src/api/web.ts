@@ -164,12 +164,6 @@ async function settle(operationId: string): Promise<unknown> {
 let stream: EventSource | null = null;
 const handlers = new Map<string, Set<(payload: unknown) => void>>();
 
-function closeStream() {
-  stream?.close();
-  stream = null;
-  handlers.clear();
-}
-
 function ensureStream() {
   if (stream) return;
   stream = new EventSource(`${API}/events`, { withCredentials: true });
@@ -298,11 +292,6 @@ export const host: Host = {
       const claimed = await post("/auth/claim", { password });
       if (!claimed.ok) throw await toAppError(claimed);
       await host.session.login(password);
-    },
-    logout: async () => {
-      await post("/auth/logout", {});
-      setCsrfToken(null);
-      closeStream();
     },
   },
   openExternal: async (url) => {

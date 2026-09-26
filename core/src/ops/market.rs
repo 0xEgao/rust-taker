@@ -4,7 +4,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBookHandle};
+use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBook};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, TakerInstance};
@@ -59,11 +59,17 @@ pub fn get_offers(state: &TakerInstance) -> Result<OfferBookView, AppError> {
             .ok_or_else(AppError::not_initialized)?
             .fetch_offers()?
             .all_makers(),
+        // Parsed directly rather than through `OfferBookHandle::load_or_create`, which logs a line
+        // and rewrites the file on every call — once per poll for the length of a swap, racing
+        // the sync service that owns the file.
         Err(busy) if busy.code == ErrorCode::SwapInProgress => {
-            let data_dir = state.data_dir.clone();
-            // A fresh handle each time, never a cached one: the handle loads the file once at
-            // construction, so a long-lived one would answer with whatever was on disk at init.
-            OfferBookHandle::load_or_create(&data_dir)?.all_makers()?
+            match std::fs::read(state.data_dir.join("offerbook.json")) {
+                Ok(bytes) => serde_json::from_slice::<OfferBook>(&bytes)
+                    .map_err(AppError::internal)?
+                    .all_makers(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(AppError::internal(e)),
+            }
         }
         Err(other) => return Err(other),
     };
