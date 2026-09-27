@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-// Lets the active page (e.g. Wallet) wire its own refresh logic into the
+// Lets a router workspace wire its own sync into the
 // top nav's single Refresh icon, since AppShell doesn't know page internals.
 interface HeaderActionsState {
   refreshing: boolean;

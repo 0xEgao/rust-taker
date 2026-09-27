@@ -75,6 +75,7 @@
 }
 
 @theme {
+  /* Also inlined in index.html and set as the window background in tauri.conf.json. */
   --color-bg: #0b0e13;
   --color-surface: #121722;
   --color-surface-raised: #171d2a;
@@ -171,6 +172,20 @@ button {
 
 :where(button, a[href], [role="button"]) {
   outline: none;
+}
+
+/* Tailwind v4's preflight resets buttons to `cursor: default`. In the base layer so a
+   `cursor-*` utility on any one control still wins; disabled controls keep the arrow. */
+@layer base {
+  :where(
+      button,
+      [role="button"],
+      summary,
+      select,
+      input:is([type="checkbox"], [type="radio"], [type="range"], [type="file"])
+    ):not(:disabled, [aria-disabled="true"]) {
+    cursor: pointer;
+  }
 }
 
 :where(button, a[href], [role="button"]):focus-visible {

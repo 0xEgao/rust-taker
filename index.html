@@ -5,6 +5,15 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Portal</title>
+    <meta name="color-scheme" content="dark" />
+    <!-- Painted before the stylesheet arrives, so a reload never flashes white. Keep in step
+         with --color-bg in src/index.css and backgroundColor in src-tauri/tauri.conf.json. -->
+    <style>
+      html,
+      body {
+        background-color: #0b0e13;
+      }
+    </style>
   </head>
 
   <body>

@@ -14,7 +14,8 @@
       {
         "title": "Portal",
         "width": 1400,
-        "height": 900
+        "height": 900,
+        "backgroundColor": "#0b0e13"
       }
     ],
     "security": {

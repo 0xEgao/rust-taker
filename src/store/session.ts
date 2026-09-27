@@ -22,12 +22,35 @@ interface SessionState {
   reset: () => void;
 }
 
+/** Carries "the gate was passed" across the reload a sign-out does: Rust still holds the
+ *  backend and Tor the gate checked, only this page's memory of it is gone. Read once, here,
+ *  and per-tab, so it never outlives the reload it was written for. */
+const GATE_HANDOFF_KEY = "portal.gate-handoff";
+
+export function handOffGate() {
+  try {
+    sessionStorage.setItem(GATE_HANDOFF_KEY, "1");
+  } catch {
+    // Storage unavailable: the reload replays the gate instead, which is only slower.
+  }
+}
+
+function takeGateHandoff(): boolean {
+  try {
+    const passed = sessionStorage.getItem(GATE_HANDOFF_KEY) === "1";
+    sessionStorage.removeItem(GATE_HANDOFF_KEY);
+    return passed;
+  } catch {
+    return false;
+  }
+}
+
 export const useSessionStore = create<SessionState>((set) => ({
   authenticated: null,
   hasOwner: true,
   setAuthenticated: (authenticated) => set({ authenticated }),
   setHasOwner: (hasOwner) => set({ hasOwner }),
-  connected: false,
+  connected: takeGateHandoff(),
   setConnected: () => set({ connected: true }),
   initialized: null,
   walletName: null,

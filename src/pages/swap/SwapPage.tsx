@@ -970,7 +970,7 @@ export function SwapPage() {
                 onChange={setDestination}
                 options={[
                   { value: "wallet", label: "My wallet" },
-                  { value: "address", label: "An address" },
+                  { value: "address", label: "Payswap" },
                 ]}
               />
             </div>

@@ -475,7 +475,7 @@ export function MarketPage() {
         <div>
           <h1 className="font-header text-[26px] font-bold leading-none text-foreground">Market</h1>
           <p className="mt-1.5 max-w-lg text-[13px] text-muted">
-            Live view of Portal routers routing through your Tor circuit.
+            Real-time view of the swap marketplace
           </p>
         </div>
         <Button

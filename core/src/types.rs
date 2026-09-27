@@ -240,6 +240,9 @@ pub struct NewAddress {
     /// False for a re-offered cached address whose payment status has not been checked yet.
     /// A freshly derived address is unused by construction, so it is always true.
     pub verified: bool,
+    /// Full path from the master key, e.g. `m/86'/1'/0'/0/7`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation_path: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -264,6 +267,12 @@ pub struct TxSummary {
     pub fee_sats: Option<i64>,
     /// Core's wallet label for the receiving output, e.g. "watchonly_swapcoin".
     pub label: Option<String>,
+    /// Unix seconds Portal first saw this transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_seen: Option<u64>,
+    /// Full HD path of `address` when Portal knows it. Taker listings only, for now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation_path: Option<String>,
 }
 
 /// One UTXO plus its openswap-specific spend-type classification.
@@ -275,6 +284,9 @@ pub struct UtxoEntry {
     pub amount_sats: u64,
     pub confirmations: u32,
     pub address: Option<String>,
+    /// Full path from the master key for a seed coin; swap and contract coins have none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation_path: Option<String>,
     pub spendable: bool,
     pub solvable: bool,
     /// Human category from openswap's `UTXOSpendInfo` Display impl, e.g.

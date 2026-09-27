@@ -13,9 +13,10 @@ import {
 import { LinkButton, SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
 import { WalletFooterCard } from "./WalletBackupCard";
-import { useHeaderActionsStore } from "../../store/header-actions";
 import { sendConfirmations, usePendingSendsStore } from "../../store/pending-sends";
 import { useWalletCacheStore } from "../../store/wallet-cache";
+import { formatTimestamp } from "../../components/ui/report";
+import type { TxSummary } from "../../api/types";
 import {
   classifySpendType,
   classifyTransactionType,
@@ -103,11 +104,6 @@ export function WalletPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    useHeaderActionsStore.getState().register(() => void refresh());
-    return () => useHeaderActionsStore.getState().register(null);
-  }, [refresh]);
-
   // A recorded send stops being pending once the chain agrees: either an output of it is
   // confirmed, or it turned up in the wallet's own history.
   useEffect(() => {
@@ -118,10 +114,6 @@ export function WalletPage() {
       transactions.map((tx) => tx.txid),
     );
   }, [walletPath, utxos, transactions, reconcileSends]);
-
-  useEffect(() => {
-    useHeaderActionsStore.getState().setRefreshing(refreshing);
-  }, [refreshing]);
 
   useEffect(() => {
     const id = setInterval(() => updateClock((value) => value + 1), 30_000);
@@ -156,11 +148,12 @@ export function WalletPage() {
     if (txSort === "amount") {
       rows.sort((a, b) => (Math.abs(a.amountSats) - Math.abs(b.amountSats)) * dir);
     } else {
-      // A transaction still in the mempool has no time — the Electrum backend reports 0 until
-      // a block carries it — but it is the newest thing there is, so it sorts after any real
-      // timestamp rather than before 1970.
-      const at = (time: number) => time || Number.POSITIVE_INFINITY;
-      rows.sort((a, b) => (at(a.time) === at(b.time) ? 0 : at(a.time) < at(b.time) ? -1 : 1) * dir);
+      // By when Portal first saw it, the time each row shows. Without that, a transaction
+      // still in the mempool has no time — the Electrum backend reports 0 until a block
+      // carries it — but it is the newest thing there is, so it sorts after any real timestamp
+      // rather than before 1970.
+      const at = (tx: TxSummary) => tx.firstSeen ?? (tx.time || Number.POSITIVE_INFINITY);
+      rows.sort((a, b) => (at(a) === at(b) ? 0 : at(a) < at(b) ? -1 : 1) * dir);
     }
     return rows;
   }, [transactions, txFilter, txSort, sortDir]);
@@ -322,11 +315,20 @@ export function WalletPage() {
                     key={`${u.txid}:${u.vout}`}
                     className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_92px_92px_124px_44px] items-center gap-3 px-3 py-2.5 transition-colors duration-200 hover:bg-[var(--color-hover)]"
                   >
-                    {u.address ? (
-                      <Identifier value={u.address} className="text-[11.5px] leading-[1.45] text-muted" />
-                    ) : (
-                      <span className="font-mono text-[11.5px] text-subtle">No address</span>
-                    )}
+                    <span className="min-w-0">
+                      {u.address ? (
+                        <Identifier value={u.address} className="block text-[11.5px] leading-[1.45] text-muted" />
+                      ) : (
+                        <span className="block font-mono text-[11.5px] text-subtle">No address</span>
+                      )}
+                      {/* Seed coins and fidelity bonds only: swap and contract coins are not on
+                          an HD key, so they have no path to show. */}
+                      {u.derivationPath && (
+                        <span className="mt-0.5 block font-mono text-[10px] text-subtle">
+                          {u.derivationPath}
+                        </span>
+                      )}
+                    </span>
                     <Pill label={bucket.toUpperCase()} className={TYPE_PILL_CLASS[bucket]} />
                     <span className="justify-self-end font-numeric text-[11.5px] text-muted">
                       {formatNumber(u.confirmations)}
@@ -378,6 +380,7 @@ export function WalletPage() {
                     <ExternalLinkButton txid={send.txid} />
                   </span>
                   <span className="flex items-center justify-between gap-3 pl-[44px]">
+                    <span className="flex items-center gap-2">
                     <StatusChip tone="warning">
                       {confirmations === null
                         ? "Broadcast — waiting for the mempool"
@@ -385,6 +388,11 @@ export function WalletPage() {
                           ? "In the mempool — waiting for a block"
                           : `${confirmations} confirmation${confirmations === 1 ? "" : "s"}`}
                     </StatusChip>
+                      {/* Broadcast time: this wallet sent it, so that is when it was first seen. */}
+                      <span className="font-mono text-[10.5px] text-subtle">
+                        {formatTimestamp(send.createdAt)}
+                      </span>
+                    </span>
                     <span className="font-numeric text-[12.5px] text-danger">
                       −<SatsAmount sats={send.amountSats} />
                     </span>
@@ -448,8 +456,10 @@ export function WalletPage() {
                         label={classifyTransactionType(tx.category, tx.label).toUpperCase()}
                         className={TYPE_PILL_CLASS[classifyTransactionType(tx.category, tx.label)]}
                       />
-                      {tx.time > 0 && (
-                        <span className="font-mono text-[10.5px] text-subtle">{formatRelativeTime(tx.time)}</span>
+                      {(tx.firstSeen ?? tx.time) > 0 && (
+                        <span className="font-mono text-[10.5px] text-subtle">
+                          {formatTimestamp(tx.firstSeen ?? tx.time)}
+                        </span>
                       )}
                     </span>
                     <SatsAmount
