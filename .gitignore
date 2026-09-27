@@ -30,8 +30,9 @@ CLAUDE.md
 
 # Container bootstrap secrets — never commit these.
 umbrel/*.secret
-umbrel/portal/data/portal/*
-!umbrel/portal/data/portal/.gitkeep
 
 # Working notes and audits — local only, like .claude/
 docs/
+
+umbrel-upload/
+*.tar

@@ -45,8 +45,6 @@ struct DashboardMakerSettings {
     socks_port: u16,
     #[serde(default = "default_control_port")]
     control_port: u16,
-    #[serde(default = "default_min_swap_amount")]
-    min_swap_amount: u64,
     #[serde(default = "default_fidelity_amount")]
     fidelity_amount: u64,
     #[serde(default = "default_fidelity_timelock")]
@@ -74,9 +72,6 @@ fn default_socks_port() -> u16 {
 }
 fn default_control_port() -> u16 {
     9051
-}
-fn default_min_swap_amount() -> u64 {
-    10_000
 }
 fn default_fidelity_amount() -> u64 {
     10_000
@@ -144,7 +139,6 @@ fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError>
     settings.rpc_port = config.rpc_port;
     settings.socks_port = config.socks_port;
     settings.control_port = config.control_port;
-    settings.min_swap_amount = config.min_swap_amount;
     settings.fidelity_amount = config.fidelity_amount;
     settings.fidelity_timelock = config.fidelity_timelock;
     settings.fidelity_feerate = config.fidelity_feerate;
@@ -168,7 +162,6 @@ pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), Ap
     config.rpc_port = settings.rpc_port;
     config.socks_port = settings.socks_port;
     config.control_port = settings.control_port;
-    config.min_swap_amount = settings.min_swap_amount;
     config.fidelity_amount = settings.fidelity_amount;
     config.fidelity_timelock = settings.fidelity_timelock;
     config.fidelity_feerate = settings.fidelity_feerate;
@@ -242,7 +235,6 @@ fn load_dashboard_registrations(
                 rpc_port: settings.rpc_port,
                 socks_port: settings.socks_port,
                 control_port: settings.control_port,
-                min_swap_amount: settings.min_swap_amount,
                 fidelity_amount: settings.fidelity_amount,
                 fidelity_timelock: settings.fidelity_timelock,
                 fidelity_feerate: settings.fidelity_feerate,
@@ -442,7 +434,6 @@ mod tests {
             rpc_port: 6103,
             socks_port: 9050,
             control_port: 9051,
-            min_swap_amount: 10_000,
             fidelity_amount: 10_000,
             fidelity_timelock: 15_000,
             fidelity_feerate: 2.0,
@@ -470,7 +461,6 @@ mod tests {
         saved.data_dir = Some(data_dir.to_string_lossy().into_owned());
         saved.network_port = 6202;
         saved.rpc_port = 6203;
-        saved.min_swap_amount = 42_000;
         saved.base_fee = 777;
         saved.fidelity_feerate = 3.5;
         write_runtime_config(&saved).unwrap();
@@ -480,7 +470,6 @@ mod tests {
         apply_runtime_config(&mut registry_copy).unwrap();
         assert_eq!(registry_copy.network_port, 6202);
         assert_eq!(registry_copy.rpc_port, 6203);
-        assert_eq!(registry_copy.min_swap_amount, 42_000);
         assert_eq!(registry_copy.base_fee, 777);
         assert_eq!(registry_copy.fidelity_feerate, 3.5);
 
@@ -597,7 +586,7 @@ mod tests {
         let zoro = makers.get("Zoro").unwrap();
         assert_eq!(zoro.wallet_name, "Zoro");
         assert_eq!(zoro.network_port, 6104);
-        assert_eq!(zoro.min_swap_amount, 20_000);
+        assert_eq!(zoro.fidelity_amount, 30_000);
     }
 
     #[test]

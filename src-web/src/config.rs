@@ -24,7 +24,7 @@ pub enum AccessProfile {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "portal-web", about = "Self-hosted Portal")]
+#[command(name = "portal", about = "Self-hosted Portal")]
 pub struct Config {
     /// Address to bind. A container wrapper selects its own internal interface explicitly.
     #[arg(long, default_value = "127.0.0.1:3000", env = "PORTAL_BIND")]

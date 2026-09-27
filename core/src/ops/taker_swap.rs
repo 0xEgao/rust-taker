@@ -5,6 +5,7 @@
 //! `Serialize`/`Deserialize`), the same `<data_dir>/swap_tracker.cbor` file the old Electron app
 //! polled straight off disk.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use std::str::FromStr;
@@ -18,7 +19,7 @@ use openswap::taker::swap_tracker::{
 };
 use openswap::taker::{SwapParams, SwapSummary};
 use openswap::utill::{funding_fee_policy_sats, sweep_fee_policy_sats, MAX_TX_COUNT};
-use openswap::wallet::UTXOSpendInfo;
+use openswap::wallet::{AnyBlockchain, Blockchain, UTXOSpendInfo};
 use crate::events::AppEvent;
 
 use crate::error::{AppError, ErrorCode};
@@ -31,10 +32,6 @@ use crate::types::{
     RouterProgressDto, RouterStageDto, SwapFundingEstimateDto, SwapProgressDto, SwapRequest,
     SwapSummaryDto, SwapTrackerDto,
 };
-
-/// How far back the wallet history is searched for our funding txs. They are the swap's most
-/// recent sends, so a short window always holds them.
-const OUTGOING_LOOKBACK: usize = 50;
 
 fn protocol_label(p: ProtocolVersion) -> &'static str {
     match p {
@@ -278,6 +275,7 @@ pub async fn estimate_swap_funding(
             None,
             outpoints,
             None,
+            params.protocol,
         )?;
 
         // `utill::funding_tx_vsize` is `pub(crate)`: overhead 11 + payment output 43 + P2TR
@@ -398,6 +396,7 @@ pub async fn prepare_swap(
         ),
         started_at: None,
         error: None,
+        outgoing: Default::default(),
     });
     Ok(dto)
 }
@@ -597,19 +596,21 @@ pub async fn get_swap_tracker(
     taker: &TakerInstance,
     swap_id: Option<String>,
 ) -> Result<Option<SwapTrackerDto>, AppError> {
-    let swap_id = match swap_id {
-        Some(id) => Some(id),
-        None => taker
-            .active_swap
-            .lock()?
-            .as_ref()
-            .map(|a| a.swap_id.clone()),
-    };
-    let Some(swap_id) = swap_id else {
-        return Ok(None);
+    let (swap_id, outgoing) = {
+        let active = taker.active_swap.lock()?;
+        let active = active.as_ref();
+        let id = match swap_id {
+            Some(id) => id,
+            None => match active {
+                Some(a) => a.swap_id.clone(),
+                None => return Ok(None),
+            },
+        };
+        let outgoing = active.filter(|a| a.swap_id == id).map(|a| Arc::clone(&a.outgoing));
+        (id, outgoing)
     };
     let data_dir = taker.data_dir.clone();
-    let wallet = taker.wallet.clone();
+    let chain = (taker.chain_backend.clone(), taker.wallet_name.clone(), taker.socks_port);
 
     tokio::task::spawn_blocking(move || -> Result<Option<SwapTrackerDto>, AppError> {
         let tracker = SwapTracker::load_or_create(&data_dir)?;
@@ -617,17 +618,37 @@ pub async fn get_swap_tracker(
             return Ok(None);
         };
         let mut dto = to_tracker_dto(record);
-        // Taproot's outgoing contract txs are our funding txs, so the wallet's own history has
-        // their confirmations. Legacy's are pre-signed and never broadcast; it reports this
-        // itself through `prev_funding_confirmed`. `try_read`: a swap step holding the wallet
-        // only delays the answer to the next poll.
-        if record.phase == SwapPhase::FundsBroadcast && !record.outgoing_contract_txids.is_empty() {
-            if let Ok(w) = wallet.try_read() {
-                let txs = w.get_transactions(Some(OUTGOING_LOOKBACK), None)?;
-                dto.outgoing_confirmed = record.outgoing_contract_txids.iter().all(|txid| {
-                    txs.iter().any(|tx| tx.info.txid == *txid && tx.info.confirmations > 0)
-                });
-            }
+        let Some(outgoing) = outgoing else {
+            return Ok(Some(dto));
+        };
+        dto.outgoing_confirmed = outgoing.confirmed.load(Ordering::Relaxed);
+        // Taproot's outgoing contract txs are our funding txs, so the chain backend has their
+        // confirmations. Legacy's are pre-signed and never broadcast; it reports this itself
+        // through `prev_funding_confirmed`. The answer lands on a later poll: a refreshed page
+        // must not wait out an Electrum round trip before it can draw the route at all.
+        if !dto.outgoing_confirmed
+            && record.phase == SwapPhase::FundsBroadcast
+            && !record.outgoing_contract_txids.is_empty()
+            && !outgoing.checking.swap(true, Ordering::AcqRel)
+        {
+            let txids = record.outgoing_contract_txids.clone();
+            std::thread::spawn(move || {
+                // Its own connection rather than the wallet's: the swap holds the wallet for most
+                // of the wait, and a `try_read` on it was refused for whole hops at a time.
+                let (config, wallet_name, socks_port) = chain;
+                let confirmed = crate::ops::chain_backend::resolve_from(&config, &wallet_name, Some(socks_port))
+                    .ok()
+                    .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
+                    .is_some_and(|chain| {
+                        txids
+                            .iter()
+                            .all(|txid| matches!(chain.tx_block_height(txid), Ok(Some(_))))
+                    });
+                if confirmed {
+                    outgoing.confirmed.store(true, Ordering::Relaxed);
+                }
+                outgoing.checking.store(false, Ordering::Release);
+            });
         }
         Ok(Some(dto))
     })

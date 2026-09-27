@@ -250,10 +250,6 @@ function OverviewPanel({
               label: "Tor",
               value: `${settings.socksPort} / ${settings.controlPort}`,
             },
-            {
-              label: "Minimum swap",
-              value: <SatsAmount sats={settings.minSwapAmount} />,
-            },
             { label: "Status", value: status.phase.phase },
           ].map(({ label, value, title }) => (
             <div key={label} className="min-w-0 bg-surface/80 p-4 transition-colors duration-200 hover:bg-white/[0.035]">
@@ -644,7 +640,6 @@ const EDITABLE_SETTING_KEYS = [
   "networkPort",
   "rpcPort",
   "requiredConfirms",
-  "minSwapAmount",
   "baseFee",
   "amountRelativeFeePct",
   "timeRelativeFeePct",
@@ -672,7 +667,6 @@ function parseSettingsForm(
     "networkPort",
     "rpcPort",
     "requiredConfirms",
-    "minSwapAmount",
     "baseFee",
     "fidelityAmount",
     "fidelityTimelock",
@@ -692,8 +686,6 @@ function parseSettingsForm(
     return "Ports must be between 1 and 65535.";
   if (new Set(ports).size !== ports.length)
     return "Network and RPC ports must be different.";
-  if (values.minSwapAmount < 10_000)
-    return "Minimum swap amount must be at least 10,000 sats.";
   if (values.fidelityAmount < 1)
     return "Fidelity amount must be greater than zero.";
   if (values.requiredConfirms < 1)
@@ -931,11 +923,10 @@ function SettingsPanel({
         </SettingsSection>
         <SettingsSection
           title="Swap policy"
-          subtitle="Minimum size and advertised router fees"
+          subtitle="Advertised router fees"
         >
           <div className="col-span-2 max-[620px]:col-span-1">
             <SummaryGroup title="Advertised policy">
-              {row("minSwapAmount", "Minimum swap amount", { suffix: "sats" })}
               {row("baseFee", "Base fee", { suffix: "sats" })}
               {row("amountRelativeFeePct", "Amount-relative fee", {
                 suffix: "%",

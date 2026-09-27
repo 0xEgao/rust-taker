@@ -257,7 +257,12 @@ export function SwapPage() {
   useEffect(() => {
     if (phase !== "running") return;
     let cancelled = false;
+    // A slow answer must not stack a new request on it every tick: the browser allows only a
+    // handful of connections per origin, and a backlog of these starves every other call.
+    let inFlight = false;
     const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
       void Promise.all([getSwapTracker(), getSwapProgress()])
         .then(async ([next, progress]) => {
           if (cancelled) return;
@@ -282,7 +287,10 @@ export function SwapPage() {
           if (recovery?.active) handOffToRecovery();
           else setPhase("failed");
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
     };
     poll();
     const id = setInterval(poll, 2000);
@@ -309,12 +317,18 @@ export function SwapPage() {
     if (phase !== "running" && phase !== "finished" && phase !== "failed")
       return;
     let cancelled = false;
+    let inFlight = false;
     const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
       void getLogs(100)
         .then((next) => {
           if (!cancelled) setSwapLogs(next);
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
     };
     poll();
     const id = phase === "running" ? setInterval(poll, 2000) : undefined;

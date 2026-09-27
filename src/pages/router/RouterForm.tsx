@@ -21,7 +21,6 @@ const INITIAL_VALUES = {
   controlPort: "",
   networkPort: "",
   rpcPort: "",
-  minSwapAmount: "",
   baseFee: "",
   amountRelativeFeePct: "",
   timeRelativeFeePct: "",
@@ -77,7 +76,6 @@ export function useRouterForm(): RouterForm {
       .then((d) =>
         setValues((v) => ({
           ...v,
-          minSwapAmount: String(d.minSwapAmount),
           baseFee: String(d.baseFee),
           amountRelativeFeePct: String(d.amountRelativeFeePct),
           timeRelativeFeePct: String(d.timeRelativeFeePct),
@@ -154,7 +152,6 @@ export function useRouterForm(): RouterForm {
         rpcPort: numbers.rpcPort,
         socksPort: numbers.socksPort,
         controlPort: numbers.controlPort,
-        minSwapAmount: numbers.minSwapAmount,
         baseFee: numbers.baseFee,
         amountRelativeFeePct: numbers.amountRelativeFeePct,
         timeRelativeFeePct: numbers.timeRelativeFeePct,
@@ -227,7 +224,6 @@ export function AdvancedFields({ form, routerId }: { form: RouterForm; routerId:
     <Disclosure label="Advanced settings">
       <div className="flex flex-col gap-4 pt-2">
         <SummaryGroup title="Swap policy">
-          <SummaryRow label="Minimum swap amount" value={form.values.minSwapAmount} display={sats(form.values.minSwapAmount)} suffix="sats" onCommit={form.set("minSwapAmount")} />
           <SummaryRow label="Base fee" value={form.values.baseFee} display={sats(form.values.baseFee)} suffix="sats" onCommit={form.set("baseFee")} />
           <SummaryRow label="Amount-relative fee" value={form.values.amountRelativeFeePct} display={form.values.amountRelativeFeePct || "…"} suffix="%" inputMode="decimal" onCommit={form.set("amountRelativeFeePct")} />
           <SummaryRow label="Time-relative fee" value={form.values.timeRelativeFeePct} display={form.values.timeRelativeFeePct || "…"} suffix="%" inputMode="decimal" onCommit={form.set("timeRelativeFeePct")} />
