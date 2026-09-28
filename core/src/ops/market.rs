@@ -2,13 +2,36 @@
 //! so it never contends with a running swap.
 
 use std::sync::atomic::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBook};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, TakerInstance};
 use crate::types::{MakerDto, OfferBookView, OfferDto};
+
+/// A router's self-chosen name with the invisible formatting characters taken out. The crate
+/// only refuses control characters, which leaves direction overrides and zero-width characters
+/// free to make one router's name render as another's. Emptied by that, it reads as unnamed and
+/// the UI shows the address instead.
+fn visible_name(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                '\u{00AD}'
+                    | '\u{061C}'
+                    | '\u{180E}'
+                    | '\u{200B}'..='\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2060}'..='\u{206F}'
+                    | '\u{FEFF}'
+                    | '\u{FFF9}'..='\u{FFFB}'
+            )
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 
 fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
     let state = match m.state {
@@ -25,11 +48,11 @@ fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
         let bond = &o.fidelity.bond;
         let outpoint = bond.outpoint();
         OfferDto {
+            name: visible_name(&o.name),
             base_fee: o.base_fee,
             amount_relative_fee_pct: o.amount_relative_fee_pct,
             time_relative_fee_pct: o.time_relative_fee_pct,
             required_confirms: o.required_confirms,
-            minimum_locktime: o.minimum_locktime,
             max_size: o.max_size,
             min_size: o.min_size,
             bond_amount_sats: bond.amount.to_sat(),
@@ -90,13 +113,12 @@ pub fn get_offers(state: &TakerInstance) -> Result<OfferBookView, AppError> {
         bad,
         unresponsive,
         syncing: state.is_offerbook_syncing.load(Ordering::Relaxed),
-        last_sync_ts: state.last_offerbook_sync_ts.load(Ordering::Relaxed),
     })
 }
 
-/// Maker discovery over Nostr + Tor; can take 30-60s+. `syncing`/`last_sync_ts`
-/// in get_offers are our own bookkeeping (the crate doesn't expose them on
-/// the public client) and only reflect syncs triggered here.
+/// Maker discovery over Nostr + Tor; can take 30-60s+. `syncing` in get_offers is our own
+/// bookkeeping (the crate doesn't expose it on the public client) and only reflects syncs
+/// triggered here.
 pub async fn sync_offerbook(state: &TakerInstance) -> Result<(), AppError> {
     let client = state.offer_sync.clone();
 
@@ -106,14 +128,6 @@ pub async fn sync_offerbook(state: &TakerInstance) -> Result<(), AppError> {
         .map_err(AppError::internal)
         .and_then(|r| r.map_err(AppError::from));
     state.is_offerbook_syncing.store(false, Ordering::Relaxed);
-
-    if result.is_ok() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        state.last_offerbook_sync_ts.store(now, Ordering::Relaxed);
-    }
     result
 }
 
@@ -143,4 +157,17 @@ pub async fn remove_maker(
     })
     .await
     .map_err(AppError::internal)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_name;
+
+    #[test]
+    fn invisible_characters_cannot_disguise_a_name() {
+        assert_eq!(visible_name("Galaxy\u{202E}yortseD"), "GalaxyyortseD");
+        assert_eq!(visible_name("Asteroid\u{200B} Destroyer"), "Asteroid Destroyer");
+        assert_eq!(visible_name("\u{2066}\u{FEFF}"), "");
+        assert_eq!(visible_name("satoshi's lounge"), "satoshi's lounge");
+    }
 }

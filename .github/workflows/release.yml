@@ -1,0 +1,272 @@
+name: Release
+
+# Pushing a version tag (e.g. `v0.1.0`) builds every artifact and gathers them on a *draft*
+# GitHub Release, with a SHA256SUMS over all of them. Nothing is public until the draft is
+# published by hand.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  # The tag names the release; tauri.conf.json names the version inside every installer. A
+  # mismatch would ship a v0.2.0 release whose apps call themselves 0.1.0.
+  version:
+    name: Check tag matches app version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: version
+        run: |
+          app="$(jq -r .version src-tauri/tauri.conf.json)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$app" != "$tag" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match tauri.conf.json version ${app}"
+            exit 1
+          fi
+          echo "version=$app" >> "$GITHUB_OUTPUT"
+
+  # Created once, up front: parallel jobs each creating "the" draft end up with two, since a
+  # draft cannot be looked up by its tag. Everything after uploads to this id.
+  release:
+    name: Create draft release
+    needs: version
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.create.outputs.id }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # A rerun of the whole workflow reuses the draft its first run made; creating another
+      # would split the installers and the web binaries across two drafts.
+      - id: create
+        run: |
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.draft and .tag_name == \"$GITHUB_REF_NAME\") | .id" | head -n1)"
+          if [ -z "$id" ]; then
+            id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$GITHUB_REF_NAME" \
+              -f name="Portal $GITHUB_REF_NAME" \
+              -F draft=true \
+              --jq .id)"
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    name: Desktop ${{ matrix.name }}
+    needs: release
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
+          - name: macOS Universal
+            platform: macos-latest
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            xdg-utils
+
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install automake autoconf libtool pkg-config
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - run: npm ci
+
+      - name: Build installers onto the draft release
+        # Pinned by commit: this step runs with a token that can write releases, and a tag can move.
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ad-hoc signing keeps unsigned macOS artifacts launchable after download.
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          args: --target ${{ matrix.target }}
+          releaseId: ${{ needs.release.outputs.id }}
+
+  web:
+    name: Web ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            platform: ubuntu-22.04
+            asset: linux-x86_64
+          - name: Linux arm64
+            platform: ubuntu-22.04-arm
+            asset: linux-arm64
+          - name: macOS Universal
+            platform: macos-latest
+            asset: macos-universal
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Embedded Tor is built from source (libtor, vendored OpenSSL).
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install automake autoconf libtool pkg-config
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: release-web-${{ matrix.asset }}
+
+      - run: npm ci
+
+      - name: Build frontend
+        run: npx tsc --noEmit && npx vite build --mode web
+
+      # PORTAL_EMBED_WEB builds dist/web into the binary, so the download is one file.
+      - name: Build portal-web
+        if: runner.os == 'Linux'
+        env:
+          PORTAL_EMBED_WEB: dist/web
+        run: |
+          cargo build --locked --release -p portal-web
+          cp target/release/portal-web "portal-web-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
+
+      - name: Build portal-web (universal)
+        if: runner.os == 'macOS'
+        env:
+          PORTAL_EMBED_WEB: dist/web
+        run: |
+          cargo build --locked --release -p portal-web --target aarch64-apple-darwin
+          cargo build --locked --release -p portal-web --target x86_64-apple-darwin
+          out="portal-web-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
+          lipo -create -output "$out" \
+            target/aarch64-apple-darwin/release/portal-web \
+            target/x86_64-apple-darwin/release/portal-web
+          # Ad-hoc, like the desktop app: an arm64 Mac refuses to run a binary with no signature.
+          codesign --force --sign - "$out"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-${{ matrix.asset }}
+          path: portal-web-*
+          if-no-files-found: error
+
+  # Last, once every binary is on the draft: the web binaries go up beside the installers,
+  # and one checksum file covers the lot.
+  publish:
+    name: Attach web binaries and checksums
+    needs: [release, desktop, web]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_ID: ${{ needs.release.outputs.id }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: web-*
+          path: all
+          merge-multiple: true
+
+      # By id throughout: `gh release` looks releases up by tag, which a draft does not have yet.
+      - name: Download the installers already on the draft
+        working-directory: all
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+            --jq '.[] | "\(.id) \(.name)"' |
+          while read -r asset name; do
+            # This job's own uploads, left by an earlier run: the fresh artifacts replace them.
+            case "$name" in SHA256SUMS | portal-web-*) continue ;; esac
+            gh api -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset" > "$name"
+          done
+
+      - name: Upload web binaries and SHA256SUMS
+        working-directory: all
+        run: |
+          chmod +x portal-web-*
+          # Named as the files appear on the release page, so `sha256sum -c` works on a folder
+          # of downloads.
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          # Replaced, not skipped, when already there: a rerun after a partial upload must still
+          # reach SHA256SUMS, and GitHub refuses a second asset under an existing name.
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+            --jq '.[] | "\(.id) \(.name)"')"
+          for file in portal-web-* SHA256SUMS; do
+            echo "$existing" | awk -v name="$file" '$2 == name { print $1 }' | while read -r asset; do
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset"
+            done
+            curl --fail --silent --show-error -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$file" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$file"
+          done

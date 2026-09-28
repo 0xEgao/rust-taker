@@ -196,7 +196,7 @@ pub async fn list_maker_fidelity_bonds(
     let wallet = get_maker_wallet_handle(state, &router_id)?;
     tokio::task::spawn_blocking(move || -> Result<Vec<FidelityBondDto>, AppError> {
         let wallet = wallet.read()?;
-        let (tip_height, tip_time) = wallet.chain_tip()?;
+        let (tip_height, _) = wallet.chain_tip()?;
         Ok(wallet
             .get_fidelity_bonds()
             .iter()
@@ -205,7 +205,6 @@ pub async fn list_maker_fidelity_bonds(
                 let lock_time_height = bond.lock_time.to_consensus_u32();
                 let is_spent = bond.is_spent();
                 FidelityBondDto {
-                    bond_index: bond.bond_index,
                     outpoint: Outpoint {
                         txid: outpoint.txid.to_string(),
                         vout: outpoint.vout,
@@ -214,10 +213,6 @@ pub async fn list_maker_fidelity_bonds(
                     lock_time_height,
                     is_spent,
                     is_locked: !is_spent && (tip_height as u32) < lock_time_height,
-                    bond_value_sats: (!is_spent)
-                        .then(|| wallet.calculate_bond_value(bond, tip_height, tip_time).ok())
-                        .flatten()
-                        .map(|v| v.to_sat()),
                 }
             })
             .collect())

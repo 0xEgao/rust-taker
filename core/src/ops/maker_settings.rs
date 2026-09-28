@@ -130,11 +130,23 @@ fn read_runtime_config(path: &Path) -> Result<MakerServerConfig, AppError> {
 }
 
 fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError> {
+    // A registration from before names existed, with no config.toml to supply one, would
+    // otherwise fail the name check and never start again.
+    if settings.name.is_empty() {
+        settings.name = settings
+            .router_id
+            .chars()
+            .take(crate::ops::maker::MAX_ROUTER_NAME_LEN)
+            .collect();
+    }
     let config_path = maker_data_dir(settings)?.join("config.toml");
     if !config_path.exists() {
         return Ok(());
     }
     let config = read_runtime_config(&config_path)?;
+    if !config.name.is_empty() {
+        settings.name = config.name;
+    }
     settings.network_port = config.network_port;
     settings.rpc_port = config.rpc_port;
     settings.socks_port = config.socks_port;
@@ -158,6 +170,7 @@ pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), Ap
     } else {
         MakerServerConfig::default()
     };
+    config.name = settings.name.clone();
     config.network_port = settings.network_port;
     config.rpc_port = settings.rpc_port;
     config.socks_port = settings.socks_port;
@@ -230,6 +243,8 @@ fn load_dashboard_registrations(
             let wallet_name = settings.wallet_name.unwrap_or_else(|| router_id.clone());
             let dto = MakerSettingsDto {
                 router_id: router_id.clone(),
+                // Ids have no length cap; a name longer than wallets accept would stop it starting.
+                name: router_id.chars().take(crate::ops::maker::MAX_ROUTER_NAME_LEN).collect(),
                 wallet_name,
                 network_port: settings.network_port,
                 rpc_port: settings.rpc_port,
@@ -430,6 +445,7 @@ mod tests {
         MakerSettingsDto {
             router_id: "maker-one".to_string(),
             wallet_name: "wallet-one".to_string(),
+            name: "maker-one".to_string(),
             network_port: 6102,
             rpc_port: 6103,
             socks_port: 9050,
@@ -463,6 +479,7 @@ mod tests {
         saved.rpc_port = 6203;
         saved.base_fee = 777;
         saved.fidelity_feerate = 3.5;
+        saved.name = "satoshi's lounge".to_string();
         write_runtime_config(&saved).unwrap();
 
         let mut registry_copy = settings();
@@ -472,8 +489,19 @@ mod tests {
         assert_eq!(registry_copy.rpc_port, 6203);
         assert_eq!(registry_copy.base_fee, 777);
         assert_eq!(registry_copy.fidelity_feerate, 3.5);
+        assert_eq!(registry_copy.name, "satoshi's lounge");
 
         std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn a_registration_without_a_name_falls_back_to_its_id() {
+        let mut legacy = settings();
+        legacy.name = String::new();
+        legacy.router_id = "r".repeat(40);
+        legacy.data_dir = Some(std::env::temp_dir().join("portal-no-such-router").display().to_string());
+        apply_runtime_config(&mut legacy).unwrap();
+        assert_eq!(legacy.name, "r".repeat(crate::ops::maker::MAX_ROUTER_NAME_LEN));
     }
 
     #[test]

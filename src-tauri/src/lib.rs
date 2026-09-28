@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod about;
 mod commands;
 mod native;
 
@@ -100,7 +102,6 @@ pub fn run() {
             auth::auth_session,
             auth::auth_claim,
             auth::auth_login,
-            auth::auth_logout,
             // setup / connectivity
             setup::check_tor,
             setup::restart_tor_bootstrap,
@@ -123,7 +124,6 @@ pub fn run() {
             taker_wallet::get_balances,
             taker_wallet::validate_address,
             taker_wallet::get_new_address,
-            taker_wallet::verify_last_address,
             taker_wallet::get_transactions,
             taker_wallet::list_utxos,
             taker_wallet::send_to_address,
@@ -243,17 +243,24 @@ pub fn run() {
                 // closing wallet sync properly. Tauri builds the app submenu first, Quit last.
                 let app_quit =
                     MenuItem::with_id(app, "quit", "Quit Portal", true, Some("CmdOrCtrl+Q"))?;
+                // Replaces the predefined About, which Tauri builds first in the same submenu;
+                // see `about.rs` for why the panel is opened by hand.
+                let about = MenuItem::with_id(app, "about", "About Portal", true, None::<&str>)?;
                 if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
+                    if let Some(predefined_about) = app_menu.items()?.first() {
+                        app_menu.remove(predefined_about)?;
+                    }
+                    app_menu.insert(&about, 0)?;
                     if let Some(predefined_quit) = app_menu.items()?.last() {
                         app_menu.remove(predefined_quit)?;
                     }
                     app_menu.append(&app_quit)?;
                 }
                 app.set_menu(menu)?;
-                app.on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
-                        shutdown::begin_quit(app);
-                    }
+                app.on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => shutdown::begin_quit(app),
+                    "about" => about::show(&app.package_info().version.to_string()),
+                    _ => {}
                 });
             }
 

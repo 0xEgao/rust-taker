@@ -507,43 +507,6 @@ export function EntityMonogram({
   );
 }
 
-export function StatTile({
-  label,
-  value,
-  detail,
-  tone = "primary",
-  className = "",
-}: {
-  label: string;
-  value: ReactNode;
-  detail?: ReactNode;
-  tone?: "primary" | "success" | "warning" | "danger" | "foreground";
-  className?: string;
-}) {
-  const tones = {
-    primary: "text-primary",
-    success: "text-success",
-    warning: "text-warning",
-    danger: "text-danger",
-    foreground: "text-foreground",
-  };
-  return (
-    <div
-      className={`raised rounded-card border border-line-strong bg-surface-raised/70 p-5 ${className}`}
-    >
-      <MicroLabel>{label}</MicroLabel>
-      <strong
-        className={`mt-2 block font-numeric text-[24px] font-bold ${tones[tone]}`}
-      >
-        {value}
-      </strong>
-      {detail && (
-        <span className="mt-1 block text-[12px] text-muted">{detail}</span>
-      )}
-    </div>
-  );
-}
-
 // Static so Tailwind can see them; a template string would generate nothing.
 const STRIP_COLS: Record<number, string> = {
   2: "grid-cols-2",
@@ -553,7 +516,7 @@ const STRIP_COLS: Record<number, string> = {
 
 /**
  * A page's headline metrics as one panel divided by hairlines, rather than N separate cards.
- * Cheaper visually than a row of `StatTile`s: one border and one translucent fill, so the
+ * Cheaper visually than separate cards: one border and one translucent fill, so the
  * page's ambient accent reads through it as a single soft glow instead of N competing ones.
  * Emphasis is carried by `tone`, not by making one cell bigger.
  */

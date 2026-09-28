@@ -183,7 +183,11 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::get_maker_info(&ctx.rt, body.router_id)?)
+            let mut info = ops::maker::get_maker_info(&ctx.rt, body.router_id)?;
+            // Server paths, like a wallet's: nothing in a browser needs where the file sits.
+            info.wallet_path.clear();
+            info.data_dir.clear();
+            encode(&info)
         })
     }),
     op("get_maker_logs", false, |ctx, args| {
@@ -265,7 +269,11 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_settings::get_saved_maker_settings(body.router_id)?)
+            let mut settings = ops::maker_settings::get_saved_maker_settings(body.router_id)?;
+            if let Some(settings) = settings.as_mut() {
+                settings.data_dir = None;
+            }
+            encode(&settings)
         })
     }),
     op("get_router_defaults", false, |ctx, args| {
@@ -388,7 +396,11 @@ pub static OPERATIONS: &[Operation] = &[
     op("list_makers", false, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::maker_settings::list_makers()?)
+            let mut makers = ops::maker_settings::list_makers()?;
+            for settings in &mut makers {
+                settings.data_dir = None;
+            }
+            encode(&makers)
         })
     }),
     op("list_recoveries", false, |ctx, args| {
@@ -459,18 +471,6 @@ pub static OPERATIONS: &[Operation] = &[
             }
             let body: Args = parse(args)?;
             encode(&ops::taker_reports::verify_deniability(&*ctx.taker()?, body.swap_id).await?)
-        })
-    }),
-    op("verify_last_address", false, |ctx, args| {
-        let _ = (&ctx, &args);
-        Box::pin(async move {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct Args {
-            address_type: AddressTypeDto,
-            }
-            let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::verify_last_address(&*ctx.taker()?, body.address_type).await?)
         })
     }),
     op("verify_maker_deniability", true, |ctx, args| {
@@ -749,8 +749,14 @@ pub static DURABLE: &[Operation] = &[
             router_id: String,
             settings: MakerSettingsDto,
             }
-            let body: Args = parse(args)?;
-            encode(&ops::maker::update_maker_settings(&ctx.rt, body.router_id, body.settings)?)
+            let mut body: Args = parse(args)?;
+            // The browser was never sent the data directory, so it cannot send it back; restore
+            // the saved one, or the unchanged-location check would refuse every save.
+            body.settings.data_dir = ops::maker_settings::get_saved_maker_settings(body.router_id.clone())?
+                .and_then(|saved| saved.data_dir);
+            let mut saved = ops::maker::update_maker_settings(&ctx.rt, body.router_id, body.settings)?;
+            saved.data_dir = None;
+            encode(&saved)
         })
     }),
 ];

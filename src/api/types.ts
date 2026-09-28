@@ -13,8 +13,6 @@ export interface NodeBackend {
   port: number;
   username: string;
   password: string;
-  /** Whether Rust has a stored credential; the credential itself is never returned. */
-  passwordConfigured?: boolean;
   zmqPort: number;
 }
 
@@ -205,8 +203,6 @@ export type AddressType = "p2wpkh" | "p2tr";
 export interface NewAddress {
   address: string;
   addressType: string;
-  /** False for a re-offered cached address that hasn't been checked for payments yet. */
-  verified: boolean;
   /** Full path from the master key, e.g. `m/86'/1'/0'/0/7`. */
   derivationPath?: string;
 }
@@ -278,11 +274,12 @@ export interface PriceEstimate {
 // ---------------------------------------------------------------------------
 
 export interface Offer {
+  /** Empty for offers saved before routers sent names. */
+  name: string;
   baseFee: number;
   amountRelativeFeePct: number;
   timeRelativeFeePct: number;
   requiredConfirms: number;
-  minimumLocktime: number;
   maxSize: number;
   minSize: number;
   bondAmountSats: number;
@@ -304,7 +301,6 @@ export interface OfferBookView {
   bad: Router[];
   unresponsive: Router[];
   syncing: boolean;
-  lastSyncTs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +310,8 @@ export interface OfferBookView {
 export interface RouterSettings {
   routerId: string;
   walletName: string;
+  /** Published in the router's offer, where wallets show it. */
+  name: string;
   networkPort: number;
   rpcPort: number;
   socksPort: number;
@@ -364,13 +362,11 @@ export interface RouterStatus {
 }
 
 export interface FidelityBond {
-  bondIndex: number;
   outpoint: Outpoint;
   amountSats: number;
   lockTimeHeight: number;
   isSpent: boolean;
   isLocked: boolean;
-  bondValueSats?: number;
 }
 
 export interface RouterSwapReportSummary {
@@ -424,8 +420,6 @@ export interface SwapFundingEstimate {
   /** Most the last hop can pay back — one UTXO per contract. A ceiling: a router short of
    *  liquidity commits to fewer splits, and the rest of the route inherits that. */
   incomingUtxoCount: number;
-  /** Agreed once for the whole swap — the same rate funds the route and signs every contract. */
-  feeRateSatsPerVb: number;
   /** Ceiling: a router's funding splits at the full input budget plus one claim per contract. */
   routeMiningFeePerRouterSats: number;
   /** Claiming the incoming contracts at the end of the swap; depends on the protocol. */
@@ -464,8 +458,6 @@ export interface PaymentQuote {
   address: string;
   /** Exact amount the receiver gets. */
   amountSats: number;
-  /** Reserved on the final hop to settle the receiver's output. */
-  settlementBudgetSats: number;
 }
 
 // Coarse in-memory lifecycle — for live per-router detail, see SwapTrackerProgress/getSwapTracker.
@@ -650,7 +642,6 @@ export interface SwapReportSummary {
 
 export interface ReportRouterFee {
   routerIndex: number;
-  routerAddress: string;
   baseFeeSats: number;
   amountRelativeFeeSats: number;
   timeRelativeFeeSats: number;

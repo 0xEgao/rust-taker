@@ -39,15 +39,15 @@ pub enum ErrorCode {
     NotInitialized,
     SwapInProgress,
     InsufficientFunds,
-    NotEnoughMakers,
+    NotEnoughRouters,
     ContractsBroadcasted,
     InvalidInput,
     // maker
-    MakerBusy,
-    MakerNotFound,
-    MakerNotInitialized,
-    MakerAlreadyRunning,
-    MakerNotRunning,
+    RouterBusy,
+    RouterNotFound,
+    RouterNotInitialized,
+    RouterAlreadyRunning,
+    RouterNotRunning,
     ReportNotFound,
     UserCancelled,
     AuthorizationDenied,
@@ -92,7 +92,7 @@ impl ErrorCode {
             Self::TorUnreachable => ErrorClass::NeedsRestart,
 
             Self::SwapInProgress
-            | Self::MakerBusy
+            | Self::RouterBusy
             | Self::SensitiveOperationInProgress
             | Self::RpcUnreachable => ErrorClass::Transient,
 
@@ -104,17 +104,17 @@ impl ErrorCode {
             | Self::WalletOpenElsewhere
             | Self::WalletNetworkMismatch
             | Self::InsufficientFunds
-            | Self::NotEnoughMakers
+            | Self::NotEnoughRouters
             | Self::InvalidInput
             | Self::InvalidFileSelection
             | Self::InsecureDataDirectory
             | Self::BackendRouteChanged
             | Self::AuthorizationDenied
             | Self::NotInitialized
-            | Self::MakerNotFound
-            | Self::MakerNotInitialized
-            | Self::MakerAlreadyRunning
-            | Self::MakerNotRunning
+            | Self::RouterNotFound
+            | Self::RouterNotInitialized
+            | Self::RouterAlreadyRunning
+            | Self::RouterNotRunning
             | Self::ReportNotFound => ErrorClass::NeedsInput,
 
             // Funds are already committed to contracts; recovery owns them from here.
@@ -156,18 +156,18 @@ impl AppError {
 
     pub fn maker_busy() -> Self {
         Self::new(
-            ErrorCode::MakerBusy,
+            ErrorCode::RouterBusy,
             "a router start/stop operation is already in progress",
         )
     }
 
     pub fn maker_not_initialized() -> Self {
-        Self::new(ErrorCode::MakerNotInitialized, "router is not initialized")
+        Self::new(ErrorCode::RouterNotInitialized, "router is not initialized")
     }
 
     pub fn maker_not_found(router_id: &str) -> Self {
         Self::new(
-            ErrorCode::MakerNotFound,
+            ErrorCode::RouterNotFound,
             format!("router '{router_id}' is not registered"),
         )
     }
@@ -207,7 +207,7 @@ impl From<TakerError> for AppError {
         }
         let code = match &e {
             TakerError::ContractsBroadcasted(_) => ErrorCode::ContractsBroadcasted,
-            TakerError::NotEnoughMakersInOfferBook => ErrorCode::NotEnoughMakers,
+            TakerError::NotEnoughMakersInOfferBook => ErrorCode::NotEnoughRouters,
             TakerError::IO(_) => ErrorCode::Io,
             _ => ErrorCode::Internal,
         };
@@ -364,7 +364,7 @@ mod tests {
     fn other_taker_failures_are_unchanged() {
         assert_eq!(
             AppError::from(TakerError::NotEnoughMakersInOfferBook).code,
-            ErrorCode::NotEnoughMakers
+            ErrorCode::NotEnoughRouters
         );
     }
 

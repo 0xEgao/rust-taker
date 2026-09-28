@@ -72,6 +72,7 @@ import { formatRelativeTime } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { LogPanel } from "../../components/app/LogPanel";
 import { FaucetButton } from "../../components/app/FaucetButton";
+import { routerNameError } from "./router-defaults";
 import { formatTimestamp } from "../../components/ui/report";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import {
@@ -274,8 +275,9 @@ function OverviewPanel({
             },
             {
               label: "Data directory",
-              value: info.dataDir,
-              title: info.dataDir,
+              // Empty on the web host, which keeps server paths to itself.
+              value: info.dataDir || "Default",
+              title: info.dataDir || undefined,
             },
             {
               label: "Ports",
@@ -607,8 +609,11 @@ function WalletPanel({
         )}
       </Card>
       </div>
-      {/* The floor keeps both lists usable on a short window; below it the page scrolls. */}
-      <div className="grid min-h-[280px] flex-1 grid-cols-2 grid-rows-1 gap-4 max-[1100px]:min-h-[480px] max-[1100px]:grid-cols-1 max-[1100px]:grid-rows-2">
+      {/* The floor keeps both lists usable on a short window; below it the page scrolls. The
+          page's bottom gap lives here, inside the floor, rather than on the scroll container:
+          once the page scrolls, the container's own bottom padding is not part of what
+          scrolls, and the last card would end flush with the window. */}
+      <div className="grid min-h-[344px] flex-1 grid-cols-2 grid-rows-1 gap-4 pb-16 max-[1100px]:min-h-[544px] max-[1100px]:grid-cols-1 max-[1100px]:grid-rows-2">
       <Card className="flex min-h-0 min-w-0 flex-col border-line-strong">
         <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-4">
           <h2 className="font-header text-[14px] font-bold">
@@ -722,12 +727,15 @@ const EDITABLE_SETTING_KEYS = [
   "fidelityFeerate",
 ] as const;
 type EditableSettingKey = (typeof EDITABLE_SETTING_KEYS)[number];
-type SettingsForm = Record<EditableSettingKey, string>;
+type SettingsForm = Record<EditableSettingKey, string> & { name: string };
 
 function settingsToForm(settings: RouterSettings): SettingsForm {
-  return Object.fromEntries(
-    EDITABLE_SETTING_KEYS.map((key) => [key, String(settings[key])]),
-  ) as SettingsForm;
+  return {
+    ...(Object.fromEntries(
+      EDITABLE_SETTING_KEYS.map((key) => [key, String(settings[key])]),
+    ) as Record<EditableSettingKey, string>),
+    name: settings.name,
+  };
 }
 
 function parseSettingsForm(
@@ -769,7 +777,9 @@ function parseSettingsForm(
   if (values.fidelityTimelock < 12_960 || values.fidelityTimelock > 25_920) {
     return "Fidelity timelock must be between 12,960 and 25,920 blocks.";
   }
-  return { ...settings, ...values };
+  const nameError = routerNameError(form.name);
+  if (nameError) return `Public name: ${nameError}`;
+  return { ...settings, ...values, name: form.name.trim() };
 }
 
 function SettingsPanel({
@@ -812,11 +822,12 @@ function SettingsPanel({
       .catch(() => {});
   }, []);
 
+  const displayName = settings.name || routerId;
   const parsed = parseSettingsForm(settings, form);
   const error = typeof parsed === "string" ? parsed : null;
-  const dirty = EDITABLE_SETTING_KEYS.some(
-    (key) => form[key] !== String(settings[key]),
-  );
+  const dirty =
+    form.name !== settings.name ||
+    EDITABLE_SETTING_KEYS.some((key) => form[key] !== String(settings[key]));
   const row = (
     key: EditableSettingKey,
     label: string,
@@ -862,7 +873,7 @@ function SettingsPanel({
       setRestartPending(false);
       setRestartPassword("");
       await onSaved();
-      pushToast("success", `${routerId} is running again.`);
+      pushToast("success", `${displayName} is running again.`);
     } finally {
       setSaving(false);
     }
@@ -997,10 +1008,18 @@ function SettingsPanel({
         </SettingsSection>
         <SettingsSection
           title="Swap policy"
-          subtitle="Advertised router fees"
+          subtitle="What wallets see in this router's offer"
         >
           <div className="col-span-2 max-[620px]:col-span-1">
             <SummaryGroup title="Advertised policy">
+              <SummaryRow
+                label="Public name"
+                value={form.name}
+                inputMode="text"
+                hint="Shown to wallets. Anyone can claim any name."
+                readOnly={transitioning || saving}
+                onCommit={(name) => setForm((current) => ({ ...current, name }))}
+              />
               {row("baseFee", "Base fee", { suffix: "sats" })}
               {row("amountRelativeFeePct", "Amount-relative fee", {
                 suffix: "%",
@@ -1090,7 +1109,7 @@ function SettingsPanel({
         <Modal
           title={
             restartPending
-              ? `Start ${routerId} again`
+              ? `Start ${displayName} again`
               : running
                 ? "Save and restart router?"
                 : "Save router settings?"
@@ -1169,7 +1188,7 @@ function SettingsPanel({
       )}
       {confirmRemove && (
         <Modal
-          title={`Remove ${routerId}?`}
+          title={`Remove ${displayName}?`}
           onClose={() => setConfirmRemove(false)}
           footer={
             <>
@@ -1183,7 +1202,7 @@ function SettingsPanel({
                 onClick={() =>
                   void clearRouterSettings(routerId)
                     .then(() => {
-                      pushToast("success", `${routerId} was removed.`);
+                      pushToast("success", `${displayName} was removed.`);
                       navigate("/router");
                     })
                     .catch((e) => pushToast("error", e.message))
@@ -1195,7 +1214,7 @@ function SettingsPanel({
           }
         >
           <p className="text-[12px] leading-5 text-muted">
-            This removes <strong className="text-foreground">{routerId}</strong>{" "}
+            This removes <strong className="text-foreground">{displayName}</strong>{" "}
             from the app, permanently — it will not reappear. Its wallet file
             and anything on-chain are left untouched.
           </p>
@@ -1328,7 +1347,7 @@ export function RouterWorkspacePage() {
       </div>
     );
   return (
-    <div className={`h-full overflow-y-auto p-8 ${fitScreen ? "flex flex-col" : ""}`}>
+    <div className={`h-full overflow-y-auto ${fitScreen ? "flex flex-col px-8 pt-8" : "p-8"}`}>
       <div className={`mx-auto w-full max-w-[1380px] ${fitScreen ? "flex min-h-0 flex-1 flex-col" : "pb-8"}`}>
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
@@ -1336,7 +1355,7 @@ export function RouterWorkspacePage() {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1 className="truncate font-header text-[27px] font-bold">
-                  {id}
+                  {settings.name || id}
                 </h1>
                 <span
                   className={`h-2 w-2 rounded-full ${
@@ -1350,6 +1369,9 @@ export function RouterWorkspacePage() {
                   }`}
                 />
               </div>
+              {settings.name && settings.name !== id && (
+                <p className="truncate font-mono text-[11.5px] text-subtle">{id}</p>
+              )}
             </div>
           </div>
           <div className="flex gap-2">

@@ -31,7 +31,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
     // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
     // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
     // about a maker that finished long ago.
-    let running_makers = state
+    let running_routers = state
         .makers
         .lock()
         .map(|makers| {
@@ -53,7 +53,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
     QuitBlockers {
         swap_running,
         recovery_running,
-        running_makers,
+        running_routers,
     }
 }
 
@@ -61,7 +61,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
 /// otherwise goes straight to teardown.
 pub fn begin_quit(app: &AppHandle) {
     let blockers = quit_blockers(&app.state::<Arc<AppState>>());
-    if blockers.swap_running || blockers.recovery_running || !blockers.running_makers.is_empty() {
+    if blockers.swap_running || blockers.recovery_running || !blockers.running_routers.is_empty() {
         crate::show_main_window(app);
         let _ = app.emit("app://quit-blocked", blockers);
         return;

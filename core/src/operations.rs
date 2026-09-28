@@ -199,7 +199,12 @@ impl Journal {
         index.retain(|_, record| !expired(record, now));
 
         if let Some(existing) = index.get(operation_id) {
-            if existing.fingerprint != fingerprint || existing.kind != kind {
+            // Another wallet's key is refused like any mismatch, so a replay can never hand one
+            // session another's record.
+            if existing.fingerprint != fingerprint
+                || existing.kind != kind
+                || existing.wallet_id != wallet_id
+            {
                 return Err(AppError::new(
                     ErrorCode::InvalidInput,
                     "this operation id was already used for a different request",
@@ -281,15 +286,25 @@ impl Journal {
         self.index.lock().ok()?.get(operation_id).cloned()
     }
 
-    /// Newest first, bounded — the operations list is a UI view, not an export.
-    pub fn recent(&self, limit: usize) -> Vec<OperationRecord> {
+    /// `get`, for a caller on `wallet_id`: another wallet's record reads as absent.
+    pub fn get_for(&self, operation_id: &str, wallet_id: Option<&str>) -> Option<OperationRecord> {
+        self.get(operation_id).filter(|r| belongs_to(r, wallet_id))
+    }
+
+    /// Newest first, bounded — the operations list is a UI view, not an export. Only what a
+    /// caller on `wallet_id` may see.
+    pub fn recent(&self, limit: usize, wallet_id: Option<&str>) -> Vec<OperationRecord> {
         let Ok(mut index) = self.index.lock() else {
             return Vec::new();
         };
         let now = now();
         index.retain(|_, record| !expired(record, now));
-        let mut all: Vec<_> = index.values().cloned().collect();
-        all.sort_unstable_by(|a, b| b.created_at.cmp(&a.created_at));
+        let mut all: Vec<_> = index
+            .values()
+            .filter(|r| belongs_to(r, wallet_id))
+            .cloned()
+            .collect();
+        all.sort_unstable_by_key(|r| std::cmp::Reverse(r.created_at));
         all.truncate(limit);
         all
     }
@@ -304,7 +319,7 @@ impl Journal {
         index
             .values()
             .filter(|r| moves_funds(&r.kind) && is_unsettled(r) && !r.acknowledged)
-            .filter(|r| r.wallet_id.is_none() || r.wallet_id.as_deref() == wallet_id)
+            .filter(|r| belongs_to(r, wallet_id))
             .cloned()
             .collect()
     }
@@ -317,9 +332,10 @@ impl Journal {
         &self,
         operation_id: &str,
         known_txids: &[String],
+        wallet_id: Option<&str>,
     ) -> Result<OperationRecord, AppError> {
         let record = self
-            .get(operation_id)
+            .get_for(operation_id, wallet_id)
             .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))?;
         let txid = record
             .result
@@ -340,10 +356,15 @@ impl Journal {
     /// holding up new work. The state is left alone: the outcome is still unknown.
     /// Not routed through `update`: acknowledging is only ever done to a *terminal* record,
     /// which `update` deliberately refuses to touch.
-    pub fn acknowledge(&self, operation_id: &str) -> Result<OperationRecord, AppError> {
+    pub fn acknowledge(
+        &self,
+        operation_id: &str,
+        wallet_id: Option<&str>,
+    ) -> Result<OperationRecord, AppError> {
         let mut index = self.index.lock()?;
         let current = index
             .get(operation_id)
+            .filter(|r| belongs_to(r, wallet_id))
             .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))?;
         let mut next = current.clone();
         next.acknowledged = true;
@@ -351,6 +372,12 @@ impl Journal {
         index.insert(operation_id.to_string(), next.clone());
         Ok(next)
     }
+}
+
+/// Whether a caller on `wallet_id` may see or settle `record`. A record with no wallet recorded
+/// belongs to every caller, as it conflicts with every wallet in `blocking_conflicts`.
+fn belongs_to(record: &OperationRecord, wallet_id: Option<&str>) -> bool {
+    record.wallet_id.is_none() || record.wallet_id.as_deref() == wallet_id
 }
 
 #[cfg(test)]
@@ -455,10 +482,10 @@ mod tests {
             .unwrap();
         j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost")).unwrap();
 
-        let unchanged = j.reconcile(&id, &["other".to_string()]).unwrap();
+        let unchanged = j.reconcile(&id, &["other".to_string()], None).unwrap();
         assert_eq!(unchanged.state, OperationState::Indeterminate);
 
-        let settled = j.reconcile(&id, &["abc".to_string()]).unwrap();
+        let settled = j.reconcile(&id, &["abc".to_string()], None).unwrap();
         assert_eq!(settled.state, OperationState::Succeeded);
         assert!(j.blocking_conflicts(None).is_empty());
     }
@@ -473,7 +500,7 @@ mod tests {
         j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost")).unwrap();
         assert_eq!(j.blocking_conflicts(None).len(), 1);
 
-        let acknowledged = j.acknowledge(&id).unwrap();
+        let acknowledged = j.acknowledge(&id, None).unwrap();
         assert_eq!(acknowledged.state, OperationState::Indeterminate);
         assert!(acknowledged.acknowledged);
         assert!(j.blocking_conflicts(None).is_empty());
@@ -517,14 +544,14 @@ mod tests {
             record.updated_at -= SETTLED_RETENTION_SECS;
         }
 
-        let left: Vec<String> = j.recent(10).into_iter().map(|r| r.operation_id).collect();
+        let left: Vec<String> = j.recent(10, None).into_iter().map(|r| r.operation_id).collect();
         assert!(!left.contains(&settled), "settled and past retention");
         assert!(left.contains(&unresolved), "still guarding the wallet");
         assert!(left.contains(&running));
 
-        j.acknowledge(&unresolved).unwrap();
+        j.acknowledge(&unresolved, None).unwrap();
         j.index.lock().unwrap().get_mut(&unresolved).unwrap().updated_at -= SETTLED_RETENTION_SECS;
-        assert!(j.recent(10).iter().all(|r| r.operation_id != unresolved));
+        assert!(j.recent(10, None).iter().all(|r| r.operation_id != unresolved));
     }
 
     /// The digest is short and unsalted, so a password reaching it would be a guessing oracle.
@@ -556,5 +583,23 @@ mod tests {
             fingerprint("send", &a),
             fingerprint("send", &serde_json::json!({ "address": "bc1q", "amountSats": 2 }))
         );
+    }
+
+    #[test]
+    fn another_wallets_record_is_neither_visible_nor_settleable() {
+        let j = Journal::default();
+        let id = key();
+        j.admit(&id, "send_to_address", Some("a".into()), 1, &request()).unwrap();
+        j.mark_indeterminate(&id, AppError::internal("lost")).unwrap();
+
+        assert!(j.recent(10, Some("b")).is_empty());
+        assert!(j.get_for(&id, Some("b")).is_none());
+        assert!(j.acknowledge(&id, Some("b")).is_err());
+        assert!(j.reconcile(&id, &[], Some("b")).is_err());
+        // Replaying the key from the other wallet must not hand its record back.
+        assert!(j.admit(&id, "send_to_address", Some("b".into()), 1, &request()).is_err());
+
+        assert_eq!(j.recent(10, Some("a")).len(), 1);
+        assert!(j.acknowledge(&id, Some("a")).is_ok());
     }
 }

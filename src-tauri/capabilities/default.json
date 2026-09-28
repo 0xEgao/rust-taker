@@ -31,7 +31,6 @@
     "allow-auth-session",
     "allow-auth-claim",
     "allow-auth-login",
-    "allow-auth-logout",
     "allow-backup-wallet",
     "allow-check-backend",
     "allow-check-maker-ports",
@@ -99,7 +98,6 @@
     "allow-update-maker-settings",
     "allow-validate-address",
     "allow-verify-deniability",
-    "allow-verify-last-address",
     "allow-verify-maker-deniability"
   ]
 }

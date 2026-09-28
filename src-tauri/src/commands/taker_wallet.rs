@@ -150,13 +150,6 @@ pub async fn get_new_address(
 }
 
 #[tauri::command]
-pub async fn verify_last_address(
-    state: tauri::State<'_, Arc<AppState>>, address_type: AddressTypeDto,
-) -> Result<NewAddress, AppError> {
-    taker_wallet::verify_last_address(&*desktop_taker(&state)?, address_type).await
-}
-
-#[tauri::command]
 pub async fn get_transactions(
     state: tauri::State<'_, Arc<AppState>>, count: Option<usize>, skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {

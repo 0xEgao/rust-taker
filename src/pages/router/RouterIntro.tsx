@@ -7,7 +7,7 @@ import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { validateNewPassword } from "../../lib/password-policy";
 import { withMinDelay } from "../../lib/timing";
 import { ROUTER_ID_PATTERN } from "./router-defaults";
-import { AdvancedFields, FidelityFields, useRouterForm } from "./RouterForm";
+import { AdvancedFields, FidelityFields, PublicNameField, useRouterForm } from "./RouterForm";
 import { DashboardImport } from "./DashboardImport";
 
 // Each step usually resolves far quicker than it can be read.
@@ -44,10 +44,12 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
 
   // Same reason as AddRouterPage: the button alone cannot say why it will not press.
   const blockedReason = !trimmed
-    ? "Enter a router name to continue."
+    ? "Enter a router ID to continue."
     : malformed
-      ? "Fix the router name to continue."
-      : (passwordError ??
+      ? "Fix the router ID to continue."
+      : form.publicNameError
+        ? "Fix the public name to continue."
+        : (passwordError ??
         (form.blocked ? "Resolve the warning under Advanced settings to continue." : null));
 
   async function create() {
@@ -97,7 +99,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
           <>
             <div className="p-8 text-left">
               <TextField
-                label="Router name"
+                label="Router ID"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void create()}
@@ -105,8 +107,11 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                 autoFocus
                 required
                 error={malformed ? "Letters, numbers, hyphens and underscores only." : undefined}
-                hint={malformed ? undefined : "Names the router and its wallet."}
+                hint={malformed ? undefined : "Names its folder and wallet on this machine. Cannot be changed."}
               />
+              <div className="mt-4">
+                <PublicNameField form={form} routerId={trimmed} />
+              </div>
               <div className="mt-4 flex flex-col gap-3">
                 <PasswordField
                   label="Wallet password"
@@ -136,7 +141,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
             <div className="border-t border-line px-8 py-5">
               <Button
                 className="w-full"
-                disabled={!trimmed || malformed || Boolean(passwordError) || form.blocked}
+                disabled={!trimmed || malformed || Boolean(form.publicNameError) || Boolean(passwordError) || form.blocked}
                 onClick={() => void create()}
               >
                 Create router

@@ -4,7 +4,7 @@ import { checkRouterPorts, checkTor, getRouterDefaults, getSuggestedRouterPorts 
 import type { RouterInitConfig, RouterPortCheck } from "../../api/types";
 import { Disclosure } from "../../components/ui/display";
 import { SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
-import { ROUTER_ID_PATTERN, timelockDays } from "./router-defaults";
+import { ROUTER_ID_PATTERN, ROUTER_NAME_MAX, routerNameError, timelockDays } from "./router-defaults";
 import { formatNumber } from "../../lib/wallet-format";
 
 // Long enough that editing a port digit-by-digit doesn't fire a check per keystroke.
@@ -37,6 +37,10 @@ export interface RouterForm {
   set: (key: keyof Values) => (next: string) => void;
   walletName: string;
   setWalletName: (next: string) => void;
+  /** Empty means "use the router ID", as with the wallet name. */
+  publicName: string;
+  setPublicName: (next: string) => void;
+  publicNameError: string | null;
   dataDir: string;
   setDataDir: (next: string) => void;
   torError: string | null;
@@ -54,6 +58,7 @@ export interface RouterForm {
 export function useRouterForm(): RouterForm {
   const [values, setValues] = useState<Values>(INITIAL_VALUES);
   const [walletName, setWalletName] = useState("");
+  const [publicName, setPublicName] = useState("");
   const [dataDir, setDataDir] = useState("");
   const [torError, setTorError] = useState<string | null>(null);
   const [portErrors, setPortErrors] = useState<RouterPortCheck>({});
@@ -124,11 +129,16 @@ export function useRouterForm(): RouterForm {
     return () => clearTimeout(timer);
   }, [numbers.networkPort, numbers.rpcPort, numbers.socksPort, numbers.controlPort]);
 
+  const publicNameError = publicName.trim() ? routerNameError(publicName) : null;
+
   return {
     values,
     set: (key) => (next) => setValues((v) => ({ ...v, [key]: next })),
     walletName,
     setWalletName,
+    publicName,
+    setPublicName,
+    publicNameError,
     dataDir,
     setDataDir,
     torError,
@@ -142,10 +152,13 @@ export function useRouterForm(): RouterForm {
       if (Object.values(numbers).some((n) => !Number.isFinite(n) || n < 0)) return null;
       if (numbers.requiredConfirms < 1) return null;
       if (numbers.fidelityFeerate < 1) return null;
+      if (publicNameError) return null;
       return {
         routerId,
         // A router's wallet is its own, so the id doubles as the wallet name unless overridden.
         walletName: walletName.trim() || routerId,
+        // The id has no length cap; the published name does.
+        name: publicName.trim() || routerId.slice(0, ROUTER_NAME_MAX),
         dataDir: dataDir.trim() || undefined,
         walletPassword,
         networkPort: numbers.networkPort,
@@ -181,6 +194,24 @@ function sats(value: string) {
   if (value.trim() === "") return "…";
   const n = Number(value);
   return Number.isFinite(n) ? formatNumber(n) : value;
+}
+
+/** Sits under the router ID rather than in Advanced: it is the one value strangers see. */
+export function PublicNameField({ form, routerId }: { form: RouterForm; routerId: string }) {
+  return (
+    <TextField
+      label="Public name"
+      placeholder={routerId.slice(0, ROUTER_NAME_MAX) || "Same as router ID"}
+      value={form.publicName}
+      onChange={(e) => form.setPublicName(e.target.value)}
+      error={form.publicNameError ?? undefined}
+      hint={
+        form.publicNameError
+          ? undefined
+          : "Shown to every wallet on the market. Anyone can claim any name. Rename it any time in Settings."
+      }
+    />
+  );
 }
 
 /**
@@ -241,7 +272,7 @@ export function AdvancedFields({ form, routerId }: { form: RouterForm; routerId:
         </SummaryGroup>
 
         <div className="flex flex-col gap-3">
-          <TextField label="Wallet name" placeholder={routerId || "Same as router name"} value={form.walletName} onChange={(e) => form.setWalletName(e.target.value)} />
+          <TextField label="Wallet name" placeholder={routerId || "Same as router ID"} value={form.walletName} onChange={(e) => form.setWalletName(e.target.value)} />
           <TextField label="Data directory" placeholder="Default router directory" value={form.dataDir} onChange={(e) => form.setDataDir(e.target.value)} />
           <p className="text-[11.5px] leading-5 text-subtle">
             Wallet name and data directory are permanent and cannot be changed later.
