@@ -10,7 +10,7 @@ COPY src ./src
 COPY public ./public
 RUN npx tsc --noEmit && npx vite build --mode web
 
-FROM rust:1-bookworm AS backend
+FROM rust:1.98-bookworm AS backend
 WORKDIR /build
 # Embedded Tor is built from source by libtor, so its toolchain has to be present here and
 # nowhere in the runtime image.

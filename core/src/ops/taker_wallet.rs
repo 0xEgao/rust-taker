@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
@@ -118,8 +118,20 @@ pub async fn init_taker(
             }
         };
         match step {
-            OpenStep::Join(taker) => return join_taker(state, session, &taker, config, tor.socks_port).await,
-            // Bound while waiting, so this session sees the other one's init progress too.
+            OpenStep::Join(taker) => {
+                let joined = join_taker(state, session, &taker, config, tor.socks_port).await;
+                // The wait below bound this session before its password was checked; a failed
+                // join must not leave it bound, or the wrong password would still get it in.
+                if joined.is_err() {
+                    let mut bindings = state.bindings.lock()?;
+                    if bindings.get(session) == Some(&key) {
+                        bindings.remove(session);
+                    }
+                }
+                return joined;
+            }
+            // Bound while waiting, so this session sees the other one's init progress too. Only
+            // for events: `taker_for` still refuses it until the join has checked its password.
             OpenStep::Wait => {
                 state.bindings.lock()?.insert(session.to_string(), key.clone());
                 tokio::time::sleep(OPENING_POLL).await;
@@ -227,7 +239,6 @@ async fn open_taker(
         active_swap: Mutex::new(None),
         sync_cancel: Arc::new(AtomicBool::new(false)),
         is_offerbook_syncing: AtomicBool::new(false),
-        last_offerbook_sync_ts: AtomicU64::new(0),
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
     });
@@ -749,15 +760,6 @@ pub async fn get_new_address(
         .map_err(AppError::internal)?
 }
 
-/// Kept for the receive panel's second call. Issuance now checks locally and is already final,
-/// so this is the same answer as `get_new_address`.
-pub async fn verify_last_address(
-    taker: &TakerInstance,
-    address_type: AddressTypeDto,
-) -> Result<NewAddress, AppError> {
-    get_new_address(taker, address_type).await
-}
-
 /// The last address issued for this type unless the wallet now holds a coin paying it,
 /// otherwise the next index — recorded at `path` either way, so the next call re-offers it.
 ///
@@ -795,7 +797,6 @@ pub(crate) fn issue_unused_address(
             return Ok(NewAddress {
                 address: existing,
                 address_type: label.to_string(),
-                verified: true,
                 derivation_path,
             });
         }
@@ -816,7 +817,6 @@ pub(crate) fn issue_unused_address(
     Ok(NewAddress {
         address,
         address_type: label.to_string(),
-        verified: true,
         derivation_path,
     })
 }

@@ -47,7 +47,6 @@ pub struct NodeBackendViewDto {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub password_configured: bool,
     pub zmq_port: u16,
 }
 
@@ -142,7 +141,7 @@ pub struct QuitBlockers {
     pub swap_running: bool,
     /// Recovery only advances while the app is running, so quitting stalls it until next launch.
     pub recovery_running: bool,
-    pub running_makers: Vec<String>,
+    pub running_routers: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -236,9 +235,6 @@ pub enum AddressTypeDto {
 pub struct NewAddress {
     pub address: String,
     pub address_type: String,
-    /// False for a re-offered cached address whose payment status has not been checked yet.
-    /// A freshly derived address is unused by construction, so it is always true.
-    pub verified: bool,
     /// Full path from the master key, e.g. `m/86'/1'/0'/0/7`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivation_path: Option<String>,
@@ -322,7 +318,6 @@ pub struct SendResult {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FidelityBondDto {
-    pub bond_index: u32,
     pub outpoint: Outpoint,
     pub amount_sats: u64,
     /// Absolute block height the bond unlocks at.
@@ -330,10 +325,6 @@ pub struct FidelityBondDto {
     pub is_spent: bool,
     /// Not yet unlocked and not already redeemed.
     pub is_locked: bool,
-    /// Coinswap's theoretical fidelity-value formula — only computable for a confirmed,
-    /// unspent bond, hence optional.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bond_value_sats: Option<u64>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -362,11 +353,13 @@ pub struct PriceEstimate {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OfferDto {
+    /// Self-chosen label, not an identity: any router can claim any name. Empty for offers
+    /// saved before the crate carried names, until they are fetched again.
+    pub name: String,
     pub base_fee: u64,
     pub amount_relative_fee_pct: f64,
     pub time_relative_fee_pct: f64,
     pub required_confirms: u32,
-    pub minimum_locktime: u16,
     pub max_size: u64,
     pub min_size: u64,
     pub bond_amount_sats: u64,
@@ -397,7 +390,6 @@ pub struct OfferBookView {
     pub bad: Vec<MakerDto>,
     pub unresponsive: Vec<MakerDto>,
     pub syncing: bool,
-    pub last_sync_ts: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -450,10 +442,6 @@ pub struct SwapFundingEstimateDto {
     /// so one UTXO each. A ceiling, not a count: `tx_count` is the most any hop may forward,
     /// and a router short of liquidity commits to fewer, which then carries down the route.
     pub incoming_utxo_count: usize,
-    /// The swap feerate every transaction in the route is priced at. Reported because it is
-    /// the `SwapParams` default and nothing here overrides it, so a swap cannot be sped up or
-    /// slowed down by paying more.
-    pub fee_rate_sats_per_vb: f64,
     /// Ceiling on what one router deducts for miner fees: its funding splits at the full input
     /// budget plus one cooperative claim per contract. The settled cost can only come in lower.
     pub route_mining_fee_per_router_sats: u64,
@@ -501,8 +489,6 @@ pub struct PaymentQuoteDto {
     pub address: String,
     /// Exact amount the receiver gets.
     pub amount_sats: u64,
-    /// Reserved on the final hop to settle the receiver's output.
-    pub settlement_budget_sats: u64,
 }
 
 /// Coarse in-memory lifecycle snapshot (survives across commands via `AppState.active_swap`).
@@ -733,7 +719,6 @@ pub struct SwapReportSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ReportRouterFee {
     pub router_index: usize,
-    pub router_address: String,
     pub base_fee_sats: f64,
     pub amount_relative_fee_sats: f64,
     pub time_relative_fee_sats: f64,
@@ -802,6 +787,8 @@ pub struct MakerInitConfig {
     pub wallet_name: String,
     #[serde(default)]
     pub wallet_password: Option<String>,
+    /// Published in the router's offer, where wallets show it.
+    pub name: String,
     pub network_port: u16,
     pub rpc_port: u16,
     pub socks_port: u16,
@@ -825,6 +812,10 @@ pub struct MakerSettingsDto {
     #[serde(alias = "makerId")]
     pub router_id: String,
     pub wallet_name: String,
+    // Registrations saved before names existed, and maker-dashboard's own file; `config.toml`
+    // overrides it on load anyway.
+    #[serde(default)]
+    pub name: String,
     pub network_port: u16,
     pub rpc_port: u16,
     pub socks_port: u16,
@@ -847,6 +838,7 @@ impl MakerSettingsDto {
         Self {
             router_id: c.router_id.clone(),
             wallet_name: c.wallet_name.clone(),
+            name: c.name.clone(),
             network_port: c.network_port,
             rpc_port: c.rpc_port,
             socks_port: c.socks_port,
@@ -867,6 +859,7 @@ impl MakerSettingsDto {
             router_id: self.router_id,
             wallet_name: self.wallet_name,
             wallet_password,
+            name: self.name,
             network_port: self.network_port,
             rpc_port: self.rpc_port,
             socks_port: self.socks_port,

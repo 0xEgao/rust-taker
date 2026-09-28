@@ -30,15 +30,6 @@
       "note": "Signs the desktop app in with the owner password. The web host's equivalent is POST /auth/login."
     },
     {
-      "name": "auth_logout",
-      "executionClass": "transient",
-      "desktop": true,
-      "web": false,
-      "webAdaptation": "none",
-      "retryClass": "none",
-      "note": "Signs the desktop app out and takes the window off its wallet. The web host's equivalent is POST /auth/logout."
-    },
-    {
       "name": "check_tor",
       "executionClass": "transient",
       "desktop": true,
@@ -199,15 +190,6 @@
       "webAdaptation": "none",
       "retryClass": "idempotent-key",
       "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
-    },
-    {
-      "name": "verify_last_address",
-      "executionClass": "read",
-      "desktop": true,
-      "web": true,
-      "webAdaptation": "none",
-      "retryClass": "none",
-      "note": "Return the existing safe DTO; bound response size and redact internal details."
     },
     {
       "name": "get_transactions",

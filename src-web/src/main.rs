@@ -35,12 +35,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(if ok { 0 } else { 1 });
     }
 
+    #[cfg(unix)]
+    unsafe {
+        // Before logging, Tor or the protocol crate creates anything: the crate writes files
+        // such as a router's config.toml with plain `File::create`, which would otherwise be
+        // world-readable.
+        libc::umask(0o077);
+    }
+
     portal_core::shutdown_signal::arm();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(serve(config))
+}
+
+/// Best effort: a machine with no desktop, or no opener, still has the URL printed above.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(not(target_os = "macos"))]
+    let opener = "xdg-open";
+    let _ = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -137,11 +159,14 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     //
     // Only claimed when this process serves the UI. In development Vite serves it on its own
     // port and proxies the API here, so pointing anyone at this address lands them on a 404.
-    if state.config.assets_dir.is_some() {
-        console.line(&format!(
-            "\nPortal is running. Open: {}",
-            state.config.browsable_url()
-        ));
+    if state.config.assets_dir.is_some() || assets::has_embedded() {
+        let url = state.config.browsable_url();
+        console.line(&format!("\nPortal is running. Open: {url}"));
+        // Local use only, where the person who started it is at this machine's browser. A
+        // server behind a proxy has no one at its screen, and the URL above is the answer.
+        if state.config.access_profile == config::AccessProfile::DevelopmentLoopback {
+            open_browser(&url);
+        }
     } else {
         console.line(&format!(
             "\nPortal API on {} — the UI is served separately in development",
@@ -149,7 +174,8 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    axum::serve(listener, app)
+    // Connect info feeds the login throttle's per-client count.
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(await_signal())
         .await?;
 

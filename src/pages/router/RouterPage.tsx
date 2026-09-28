@@ -128,6 +128,8 @@ function RouterCard({
     phase,
   );
   const torAddress = status?.torAddress;
+  // Registrations from before names existed carry none until their config.toml gains one.
+  const displayName = settings.name || settings.routerId;
 
   function copyTorAddress() {
     if (!torAddress) return;
@@ -150,7 +152,7 @@ function RouterCard({
       } else await startRouter(settings.routerId);
       pushToast(
         "success",
-        `${settings.routerId} ${running ? "stopped" : "is starting"}.`,
+        `${displayName} ${running ? "stopped" : "is starting"}.`,
       );
       await onChanged();
     } catch (error) {
@@ -178,7 +180,7 @@ function RouterCard({
       await startRouter(settings.routerId, password);
       setUnlocking(false);
       setPassword("");
-      pushToast("success", `${settings.routerId} is starting.`);
+      pushToast("success", `${displayName} is starting.`);
       await onChanged();
     } catch (error) {
       setUnlockError(
@@ -195,9 +197,14 @@ function RouterCard({
     <article className={`lift flex flex-col rounded-card border border-line-strong bg-surface-raised/55 p-5 hover:border-primary/35 ${balances || running ? "min-h-[350px]" : "min-h-[250px]"}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <EntityMonogram name={settings.routerId} size="sm" />
+          <EntityMonogram name={displayName} size="sm" />
           <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${PHASE_CLASS[phase]}`} />
-          <h3 className="min-w-0 truncate text-[18px] font-bold text-foreground" title={settings.routerId}>{settings.routerId}</h3>
+          <div className="min-w-0">
+            <h3 className="truncate text-[18px] font-bold text-foreground" title={displayName}>{displayName}</h3>
+            {displayName !== settings.routerId && (
+              <p className="truncate font-mono text-[11px] text-subtle" title={settings.routerId}>{settings.routerId}</p>
+            )}
+          </div>
         </div>
         <StatusChip tone={phaseTone(phase)}>{phaseLabel(phase)}</StatusChip>
       </div>
@@ -291,7 +298,7 @@ function RouterCard({
         createPortal(
           <div data-accent="router">
             <Modal
-              title={`Unlock ${settings.routerId}`}
+              title={`Unlock ${displayName}`}
               onClose={() => setUnlocking(false)}
               footer={
                 <>

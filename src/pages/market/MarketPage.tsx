@@ -1,5 +1,5 @@
 import { openExternal } from "../../platform";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ExternalLink, Inbox, RefreshCw, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ExternalLink, Inbox, RefreshCw, Search } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOffers, pollRouter, removeRouter, syncOfferbook } from "../../api/commands";
@@ -12,7 +12,7 @@ import { explorerTxUrl, formatNumber } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
 type RouterStatus = "good" | "bad" | "unresponsive";
-type SortKey = "baseFee" | "liquidityFee" | "timeRate" | "minSwap" | "maxSwap" | "bond";
+type SortKey = "baseFee" | "liquidityFee" | "timeRate" | "maxSwap" | "bond";
 type SortDir = "asc" | "desc";
 
 // The crate re-syncs the offerbook on its own every 10 minutes, so without re-reading it the
@@ -29,26 +29,13 @@ const STATUS_TAB_CLASS: Record<RouterStatus, { text: string; glow: string }> = {
   unresponsive: { text: "text-warning", glow: "bg-warning/15 shadow-[0_0_12px_color-mix(in_oklab,var(--color-warning)_35%,transparent)]" },
 };
 
-// Address/Swap range/Fidelity Bond/Actions gate whether a router is usable at all, so they stay
-// visible; the raw Base/Liquidity/Time fee breakdown is a detail tucked behind the expand toggle.
-const ROUTER_TABLE_GRID = {
-  collapsed: "grid-cols-[minmax(230px,1.6fr)_repeat(2,minmax(90px,0.85fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
-  expanded:
-    "grid-cols-[minmax(230px,1.5fr)_repeat(5,minmax(74px,0.78fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
-};
-
-// Fewer columns (collapsed) means more room per column, so text can run larger; each range is also
-// fluid via clamp()'s vw term, so resizing the window scales it smoothly instead of at breakpoints.
-const ROUTER_HEADER_TEXT = {
-  collapsed: "text-[clamp(9px,0.55vw,11px)]",
-  expanded: "text-[clamp(8px,0.45vw,9.5px)]",
-};
-const ROUTER_ROW_TEXT = {
-  collapsed: "text-[clamp(11px,1vw,14px)]",
-  expanded: "text-[clamp(9px,0.75vw,11px)]",
-};
-// One height for both modes — sized for collapsed's larger text — so toggling the expand button
-// doesn't jump row height, only the column layout and font size change.
+// Each clamp() has a vw term so text scales smoothly with the window instead of at breakpoints.
+// The name runs 2px over the rest of the row, so it reads as the row's heading.
+const ROUTER_TABLE_GRID =
+  "grid-cols-[minmax(230px,1.5fr)_repeat(4,minmax(80px,0.8fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]";
+const ROUTER_HEADER_TEXT = "text-[clamp(10.5px,calc(0.5vw+2px),12.5px)]";
+const ROUTER_ROW_TEXT = "text-[clamp(12px,calc(0.85vw+2px),14.5px)]";
+const ROUTER_NAME_TEXT = "text-[clamp(14px,calc(0.85vw+4px),16.5px)]";
 const ROUTER_ROW_HEIGHT = "min-h-[clamp(46px,4vw,58px)]";
 
 function SortHeader({
@@ -102,7 +89,7 @@ function TooltipButton({
         type="button"
         onClick={onClick}
         disabled={disabled}
-        className={`min-h-7 whitespace-nowrap rounded-full border px-2.5 text-[11.5px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
+        className={`min-h-8 whitespace-nowrap rounded-full border px-3 text-[13.5px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
           danger
             ? "border-line text-muted hover:border-danger/52 hover:bg-danger/10 hover:text-danger"
             : "border-line text-muted hover:border-line-strong hover:bg-[var(--color-hover)] hover:text-foreground"
@@ -302,7 +289,6 @@ export function MarketPage() {
   const [removing, setRemoving] = useState(false);
   const [feeCalcRouter, setFeeCalcRouter] = useState<Router | null>(null);
   const [bondRouter, setBondRouter] = useState<Router | null>(null);
-  const [showAllColumns, setShowAllColumns] = useState(false);
   const [footerTick, setFooterTick] = useState(0);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -417,8 +403,6 @@ export function MarketPage() {
           return offer?.amountRelativeFeePct ?? 0;
         case "timeRate":
           return offer?.timeRelativeFeePct ?? 0;
-        case "minSwap":
-          return offer?.minSize ?? 0;
         case "maxSwap":
           return offer?.maxSize ?? 0;
         case "bond":
@@ -561,140 +545,119 @@ export function MarketPage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{displayed.length} {tab} offers</span>
-            <button
-              type="button"
-              onClick={() => setShowAllColumns((v) => !v)}
-              className="flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle transition-colors hover:text-foreground"
-            >
-              <ChevronDown size={12} strokeWidth={2.5} className={`transition-transform ${showAllColumns ? "rotate-180" : ""}`} />
-              {showAllColumns ? "Show less" : "Show all columns"}
-            </button>
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-          <div
-            className={`sticky top-0 z-1 grid ${
-              showAllColumns ? ROUTER_TABLE_GRID.expanded : ROUTER_TABLE_GRID.collapsed
-            } gap-3 bg-surface-raised px-7.5 pb-2.5 pt-3.5 font-mono ${
-              showAllColumns ? ROUTER_HEADER_TEXT.expanded : ROUTER_HEADER_TEXT.collapsed
-            } uppercase tracking-widest text-subtle`}
-          >
-            <div>Tor Address</div>
-            {showAllColumns && (
+        {/* Scrolls sideways once the columns' minimums outgrow a narrow window, rather than
+            clipping the Actions column; the inner box keeps header and rows one width. */}
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="min-w-fit">
+            <div
+              className={`sticky top-0 z-1 grid ${ROUTER_TABLE_GRID} gap-3 bg-surface-raised px-7.5 pb-2.5 pt-3.5 font-mono ${ROUTER_HEADER_TEXT} uppercase tracking-widest text-subtle`}
+            >
+              <div>Router</div>
               <SortHeader label="Base Fee" sortKey="baseFee" active={sortKey} dir={sortDir} onSort={toggleSort} />
-            )}
-            {showAllColumns && (
-              <SortHeader label="Liquidity Fee" sortKey="liquidityFee" active={sortKey} dir={sortDir} onSort={toggleSort} />
-            )}
-            {showAllColumns && (
+              <SortHeader label="Fee %" sortKey="liquidityFee" active={sortKey} dir={sortDir} onSort={toggleSort} />
               <SortHeader label="Time Rate" sortKey="timeRate" active={sortKey} dir={sortDir} onSort={toggleSort} />
-            )}
-            <SortHeader label="Min Swap" sortKey="minSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
-            <SortHeader label="Max Swap" sortKey="maxSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
-            <SortHeader label="Fidelity Bond" sortKey="bond" active={sortKey} dir={sortDir} onSort={toggleSort} />
-            <div className="text-right">Actions</div>
-          </div>
+              <SortHeader label="Max Swap" sortKey="maxSwap" active={sortKey} dir={sortDir} onSort={toggleSort} />
+              <SortHeader label="Fidelity Bond" sortKey="bond" active={sortKey} dir={sortDir} onSort={toggleSort} />
+              <div className="text-right">Actions</div>
+            </div>
 
-          <div className="flex flex-col divide-y divide-line px-4.5 pb-3 font-numeric tabular-nums">
-            {loading ? (
-              <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
-                <RefreshCw size={42} strokeWidth={1.6} className="animate-spin text-primary" />
-                <strong className="text-[15px] text-foreground">Syncing market data...</strong>
-                <span>Fetching routers over Tor network</span>
-              </div>
-            ) : good.length + bad.length + unresponsive.length === 0 ? (
-              <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
-                <Inbox size={42} strokeWidth={1.6} className="text-primary" />
-                <strong className="text-[15px] text-foreground">No routers found</strong>
-                <Button size="sm" onClick={() => void refresh()}>
-                  <RefreshCw size={14} strokeWidth={2} /> Refresh
-                </Button>
-              </div>
-            ) : displayed.length === 0 ? (
-              <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
-                <Inbox size={42} strokeWidth={1.6} className="text-primary" />
-                <strong className="text-[15px] text-foreground">No {tab} routers found</strong>
-              </div>
-            ) : (
-              rows.map((router) => {
-                const offer = router.offer;
-                const isPolling = pollingAddress === router.address;
-                return (
-                  <div
-                    key={router.address}
-                    className={`grid ${ROUTER_ROW_HEIGHT} ${
-                      showAllColumns ? ROUTER_TABLE_GRID.expanded : ROUTER_TABLE_GRID.collapsed
-                    } items-center gap-3 px-3 py-2.5 font-mono ${
-                      showAllColumns ? ROUTER_ROW_TEXT.expanded : ROUTER_ROW_TEXT.collapsed
-                    } transition-colors hover:bg-[var(--color-hover)]`}
-                  >
-                    <div className="leading-[1.45] text-muted">
-                      {routerName(router.address)}
-                    </div>
-                    {showAllColumns && (
+            <div className="flex flex-col divide-y divide-line px-4.5 pb-3 font-numeric tabular-nums">
+              {loading ? (
+                <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
+                  <RefreshCw size={42} strokeWidth={1.6} className="animate-spin text-primary" />
+                  <strong className="text-[15px] text-foreground">Syncing market data...</strong>
+                  <span>Fetching routers over Tor network</span>
+                </div>
+              ) : good.length + bad.length + unresponsive.length === 0 ? (
+                <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
+                  <Inbox size={42} strokeWidth={1.6} className="text-primary" />
+                  <strong className="text-[15px] text-foreground">No routers found</strong>
+                  <Button size="sm" onClick={() => void refresh()}>
+                    <RefreshCw size={14} strokeWidth={2} /> Refresh
+                  </Button>
+                </div>
+              ) : displayed.length === 0 ? (
+                <div className="grid min-h-[220px] place-items-center gap-2.5 text-center text-[13px] text-subtle">
+                  <Inbox size={42} strokeWidth={1.6} className="text-primary" />
+                  <strong className="text-[15px] text-foreground">No {tab} routers found</strong>
+                </div>
+              ) : (
+                rows.map((router) => {
+                  const offer = router.offer;
+                  const isPolling = pollingAddress === router.address;
+                  return (
+                    <div
+                      key={router.address}
+                      className={`grid ${ROUTER_ROW_HEIGHT} ${ROUTER_TABLE_GRID} items-center gap-3 px-3 py-2.5 font-mono ${ROUTER_ROW_TEXT} transition-colors hover:bg-[var(--color-hover)]`}
+                    >
+                      {offer?.name ? (
+                        <div className="flex min-w-0 flex-col leading-[1.35]">
+                          <span className={`truncate font-semibold text-foreground ${ROUTER_NAME_TEXT}`}>{offer.name}</span>
+                          <span className="truncate text-[0.82em] text-subtle">{routerName(router.address)}</span>
+                        </div>
+                      ) : (
+                        <div className="leading-[1.45] text-muted">
+                          {routerName(router.address)}
+                        </div>
+                      )}
                       <div className="text-right font-semibold text-primary">
                         {formatNumber(offer?.baseFee ?? 0)}
                       </div>
-                    )}
-                    {showAllColumns && (
                       <div className="text-right font-semibold text-foreground">
-                        {(offer?.amountRelativeFeePct ?? 0).toFixed(3)}
+                        {formatNumber(offer?.amountRelativeFeePct ?? 0, 6)}
                       </div>
-                    )}
-                    {showAllColumns && (
                       <div className="text-right font-semibold text-foreground">
-                        {(offer?.timeRelativeFeePct ?? 0).toFixed(4)}
+                        {formatNumber(offer?.timeRelativeFeePct ?? 0, 6)}
                       </div>
-                    )}
-                    <div className="text-right font-semibold text-subtle">
-                      {formatNumber(offer?.minSize ?? 0)}
-                    </div>
-                    <div className="text-right font-semibold text-subtle">
-                      {formatNumber(offer?.maxSize ?? 0)}
-                    </div>
-                    <div className="flex items-center justify-end gap-2 font-semibold text-foreground">
-                      <span>{offer && offer.bondAmountSats > 0 ? formatNumber(offer.bondAmountSats) : "N/A"}</span>
-                      {offer && offer.bondAmountSats > 0 && (
-                        <button
-                          type="button"
-                          title="View fidelity bond"
-                          onClick={() => setBondRouter(router)}
-                          className="grid h-[18px] w-[18px] place-items-center rounded text-subtle hover:bg-primary/10 hover:text-primary"
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex justify-end gap-2">
-                      <TooltipButton
-                        tooltip="Calculate the estimated router fee for this router using your amount and hop position."
-                        onClick={() => setFeeCalcRouter(router)}
-                        disabled={!offer}
-                      >
-                        Calculate
-                      </TooltipButton>
-                      {router.state !== "good" && (
+                      <div className="text-right font-semibold text-subtle">
+                        {formatNumber(offer?.maxSize ?? 0)}
+                      </div>
+                      <div className="flex items-center justify-end gap-2 font-semibold text-foreground">
+                        <span>{offer && offer.bondAmountSats > 0 ? formatNumber(offer.bondAmountSats) : "N/A"}</span>
+                        {offer && offer.bondAmountSats > 0 && (
+                          <button
+                            type="button"
+                            title="View fidelity bond"
+                            onClick={() => setBondRouter(router)}
+                            className="grid h-[18px] w-[18px] place-items-center rounded text-subtle hover:bg-primary/10 hover:text-primary"
+                          >
+                            <ExternalLink size={12} strokeWidth={2} />
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex justify-end gap-2">
                         <TooltipButton
-                          tooltip="Ask this router for a fresh offer now and update its availability and fee data."
-                          onClick={() => void poll(router.address)}
-                          disabled={isPolling}
+                          tooltip="Calculate the estimated router fee for this router using your amount and hop position."
+                          onClick={() => setFeeCalcRouter(router)}
+                          disabled={!offer}
                         >
-                          {isPolling ? "Polling..." : "Poll"}
+                          Calculate
                         </TooltipButton>
-                      )}
-                      <TooltipButton
-                        tooltip="Remove this router from your local offerbook so it no longer appears in market results."
-                        onClick={() => setRemoveTarget(router.address)}
-                        danger
-                      >
-                        Remove
-                      </TooltipButton>
+                        {router.state !== "good" && (
+                          <TooltipButton
+                            tooltip="Ask this router for a fresh offer now and update its availability and fee data."
+                            onClick={() => void poll(router.address)}
+                            disabled={isPolling}
+                          >
+                            {isPolling ? "Polling..." : "Poll"}
+                          </TooltipButton>
+                        )}
+                        <TooltipButton
+                          tooltip="Remove this router from your local offerbook so it no longer appears in market results."
+                          onClick={() => setRemoveTarget(router.address)}
+                          danger
+                        >
+                          Remove
+                        </TooltipButton>
+                      </div>
                     </div>
-                  </div>
-                );
-              })
-            )}
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
 

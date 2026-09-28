@@ -1,7 +1,9 @@
 //! HTTP surface. Every route here is explicit: there is no reflective dispatcher, so a name
 //! the inventory does not carry cannot reach core no matter what a body contains.
 
-use axum::extract::{Path, State};
+use std::net::{IpAddr, SocketAddr};
+
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -38,7 +40,7 @@ impl From<AppError> for ApiError {
             ErrorCode::NotInitialized | ErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
             ErrorCode::AuthorizationDenied => StatusCode::FORBIDDEN,
             ErrorCode::SwapInProgress
-            | ErrorCode::MakerBusy
+            | ErrorCode::RouterBusy
             | ErrorCode::SensitiveOperationInProgress => StatusCode::CONFLICT,
             ErrorCode::RpcUnreachable | ErrorCode::TorUnreachable => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -189,6 +191,12 @@ pub fn router(state: WebState) -> Router {
             &c.route("/api/v1/operations/{id}/acknowledge"),
             post(acknowledge_operation),
         )
+        // Anything else under the API is a 404, not the page shell: the frontend's fallback
+        // would otherwise answer a mistyped route with HTML a client then tries to parse as JSON.
+        .route(
+            &c.route("/api/{*rest}"),
+            axum::routing::any(|| async { StatusCode::NOT_FOUND }),
+        )
         .route(&c.route("/health/live"), get(live))
         .route(&c.route("/health/ready"), get(ready))
         .layer(RequestBodyLimitLayer::new(crate::files::MAX_UPLOAD_BYTES))
@@ -234,18 +242,67 @@ struct LoginBody {
     password: String,
 }
 
+/// Who is signing in, for the login throttle: the TCP peer, or the address a configured proxy
+/// forwarded. `X-Forwarded-For` counts only from a `trusted_proxy` peer — from anyone else it is
+/// a fresh address per attempt for the asking, and nothing would ever be throttled. The last
+/// entry is the one the trusted proxy appended itself.
+/// One IPv6 host usually holds a whole /64, and would otherwise get a fresh count per address.
+fn throttle_key(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
+
+fn login_client(state: &WebState, peer: SocketAddr, headers: &HeaderMap) -> String {
+    let peer_ip = peer.ip();
+    let from_trusted_proxy = state
+        .config
+        .trusted_proxy
+        .iter()
+        .any(|proxy| proxy.parse::<IpAddr>().is_ok_and(|ip| ip == peer_ip));
+    if from_trusted_proxy {
+        if let Some(forwarded) = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.rsplit(',').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return forwarded
+                .parse::<IpAddr>()
+                .map(throttle_key)
+                .unwrap_or_else(|_| forwarded.to_string());
+        }
+    }
+    throttle_key(peer_ip)
+}
+
 async fn login(
     State(state): State<WebState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Result<Response, ApiError> {
     check_origin(&state, &headers)?;
-    let issued = state.auth.login(&body.password).map_err(|message| {
-        ApiError(
-            StatusCode::UNAUTHORIZED,
-            AppError::new(ErrorCode::AuthorizationDenied, message),
-        )
-    })?;
+    let client = login_client(&state, peer, &headers);
+    let auth = state.auth.clone();
+    // Argon2 is deliberately slow; on the async runtime it would stall every other request.
+    let issued = tokio::task::spawn_blocking(move || auth.login(&body.password, &client))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, AppError::internal(e)))?
+        .map_err(|message| {
+            ApiError(
+                StatusCode::UNAUTHORIZED,
+                AppError::new(ErrorCode::AuthorizationDenied, message),
+            )
+        })?;
     let mut response = Json(json!({ "csrfToken": issued.csrf })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -443,16 +500,23 @@ async fn durable(
     }
 }
 
+/// The wallet whose operations this session may read and settle: one it has actually unlocked,
+/// not merely one it is bound to while waiting on another session's init.
+fn unlocked_wallet_id(state: &WebState, session: &str) -> Option<String> {
+    state
+        .runtime
+        .taker_for(session)
+        .ok()
+        .map(|taker| taker.data_dir.display().to_string())
+}
+
 async fn operations(
     State(state): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let caller = authenticate(&state, &headers)?;
-    let wallet_id = state
-        .runtime
-        .wallet_of(&caller.session)
-        .map(|dir| dir.display().to_string());
-    let recent = state.journal.recent(100);
+    let wallet_id = unlocked_wallet_id(&state, &caller.session);
+    let recent = state.journal.recent(100, wallet_id.as_deref());
     Ok(Json(json!({
         "operations": recent,
         "blockingConflicts": state.journal.blocking_conflicts(wallet_id.as_deref()),
@@ -479,7 +543,8 @@ async fn reconcile_operation(
         Err(_) => Vec::new(),
     };
 
-    let record = state.journal.reconcile(&id, &known)?;
+    let wallet_id = unlocked_wallet_id(&state, &caller.session);
+    let record = state.journal.reconcile(&id, &known, wallet_id.as_deref())?;
     Ok(Json(serde_json::to_value(record).map_err(AppError::internal)?))
 }
 
@@ -493,7 +558,8 @@ async fn acknowledge_operation(
     check_origin(&state, &headers)?;
     let caller = authenticate(&state, &headers)?;
     check_csrf(&caller, &headers)?;
-    let record = state.journal.acknowledge(&id)?;
+    let wallet_id = unlocked_wallet_id(&state, &caller.session);
+    let record = state.journal.acknowledge(&id, wallet_id.as_deref())?;
     Ok(Json(serde_json::to_value(record).map_err(AppError::internal)?))
 }
 
@@ -502,8 +568,9 @@ async fn operation(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    authenticate(&state, &headers)?;
-    let record = state.journal.get(&id).ok_or_else(|| {
+    let caller = authenticate(&state, &headers)?;
+    let wallet_id = unlocked_wallet_id(&state, &caller.session);
+    let record = state.journal.get_for(&id, wallet_id.as_deref()).ok_or_else(|| {
         // No durable acceptance record exists under this key. The client should reconcile its
         // view before deliberately resubmitting, keeping the same key.
         ApiError(
@@ -516,7 +583,17 @@ async fn operation(
 
 #[cfg(test)]
 mod tests {
-    use super::is_loopback_origin;
+    use super::{is_loopback_origin, throttle_key};
+
+    #[test]
+    fn an_ipv6_host_counts_as_one_client() {
+        let a = throttle_key("2001:db8:1:2::1".parse().unwrap());
+        let b = throttle_key("2001:db8:1:2:ffff::9".parse().unwrap());
+        assert_eq!(a, b);
+        assert_ne!(a, throttle_key("2001:db8:1:3::1".parse().unwrap()));
+        assert_eq!(throttle_key("::ffff:10.0.0.7".parse().unwrap()), "10.0.0.7");
+        assert_eq!(throttle_key("10.0.0.7".parse().unwrap()), "10.0.0.7");
+    }
 
     /// Every one of these is a real browser `Origin` this app receives. Browsers attach the
     /// header to same-origin POSTs too, so treating its presence as proof of a cross-site

@@ -6,7 +6,7 @@ import { Card } from "../../components/ui/display";
 import { Button, LinkButton, PasswordField, TextField } from "../../components/ui/inputs";
 import { validateNewPassword } from "../../lib/password-policy";
 import { useToastStore } from "../../store/toast";
-import { AdvancedFields, FidelityFields, useRouterForm } from "./RouterForm";
+import { AdvancedFields, FidelityFields, PublicNameField, useRouterForm } from "./RouterForm";
 import { ROUTER_ID_PATTERN } from "./router-defaults";
 
 /** Adding a router to a fleet that already has one. Same form as the first-run page, with the
@@ -46,7 +46,9 @@ export function AddRouterPage() {
     ? "Enter a router ID to continue."
     : malformedId
       ? "Fix the router ID to continue."
-      : walletPasswordError
+      : form.publicNameError
+        ? "Fix the public name to continue."
+        : walletPasswordError
         ? walletPasswordError
         : form.blocked
           ? "Resolve the warning under Advanced settings to continue."
@@ -106,8 +108,11 @@ export function AddRouterPage() {
               value={routerId}
               onChange={(e) => setRouterId(e.target.value)}
               error={malformedId ? "Letters, numbers, hyphens and underscores only." : undefined}
-              hint={malformedId ? undefined : "Also names its wallet. Everything below is already set."}
+              hint={malformedId ? undefined : "Names its folder and wallet on this machine. Cannot be changed."}
             />
+            <div className="mt-4">
+              <PublicNameField form={form} routerId={trimmedId} />
+            </div>
             <div className="mt-4 flex flex-col gap-3 border-t border-line pt-4">
               <PasswordField label="Wallet password" autoComplete="new-password" required value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
               <PasswordField

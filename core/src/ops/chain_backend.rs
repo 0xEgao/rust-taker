@@ -281,7 +281,6 @@ fn to_view(config: ChainBackendConfig) -> ChainBackendView {
             host: node.host,
             port: node.port,
             username: node.username,
-            password_configured: !node.password.is_empty(),
             zmq_port: node.zmq_port,
         }),
     }

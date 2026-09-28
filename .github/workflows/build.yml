@@ -1,4 +1,4 @@
-name: Build desktop app
+name: Build
 
 on:
   push:
@@ -63,7 +63,7 @@ jobs:
           cache: npm
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: ${{ matrix.rust_targets }}
 
@@ -76,7 +76,7 @@ jobs:
         run: npm ci
 
       - name: Build and upload installers
-        uses: tauri-apps/tauri-action@v1.0.0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           # Ad-hoc signing keeps unsigned macOS artifacts launchable after download.
           APPLE_SIGNING_IDENTITY: "-"
@@ -84,3 +84,93 @@ jobs:
           args: --target ${{ matrix.target }}
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: portal-[platform]-[arch]-[bundle]
+
+  # The single-file web host, for testers: the frontend is built into the binary, so there is
+  # nothing to install beside it. Artifacts on the run only — nothing is released.
+  web:
+    name: Web ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            platform: ubuntu-22.04
+            asset: linux-x86_64
+          - name: Linux arm64
+            platform: ubuntu-22.04-arm
+            asset: linux-arm64
+          - name: macOS Universal
+            platform: macos-latest
+            asset: macos-universal
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Embedded Tor is built from source (libtor, vendored OpenSSL).
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install automake autoconf libtool pkg-config
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: web-${{ matrix.asset }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npx tsc --noEmit && npx vite build --mode web
+
+      - name: Build portal-web
+        if: runner.os == 'Linux'
+        env:
+          PORTAL_EMBED_WEB: dist/web
+        run: |
+          cargo build --locked --release -p portal-web
+          mkdir out && cp target/release/portal-web out/portal-web
+
+      - name: Build portal-web (universal)
+        if: runner.os == 'macOS'
+        env:
+          PORTAL_EMBED_WEB: dist/web
+        run: |
+          cargo build --locked --release -p portal-web --target aarch64-apple-darwin
+          cargo build --locked --release -p portal-web --target x86_64-apple-darwin
+          mkdir out
+          lipo -create -output out/portal-web \
+            target/aarch64-apple-darwin/release/portal-web \
+            target/x86_64-apple-darwin/release/portal-web
+          # Ad-hoc, like the desktop app: an arm64 Mac refuses to run a binary with no signature.
+          codesign --force --sign - out/portal-web
+
+      # Zipped by the artifact store, which drops the executable bit; testers need
+      # `chmod +x portal-web` after unzipping.
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: portal-web-${{ matrix.asset }}
+          path: out/portal-web
+          if-no-files-found: error

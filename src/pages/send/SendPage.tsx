@@ -218,10 +218,10 @@ function SendPanel() {
     }
   }
 
-  // Its own height, not the row's: opening Recent Addresses grows only the Receive card. The
-  // Receive card still stretches, so at rest the two stay level.
+  // Its own row, not the Receive card's whole span: opening Recent Addresses grows only the
+  // Receive card, which spills into a second row this card never enters.
   return (
-    <Card className="flex flex-col gap-4 self-start border-line-strong p-6">
+    <Card className="flex flex-col gap-4 self-start border-line-strong p-6 lg:h-full">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full border border-danger/40 bg-danger/[0.08] text-danger">
@@ -459,6 +459,7 @@ function ReceivePanel() {
   const [addressType, setAddressType] = useState<AddressType>("p2tr");
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [pendingType, setPendingType] = useState<AddressType | null>(null);
+  const [recentOpen, setRecentOpen] = useState(false);
   // Both the address and the Recent Addresses history live in the wallet cache, stamped with
   // the sync they were read at, so revisiting this page paints from there. They are only asked
   // for again once a newer sync has landed: the address moves on when a synced coin pays it,
@@ -557,106 +558,120 @@ function ReceivePanel() {
     URL.revokeObjectURL(url);
   }
 
+  // Spans two subgrid rows so it matches Send at rest while the opened list grows only this
+  // card. Padding sits on the rows: on the card it would land in row two and break the match.
   return (
-    <Card className="flex flex-col gap-4 border-line-strong p-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full border border-success/40 bg-success/[0.08] text-success">
-            <ArrowDownLeft size={15} strokeWidth={2} />
-          </span>
-          <h2 className="font-header text-[15px] font-bold text-foreground">Receive</h2>
-        </div>
-        <FaucetButton />
-      </div>
-
-      <SegmentedToggle
-        groupId="address-type"
-        value={addressType}
-        onChange={setAddressType}
-        options={[
-          { value: "p2tr", label: "Taproot" },
-          { value: "p2wpkh", label: "SegWit" },
-        ]}
-      />
-
-      <div className="flex justify-center py-1">
-        {/* The white plate only appears with the QR on it: a 212px white slab waiting on a dark
-            page reads as a broken image rather than as something loading. */}
-        <div
-          className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
-            qrDataUrl
-              ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
-              : "border border-line bg-surface-raised"
-          }`}
-        >
-          {qrDataUrl ? (
-            <img src={qrDataUrl} alt="Receive address QR code" width={184} height={184} />
-          ) : (
-            <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
-          )}
-        </div>
-      </div>
-
-      <label className="flex flex-col gap-2">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Your Address</span>
-        <div className="flex min-h-[46px] items-center justify-between gap-2 rounded-control border border-line-strong bg-surface-raised px-3.5 py-2.5">
-          {current ? (
-            // `select-all` so one click takes the whole address: this is the value a user
-            // falls back to lifting by hand when the clipboard is out of reach.
-            <span className="min-w-0">
-              <Identifier value={current.address} className="block select-all text-[12.5px] leading-[1.5] text-muted" />
-              {current.derivationPath && (
-                <span className="mt-0.5 block font-mono text-[10.5px] text-subtle">
-                  {current.derivationPath}
-                </span>
-              )}
+    <Card className="flex flex-col border-line-strong lg:row-span-2 lg:grid lg:grid-rows-subgrid">
+      <div className="flex flex-col gap-4 p-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full border border-success/40 bg-success/[0.08] text-success">
+              <ArrowDownLeft size={15} strokeWidth={2} />
             </span>
-          ) : (
-            <span className="font-mono text-[12.5px] text-subtle">
-              {pendingType === addressType ? "Generating…" : "—"}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={copyAddress}
-            disabled={!current}
-            aria-label="Copy address"
-            className="grid h-[26px] w-[26px] flex-none place-items-center rounded text-subtle hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+            <h2 className="font-header text-[15px] font-bold text-foreground">Receive</h2>
+          </div>
+          <FaucetButton />
+        </div>
+
+        <SegmentedToggle
+          groupId="address-type"
+          value={addressType}
+          onChange={setAddressType}
+          options={[
+            { value: "p2tr", label: "Taproot" },
+            { value: "p2wpkh", label: "SegWit" },
+          ]}
+        />
+
+        <div className="flex justify-center py-1">
+          {/* The white plate only appears with the QR on it: a 212px white slab waiting on a dark
+              page reads as a broken image rather than as something loading. */}
+          <div
+            className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
+              qrDataUrl
+                ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
+                : "border border-line bg-surface-raised"
+            }`}
           >
-            <Copy size={13} strokeWidth={2} />
-          </button>
+            {qrDataUrl ? (
+              <img src={qrDataUrl} alt="Receive address QR code" width={184} height={184} />
+            ) : (
+              <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
+            )}
+          </div>
         </div>
-      </label>
 
-      <details className="border-t border-dashed border-line pt-3">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle marker:content-none hover:text-foreground">
+        <label className="flex flex-col gap-2">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Your Address</span>
+          <div className="flex min-h-[46px] items-center justify-between gap-2 rounded-control border border-line-strong bg-surface-raised px-3.5 py-2.5">
+            {current ? (
+              // `select-all` so one click takes the whole address: this is the value a user
+              // falls back to lifting by hand when the clipboard is out of reach.
+              <span className="min-w-0">
+                <Identifier value={current.address} className="block select-all text-[12.5px] leading-[1.5] text-muted" />
+                {current.derivationPath && (
+                  <span className="mt-0.5 block font-mono text-[10.5px] text-subtle">
+                    {current.derivationPath}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="font-mono text-[12.5px] text-subtle">
+                {pendingType === addressType ? "Generating…" : "—"}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={copyAddress}
+              disabled={!current}
+              aria-label="Copy address"
+              className="grid h-[26px] w-[26px] flex-none place-items-center rounded text-subtle hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+            >
+              <Copy size={13} strokeWidth={2} />
+            </button>
+          </div>
+        </label>
+
+        <button
+          type="button"
+          aria-expanded={recentOpen}
+          onClick={() => setRecentOpen((open) => !open)}
+          className="flex items-center gap-1.5 border-t border-dashed border-line pt-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle hover:text-foreground"
+        >
           <ChevronDown size={12} strokeWidth={2.5} />
           Recent Addresses
-        </summary>
-        <div className="mt-3 flex flex-col divide-y divide-line">
-          {recentAddresses.length === 0 && <p className="py-2 text-[11.5px] text-subtle">No incoming transactions yet.</p>}
-          {recentAddresses.map(([addr, { sats, path }]) => (
-            <div key={addr} className="flex items-center justify-between gap-3 py-2 text-[11.5px]">
-              <span className="min-w-0">
-                <Identifier value={addr} className="block text-[11.5px] leading-[1.45] text-muted" />
-                {path && <span className="mt-0.5 block font-mono text-[10px] text-subtle">{path}</span>}
-              </span>
-              <SatsAmount sats={sats} className="flex-none font-semibold text-success" />
-            </div>
-          ))}
-        </div>
-        {recentAddresses.length > 0 && (
-          <button
-            type="button"
-            onClick={exportCsv}
-            className="mt-2 flex items-center gap-1.5 font-mono text-[11px] text-primary hover:text-primary-hover"
-          >
-            <Download size={12} strokeWidth={2} /> Export CSV
-          </button>
-        )}
-      </details>
+        </button>
 
-      <div className="flex-1" />
+        <div className="flex-1" />
+      </div>
+
+      {recentOpen && (
+        // Pulled up into the row above's bottom padding, so the list sits as close under its
+        // toggle as it did inside a <details>.
+        <div className="-mt-3 px-6 pb-6">
+          <div className="flex flex-col divide-y divide-line">
+            {recentAddresses.length === 0 && <p className="py-2 text-[11.5px] text-subtle">No incoming transactions yet.</p>}
+            {recentAddresses.map(([addr, { sats, path }]) => (
+              <div key={addr} className="flex items-center justify-between gap-3 py-2 text-[11.5px]">
+                <span className="min-w-0">
+                  <Identifier value={addr} className="block text-[11.5px] leading-[1.45] text-muted" />
+                  {path && <span className="mt-0.5 block font-mono text-[10px] text-subtle">{path}</span>}
+                </span>
+                <SatsAmount sats={sats} className="flex-none font-semibold text-success" />
+              </div>
+            ))}
+          </div>
+          {recentAddresses.length > 0 && (
+            <button
+              type="button"
+              onClick={exportCsv}
+              className="mt-2 flex items-center gap-1.5 font-mono text-[11px] text-primary hover:text-primary-hover"
+            >
+              <Download size={12} strokeWidth={2} /> Export CSV
+            </button>
+          )}
+        </div>
+      )}
     </Card>
   );
 }
@@ -667,7 +682,9 @@ export function SendPage() {
       <div className="shrink-0 pb-4">
         <h1 className="font-header text-[26px] font-bold text-foreground">Send &amp; Receive</h1>
       </div>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      {/* No row gap on wide screens: the Receive card spans both rows, and a gap would open
+          inside it under the toggle. */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:grid-rows-[auto_auto] lg:gap-y-0">
         <SendPanel />
         <ReceivePanel />
       </div>

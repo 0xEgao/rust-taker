@@ -68,7 +68,6 @@ fn to_summary_dto(s: &SwapSummary) -> SwapSummaryDto {
         payment: s.payment.as_ref().map(|p| PaymentQuoteDto {
             address: p.address.to_string(),
             amount_sats: p.amount.to_sat(),
-            settlement_budget_sats: p.settlement_budget.to_sat(),
         }),
     }
 }
@@ -302,7 +301,6 @@ pub async fn estimate_swap_funding(
             // The most the last leg can carry: each hop re-plans against its own pool and may
             // commit to fewer, and every later hop inherits that smaller count.
             incoming_utxo_count: params.tx_count as usize,
-            fee_rate_sats_per_vb: feerate,
             route_mining_fee_per_router_sats,
             sweep_fee_sats: params.tx_count as u64 * sweep_per_contract_sats,
         })
@@ -737,7 +735,7 @@ pub async fn list_recoveries(
                 updated_at: r.updated_at,
             })
             .collect();
-        rows.sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        rows.sort_unstable_by_key(|r| std::cmp::Reverse(r.updated_at));
         Ok(rows)
     })
     .await

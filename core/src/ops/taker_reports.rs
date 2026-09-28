@@ -245,7 +245,6 @@ pub async fn get_swap_report(
         .into_iter()
         .map(|m| ReportRouterFee {
             router_index: m.maker_index,
-            router_address: m.maker_address,
             base_fee_sats: m.base_fee,
             amount_relative_fee_sats: m.amount_relative_fee,
             time_relative_fee_sats: m.time_relative_fee,

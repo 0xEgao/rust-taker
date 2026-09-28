@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime};
@@ -92,7 +92,6 @@ pub struct TakerInstance {
     /// Own bookkeeping for syncs we trigger — the crate doesn't expose this
     /// on the public OfferSyncClient.
     pub is_offerbook_syncing: AtomicBool,
-    pub last_offerbook_sync_ts: AtomicU64,
     /// Sessions currently looking at this wallet. The Taker is dropped when the last one leaves,
     /// unless a swap is still running.
     pub sessions: Mutex<HashSet<SessionId>>,
@@ -140,6 +139,10 @@ pub struct AppState {
 
 impl AppState {
     /// The wallet this session has unlocked.
+    ///
+    /// A binding alone is not enough: a session waiting on another's init is bound before its
+    /// own password has been checked. Membership is only granted by opening or joining, both of
+    /// which check the password first.
     pub fn taker_for(&self, session: &str) -> Result<Arc<TakerInstance>, AppError> {
         let key = self
             .bindings
@@ -147,10 +150,14 @@ impl AppState {
             .get(session)
             .cloned()
             .ok_or_else(AppError::not_initialized)?;
-        match self.takers.lock()?.get(&key) {
-            Some(TakerSlot::Open(instance)) => Ok(instance.clone()),
-            _ => Err(AppError::not_initialized()),
+        let instance = match self.takers.lock()?.get(&key) {
+            Some(TakerSlot::Open(instance)) => instance.clone(),
+            _ => return Err(AppError::not_initialized()),
+        };
+        if !instance.sessions.lock()?.contains(session) {
+            return Err(AppError::not_initialized());
         }
+        Ok(instance)
     }
 
     /// The wallet a session is bound to, open or still opening. Used to scope events.

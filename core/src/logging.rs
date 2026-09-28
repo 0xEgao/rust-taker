@@ -298,14 +298,26 @@ const INIT_PHASE_NOTES: &[(&str, Option<&str>)] = &[
     ),
     (
         "confirmation(s) on",
-        Some("Reclaiming funds from an interrupted swap — waiting for a block to confirm it"),
+        Some(RECOVERY_WAIT_NOTE),
+    ),
+    (
+        "confirmations (need",
+        Some(RECOVERY_WAIT_NOTE),
     ),
 ];
 
+const RECOVERY_WAIT_NOTE: &str = "Recovering funds from an interrupted swap — waiting for the next block";
+
+/// Lines the crate repeats for as long as a wait lasts. Each one re-announces the current phase
+/// even though nothing moved: phases are sent once, as they happen, so a page that connected
+/// mid-wait (a reload, or a second browser joining) would otherwise sit on the first step for
+/// the whole wait with no idea why.
+const INIT_PHASE_HEARTBEATS: &[&str] = &["confirmations (need"];
+
 impl InitPhase {
-    /// Folds one crate log line in, reporting whether it moved. Phases only ever advance: the
-    /// recovery pass re-logs lines the earlier phases also emit, and those must not walk the
-    /// checklist backwards.
+    /// Folds one crate log line in, reporting whether to announce the phase: when it moved, or
+    /// on a heartbeat. Phases only ever advance: the recovery pass re-logs lines the earlier
+    /// phases also emit, and those must not walk the checklist backwards.
     fn advance(&mut self, message: &str) -> bool {
         let before = *self;
         if let Some((_, phase)) = INIT_PHASE_MARKERS
@@ -324,7 +336,7 @@ impl InitPhase {
         {
             self.note = *note;
         }
-        *self != before
+        *self != before || INIT_PHASE_HEARTBEATS.iter().any(|beat| message.contains(beat))
     }
 }
 
@@ -594,7 +606,13 @@ mod tests {
             "Waiting for 1 confirmation(s) on 1 transaction(s)...",
         );
         assert_eq!(phase, 4);
-        assert!(note.is_some_and(|note: &str| note.contains("waiting for a block")));
+        assert!(note.is_some_and(|note: &str| note.contains("waiting for the next block")));
+        // Repeated for the whole wait; each must re-announce, or a page that connected mid-wait
+        // never learns why it is waiting.
+        let beat = "Tx 88a4524c7c00d8c99416a10a9f9fc6682163c2a8983cc72da8802bdec7c37ee4 has 0 confirmations (need 1)";
+        assert!(at.advance(beat));
+        assert!(at.advance(beat));
+        assert_eq!((at.phase, at.note), (phase, note));
         // The recovery pass re-logs a wallet line from an earlier phase; nothing may rewind.
         assert_eq!(seen(&mut at, "Sync Started for \"w\""), (phase, note));
     }

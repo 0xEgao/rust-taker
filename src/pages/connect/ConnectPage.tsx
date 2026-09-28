@@ -63,6 +63,10 @@ const SAMPLE_BITCOIN_CONF_URL =
 /** Rust reports mainnet as "bitcoin"; the tag says what a user would call it. */
 const presetNetworkLabel = (network: string) => (network === "bitcoin" ? "mainnet" : network);
 
+// Off until Core RPC can reach a packaged node: the backend accepts only a loopback host, and
+// the crate reads rawtx and rawblock from one ZMQ endpoint where Umbrel publishes two.
+const SHOW_NODE_BACKEND = false;
+
 /**
  * Picks one of the servers Rust ships, or leaves the URL alone.
  *
@@ -193,7 +197,10 @@ export function ConnectPage() {
   useEffect(() => {
     void getChainBackend()
       .then((config) => {
-        setKind(config.kind);
+        // A session that picked Core before the option was hidden would otherwise land on
+        // node fields with no toggle to leave them.
+        const kind = SHOW_NODE_BACKEND ? config.kind : "electrum";
+        setKind(kind);
         setElectrumUrl(config.electrum.url);
         setElectrumUseTor(config.electrum.useTor);
         // The view deliberately omits the password, so it has to be reinstated before this
@@ -205,7 +212,7 @@ export function ConnectPage() {
         // second: by the time Next unlocks the answer is already in, so pressing it doesn't
         // re-run a check the user has been looking at the result of.
         return probe({
-          kind: config.kind,
+          kind,
           electrum: { url: config.electrum.url.trim(), useTor: config.electrum.useTor },
           node,
         });
@@ -396,26 +403,32 @@ export function ConnectPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <SettingsSection
             title="Choose your backend"
-            subtitle="An Electrum server, or a Bitcoin Core node you run yourself"
+            subtitle={
+              SHOW_NODE_BACKEND
+                ? "An Electrum server, or a Bitcoin Core node you run yourself"
+                : "The Electrum server Portal reads the chain from"
+            }
             bodyClassName="flex flex-col gap-4 p-5"
           >
-            <div className="flex flex-col gap-1.5">
-              <label className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                Backend
-              </label>
-              <SegmentedToggle
-                groupId="chain-backend"
-                value={kind}
-                onChange={(next) => {
-                  setKind(next);
-                  invalidate();
-                }}
-                options={[
-                  { value: "electrum", label: "Electrum" },
-                  { value: "coreRpc", label: "Bitcoin Core" },
-                ]}
-              />
-            </div>
+            {SHOW_NODE_BACKEND && (
+              <div className="flex flex-col gap-1.5">
+                <label className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                  Backend
+                </label>
+                <SegmentedToggle
+                  groupId="chain-backend"
+                  value={kind}
+                  onChange={(next) => {
+                    setKind(next);
+                    invalidate();
+                  }}
+                  options={[
+                    { value: "electrum", label: "Electrum" },
+                    { value: "coreRpc", label: "Bitcoin Core" },
+                  ]}
+                />
+              </div>
+            )}
 
             {kind === "electrum" ? (
               <>

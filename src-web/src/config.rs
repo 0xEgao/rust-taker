@@ -83,7 +83,10 @@ impl Config {
         if !self.base_path.starts_with('/') {
             return Err("--base-path must start with '/'".into());
         }
-        if self.assets_dir.is_none() && self.access_profile != AccessProfile::DevelopmentLoopback {
+        if self.assets_dir.is_none()
+            && !crate::assets::has_embedded()
+            && self.access_profile != AccessProfile::DevelopmentLoopback
+        {
             return Err("--assets-dir is required outside development".into());
         }
         match self.access_profile {

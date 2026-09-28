@@ -125,8 +125,8 @@ impl Auth {
         self.owner.claim(new_password)
     }
 
-    pub fn login(&self, password: &str) -> Result<Issued, &'static str> {
-        self.owner.verify(password)?;
+    pub fn login(&self, password: &str, client: &str) -> Result<Issued, &'static str> {
+        self.owner.verify(password, client)?;
         self.issue()
     }
 
@@ -252,16 +252,16 @@ mod tests {
     #[test]
     fn login_issues_a_session_with_its_own_csrf_token() {
         let auth = owned();
-        let issued = auth.login("correct horse").expect("password is right");
+        let issued = auth.login("correct horse", "test").expect("password is right");
         assert_eq!(auth.validate(&issued.token).map(|s| s.csrf), Some(issued.csrf.clone()));
-        assert!(auth.login("wrong").is_err());
+        assert!(auth.login("wrong", "test").is_err());
     }
 
     #[test]
     fn logout_revokes_only_that_session() {
         let auth = owned();
-        let a = auth.login("correct horse").unwrap();
-        let b = auth.login("correct horse").unwrap();
+        let a = auth.login("correct horse", "test").unwrap();
+        let b = auth.login("correct horse", "test").unwrap();
         auth.logout(&a.token);
         assert!(auth.validate(&a.token).is_none());
         assert!(auth.validate(&b.token).is_some());
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn an_open_tab_is_never_idled_out() {
         let auth = Arc::new(owned());
-        let issued = auth.login("correct horse").unwrap();
+        let issued = auth.login("correct horse", "test").unwrap();
         let _stream = auth.open_stream(&issued.token).unwrap();
         age(&auth, &issued.token, 6 * DAY, 6 * DAY);
         assert!(auth.validate(&issued.token).is_some());
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn an_open_tab_still_ends_at_the_absolute_limit() {
         let auth = Arc::new(owned());
-        let issued = auth.login("correct horse").unwrap();
+        let issued = auth.login("correct horse", "test").unwrap();
         let _stream = auth.open_stream(&issued.token).unwrap();
         age(&auth, &issued.token, 7 * DAY, 7 * DAY);
         assert!(auth.validate(&issued.token).is_none());
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn a_closed_tab_expires_after_the_detached_window() {
         let auth = Arc::new(owned());
-        let issued = auth.login("correct horse").unwrap();
+        let issued = auth.login("correct horse", "test").unwrap();
         drop(auth.open_stream(&issued.token).unwrap());
         age(&auth, &issued.token, 119 * MINUTE, 119 * MINUTE);
         assert!(auth.validate(&issued.token).is_some());
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn the_detached_window_starts_when_the_last_stream_closes() {
         let auth = Arc::new(owned());
-        let issued = auth.login("correct horse").unwrap();
+        let issued = auth.login("correct horse", "test").unwrap();
         let first = auth.open_stream(&issued.token).unwrap();
         let second = auth.open_stream(&issued.token).unwrap();
         age(&auth, &issued.token, DAY, DAY);
@@ -335,11 +335,11 @@ mod tests {
         let seen = ended.clone();
         let auth = Arc::new(owned().on_session_end(move |id| seen.lock().unwrap().push(id.to_string())));
 
-        let logged_out = auth.login("correct horse").unwrap();
+        let logged_out = auth.login("correct horse", "test").unwrap();
         auth.logout(&logged_out.token);
         auth.logout(&logged_out.token);
 
-        let expired = auth.login("correct horse").unwrap();
+        let expired = auth.login("correct horse", "test").unwrap();
         age(&auth, &expired.token, DAY, DAY);
         auth.reap();
         auth.reap();
@@ -353,15 +353,15 @@ mod tests {
     #[test]
     fn a_full_table_evicts_a_closed_tab_before_an_open_one() {
         let auth = Arc::new(owned());
-        let open = auth.login("correct horse").unwrap();
+        let open = auth.login("correct horse", "test").unwrap();
         let _stream = auth.open_stream(&open.token).unwrap();
         age(&auth, &open.token, DAY, DAY);
-        let closed = auth.login("correct horse").unwrap();
+        let closed = auth.login("correct horse", "test").unwrap();
         for _ in 2..MAX_SESSIONS {
-            auth.login("correct horse").unwrap();
+            auth.login("correct horse", "test").unwrap();
         }
         age(&auth, &closed.token, MINUTE, MINUTE);
-        auth.login("correct horse").unwrap();
+        auth.login("correct horse", "test").unwrap();
         assert!(auth.validate(&open.token).is_some());
         assert!(auth.validate(&closed.token).is_none());
     }

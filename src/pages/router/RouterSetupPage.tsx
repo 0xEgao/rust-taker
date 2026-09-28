@@ -2,7 +2,7 @@ import { ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { subscribe } from "../../api/transport";
-import { getRouterBalances, getRouterLogs, getRouterStatus, startRouter } from "../../api/commands";
+import { getRouterBalances, getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter } from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
 import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
@@ -61,6 +61,7 @@ export function RouterSetupPage() {
   const id = routerId!;
   const navigate = useNavigate();
 
+  const [name, setName] = useState(id);
   const [stage, setStage] = useState<Stage>("starting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [deposit, setDeposit] = useState<{ address: string; sats: number } | null>(null);
@@ -79,6 +80,21 @@ export function RouterSetupPage() {
       return "error";
     });
   }, []);
+
+  useEffect(() => {
+    // Reset per router, and a late answer for the previous one is dropped, so one router's
+    // caption never shows another's name.
+    let current = true;
+    setName(id);
+    void getSavedRouterSettings(id)
+      .then((settings) => {
+        if (current && settings?.name) setName(settings.name);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [id]);
 
   // Phase is authoritative for "live": the backend flips to Running only once the server
   // reports setup complete, which is bond confirmed and liquidity ready.
@@ -186,12 +202,12 @@ export function RouterSetupPage() {
     stage === "error"
       ? "Setup could not finish"
       : stage === "live"
-        ? `${id} is live`
+        ? `${name} is live`
         : stage === "funding"
           ? "Fund the fidelity bond"
           : stage === "bonding"
             ? "Creating the fidelity bond"
-            : `Starting ${id}`;
+            : `Starting ${name}`;
 
   return (
     <IntroStage lead="Portal" accent="Router" caption={caption} className="min-h-full">

@@ -154,11 +154,6 @@ export function getNewAddress(addressType: AddressType): Promise<NewAddress> {
   return invoke("get_new_address", { addressType });
 }
 
-/** The chain-querying half of address issuance; slow, so it runs after the panel has painted. */
-export function verifyLastAddress(addressType: AddressType): Promise<NewAddress> {
-  return invoke("verify_last_address", { addressType });
-}
-
 export function validateAddress(address: string): Promise<AddressValidation> {
   return invoke("validate_address", { address });
 }

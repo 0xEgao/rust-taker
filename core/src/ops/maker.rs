@@ -25,6 +25,9 @@ use crate::types::{
 
 const MIN_FIDELITY_TIMELOCK: u32 = 12_960;
 const MAX_FIDELITY_TIMELOCK: u32 = 25_920;
+/// The crate's `MAX_MAKER_NAME_LEN`, which it keeps `pub(crate)`. Wallets refuse an offer whose
+/// name breaks the rule, so a router that ignored it would run and never be picked.
+pub(crate) const MAX_ROUTER_NAME_LEN: usize = 32;
 
 fn valid_id(value: &str) -> bool {
     !value.is_empty()
@@ -48,6 +51,12 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
         ));
     }
     validate_leaf_name(&config.wallet_name, "walletName")?;
+    let name_len = config.name.chars().count();
+    if name_len == 0 || name_len > MAX_ROUTER_NAME_LEN || config.name.chars().any(char::is_control) {
+        return Err(invalid(format!(
+            "name must be 1 to {MAX_ROUTER_NAME_LEN} characters, with no control characters"
+        )));
+    }
 
     let ports = [
         ("networkPort", config.network_port),
@@ -120,6 +129,7 @@ fn build_config(
     let backend = chain_backend::resolve(session, &config.wallet_name, Some(tor.socks_port))?;
     Ok(MakerServerConfig {
         data_dir,
+        name: config.name,
         network_port: config.network_port,
         rpc_port: config.rpc_port,
         base_fee: config.base_fee,
@@ -296,7 +306,7 @@ pub async fn init_maker(
         let mut makers = try_lock_makers(&state.makers)?;
         if makers.contains_key(&router_id) {
             return Err(AppError::new(
-                ErrorCode::MakerBusy,
+                ErrorCode::RouterBusy,
                 "router is already being created",
             ));
         }
@@ -403,7 +413,7 @@ pub fn update_maker_settings(
             || runtime_thread_is_active
         {
             return Err(AppError::new(
-                ErrorCode::MakerBusy,
+                ErrorCode::RouterBusy,
                 "stop the router before changing its settings",
             ));
         }
@@ -462,7 +472,7 @@ pub async fn start_maker(
             }
             MakerPhase::Running => {
                 return Err(AppError::new(
-                    ErrorCode::MakerAlreadyRunning,
+                    ErrorCode::RouterAlreadyRunning,
                     "router is already running",
                 ))
             }
@@ -700,7 +710,7 @@ pub async fn stop_maker(state: &Arc<AppState>, router_id: String) -> Result<(), 
         }
         if !matches!(entry.phase, MakerPhase::Starting | MakerPhase::Running) {
             return Err(AppError::new(
-                ErrorCode::MakerNotRunning,
+                ErrorCode::RouterNotRunning,
                 "router is not running",
             ));
         }
@@ -853,6 +863,41 @@ mod tests {
         assert!(valid_id("maker_01-test"));
         assert!(!valid_id("../maker"));
         assert!(!valid_id("maker one"));
+    }
+
+    fn named(name: &str) -> MakerInitConfig {
+        MakerInitConfig {
+            router_id: "router-1".to_string(),
+            wallet_name: "router-1".to_string(),
+            wallet_password: None,
+            name: name.to_string(),
+            network_port: 6102,
+            rpc_port: 6103,
+            socks_port: 9050,
+            control_port: 9051,
+            fidelity_amount: 10_000,
+            fidelity_timelock: MIN_FIDELITY_TIMELOCK,
+            fidelity_feerate: MIN_RELAY_FEE_RATE,
+            required_confirms: 1,
+            base_fee: 100,
+            amount_relative_fee_pct: 0.1,
+            time_relative_fee_pct: 0.005,
+            data_dir: None,
+        }
+    }
+
+    /// Wallets refuse an offer whose name breaks this rule, so a router that got past it would
+    /// run and never be picked.
+    #[test]
+    fn router_names_follow_the_rule_wallets_enforce() {
+        assert!(validate_maker_config(&named("Asteroid Destroyer")).is_ok());
+        assert!(validate_maker_config(&named(&"x".repeat(MAX_ROUTER_NAME_LEN))).is_ok());
+        // Counted in characters, not bytes.
+        assert!(validate_maker_config(&named(&"é".repeat(MAX_ROUTER_NAME_LEN))).is_ok());
+        assert!(validate_maker_config(&named(&"x".repeat(MAX_ROUTER_NAME_LEN + 1))).is_err());
+        assert!(validate_maker_config(&named("")).is_err());
+        assert!(validate_maker_config(&named("line\nbreak")).is_err());
+        assert!(validate_maker_config(&named("\u{1b}[2J")).is_err());
     }
 
     #[test]

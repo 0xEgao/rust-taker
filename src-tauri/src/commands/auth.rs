@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use portal_core::error::{AppError, ErrorCode};
 use portal_core::security::owner::{owner_file, OwnerCredential};
-use portal_core::state::{AppState, DESKTOP_SESSION};
 
 pub struct DesktopAuth {
     owner: OwnerCredential,
@@ -69,7 +68,8 @@ pub async fn auth_login(
 ) -> Result<(), AppError> {
     let auth = Arc::clone(&auth);
     tokio::task::spawn_blocking(move || {
-        auth.owner.verify(&password).map_err(denied)?;
+        // One person at one window: there is no other client to keep apart.
+        auth.owner.verify(&password, "desktop").map_err(denied)?;
         auth.signed_in.store(true, Ordering::SeqCst);
         Ok(())
     })
@@ -77,9 +77,3 @@ pub async fn auth_login(
     .map_err(AppError::internal)?
 }
 
-/// Signing out takes the window off its wallet too, exactly as a web session ending does.
-#[tauri::command]
-pub fn auth_logout(auth: tauri::State<'_, Arc<DesktopAuth>>, state: tauri::State<'_, Arc<AppState>>) {
-    auth.signed_in.store(false, Ordering::SeqCst);
-    portal_core::ops::taker_wallet::end_session(&state, DESKTOP_SESSION);
-}
