@@ -1014,7 +1014,7 @@ pub struct ElectrumPresetDto {
 
 /// Seeded on every launch and held in memory only: an edit is deliberately forgotten so a
 /// node's RPC password is never at rest.
-pub(crate) const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.citadelfoss.xyz:50002";
+pub(crate) const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.openswap.live:50002";
 const DEFAULT_NODE_HOST: &str = "127.0.0.1";
 const DEFAULT_NODE_RPC_PORT: u16 = 38332;
 const DEFAULT_NODE_ZMQ_PORT: u16 = 28332;
