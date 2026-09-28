@@ -137,7 +137,7 @@ jobs:
           releaseId: ${{ needs.release.outputs.id }}
 
   web:
-    name: Web ${{ matrix.name }}
+    name: Server ${{ matrix.name }}
     needs: version
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 90
@@ -153,7 +153,7 @@ jobs:
             asset: linux-arm64
           - name: macOS Universal
             platform: macos-latest
-            asset: macos-universal
+            asset: mac-universal
     steps:
       - uses: actions/checkout@v7
         with:
@@ -195,7 +195,7 @@ jobs:
           PORTAL_EMBED_WEB: dist/web
         run: |
           cargo build --locked --release -p portal-web
-          cp target/release/portal-web "portal-web-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
+          cp target/release/portal-web "portal-server-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
 
       - name: Build portal-web (universal)
         if: runner.os == 'macOS'
@@ -204,7 +204,7 @@ jobs:
         run: |
           cargo build --locked --release -p portal-web --target aarch64-apple-darwin
           cargo build --locked --release -p portal-web --target x86_64-apple-darwin
-          out="portal-web-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
+          out="portal-server-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
           lipo -create -output "$out" \
             target/aarch64-apple-darwin/release/portal-web \
             target/x86_64-apple-darwin/release/portal-web
@@ -213,8 +213,8 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: web-${{ matrix.asset }}
-          path: portal-web-*
+          name: server-${{ matrix.asset }}
+          path: portal-server-*
           if-no-files-found: error
 
   # Last, once every binary is on the draft: the web binaries go up beside the installers,
@@ -231,7 +231,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: web-*
+          pattern: server-*
           path: all
           merge-multiple: true
 
@@ -243,7 +243,7 @@ jobs:
             --jq '.[] | "\(.id) \(.name)"' |
           while read -r asset name; do
             # This job's own uploads, left by an earlier run: the fresh artifacts replace them.
-            case "$name" in SHA256SUMS | portal-web-*) continue ;; esac
+            case "$name" in SHA256SUMS | portal-server-*) continue ;; esac
             gh api -H "Accept: application/octet-stream" \
               "repos/$GITHUB_REPOSITORY/releases/assets/$asset" > "$name"
           done
@@ -251,7 +251,7 @@ jobs:
       - name: Upload web binaries and SHA256SUMS
         working-directory: all
         run: |
-          chmod +x portal-web-*
+          chmod +x portal-server-*
           # Named as the files appear on the release page, so `sha256sum -c` works on a folder
           # of downloads.
           sha256sum -- * > ../SHA256SUMS
@@ -260,7 +260,7 @@ jobs:
           # reach SHA256SUMS, and GitHub refuses a second asset under an existing name.
           existing="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
             --jq '.[] | "\(.id) \(.name)"')"
-          for file in portal-web-* SHA256SUMS; do
+          for file in portal-server-* SHA256SUMS; do
             echo "$existing" | awk -v name="$file" '$2 == name { print $1 }' | while read -r asset; do
               gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset"
             done
