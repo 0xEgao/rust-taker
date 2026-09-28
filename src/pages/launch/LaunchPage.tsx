@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Server } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, Server } from "lucide-react";
 import { motion } from "framer-motion";
 import { Link, Navigate } from "react-router-dom";
 import { Background } from "../../components/ui/layout";
@@ -65,6 +65,23 @@ export function LaunchPage() {
   return (
     <div className="relative min-h-screen">
       <Background />
+      {/* The gate stays reachable after it has passed, so a sign-out is also where the
+          backend can be changed. Same control and placement as the wallet picker's way back. */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.5, ease: "easeOut" }}
+        className="absolute left-8 top-5 z-10"
+      >
+        <Link
+          to="/connect"
+          title="Change connection"
+          className="flex items-center gap-2 rounded-control font-header text-[15px] font-bold text-foreground outline-none transition-colors hover:text-primary focus-visible:shadow-ring"
+        >
+          <ArrowLeft size={16} strokeWidth={2} className="text-primary" />
+          Connection
+        </Link>
+      </motion.div>
       <div className="relative grid min-h-screen place-items-center px-6 py-16">
         <div className="w-full max-w-3xl">
           <motion.header

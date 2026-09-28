@@ -6,6 +6,8 @@ import { chainName, useConnectionStore, watchConnection } from "../../store/conn
 import logoUrl from "../../assets/logo.png";
 import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
+import { useWalletCacheStore } from "../../store/wallet-cache";
+import { refreshWalletCache } from "../../lib/wallet-sync";
 import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useSessionStore } from "../../store/session";
 import { useToastStore, type Toast } from "../../store/toast";
@@ -177,8 +179,18 @@ function TopNav({
   atRouterRoot: boolean;
   walletUnlocked: boolean;
 }) {
-  const onRefresh = useHeaderActionsStore((s) => s.onRefresh);
-  const refreshing = useHeaderActionsStore((s) => s.refreshing);
+  // The wallet sync is app-wide state, not a page's, so on the wallet side the button works from
+  // every page. A router page registers its own handler, since which router to sync is the
+  // page's to know.
+  const routerRefresh = useHeaderActionsStore((s) => s.onRefresh);
+  const routerRefreshing = useHeaderActionsStore((s) => s.refreshing);
+  const walletSyncing = useWalletCacheStore((s) => s.syncStatus === "syncing");
+  const onRefresh = routerMode
+    ? routerRefresh
+    : walletUnlocked
+      ? () => void refreshWalletCache()
+      : null;
+  const refreshing = routerMode ? routerRefreshing : walletSyncing;
   const [justRefreshed, setJustRefreshed] = useState(false);
   const wasRefreshing = useRef(refreshing);
 
@@ -272,23 +284,26 @@ function TopNav({
         )}
       </nav>
 
-      {/* Wallet is the only page that registers a refresh handler, so both of these are
-          wallet-only — a router reads its own log from its workspace instead. */}
+      {/* Logs are wallet-only — a router reads its own log from its workspace instead. The
+          sync button is on both sides: on every wallet page it syncs the open wallet, and on a
+          router page it is shown only while a running workspace has registered its router. */}
       <div className="flex items-center justify-self-end gap-2">
         <ConnectionChip />
+        {(!routerMode || onRefresh) && (
+          <IconButton
+            onClick={() => onRefresh?.()}
+            disabled={!onRefresh}
+            label="Sync wallet"
+            className={justRefreshed ? "text-success" : ""}
+            icon={justRefreshed ? (
+              <Check size={16} strokeWidth={2} />
+            ) : (
+              <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
+            )}
+          />
+        )}
         {!routerMode && (
           <>
-            <IconButton
-              onClick={() => onRefresh?.()}
-              disabled={!onRefresh}
-              label="Refresh"
-              className={justRefreshed ? "text-success" : ""}
-              icon={justRefreshed ? (
-                <Check size={16} strokeWidth={2} />
-              ) : (
-                <RefreshCw size={16} strokeWidth={1.8} className={refreshing ? "animate-spin" : ""} />
-              )}
-            />
             <Tooltip content="Logs">
             <NavLink
               to="/logs"

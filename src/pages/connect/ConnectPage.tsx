@@ -23,13 +23,13 @@ import {
 import {
   Button,
   CheckRow,
-  PasswordField,
   SegmentedToggle,
   SummaryGroup,
   SummaryRow,
 } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
 import { wait } from "../../lib/timing";
+import { openExternal } from "../../platform";
 import { useSessionStore } from "../../store/session";
 import { formatDuration, formatNumber } from "../../lib/wallet-format";
 
@@ -52,6 +52,16 @@ const PRESET_TONE: Record<string, string> = {
   bitcoin: "border-success/40 bg-success/[0.08] text-success",
   signet: "border-warning/40 bg-warning/[0.08] text-warning",
 };
+
+/** Mirrors `DEFAULT_NODE_PASSWORD` in core: the view never carries the password itself. */
+const DEFAULT_NODE_PASSWORD = "password";
+
+/** Must stay in the opener allowlist in `src-tauri/capabilities/default.json`. */
+const SAMPLE_BITCOIN_CONF_URL =
+  "https://github.com/citadel-foss/openswap/blob/master/docs/bitcoin.conf";
+
+/** Rust reports mainnet as "bitcoin"; the tag says what a user would call it. */
+const presetNetworkLabel = (network: string) => (network === "bitcoin" ? "mainnet" : network);
 
 /**
  * Picks one of the servers Rust ships, or leaves the URL alone.
@@ -91,7 +101,7 @@ function ServerPicker({
                 PRESET_TONE[selected.network] ?? "border-line text-subtle"
               }`}
             >
-              {selected.network}
+              {presetNetworkLabel(selected.network)}
             </span>
           )}
         </span>
@@ -122,7 +132,7 @@ function ServerPicker({
                     PRESET_TONE[preset.network] ?? "border-line text-subtle"
                   }`}
                 >
-                  {preset.network}
+                  {presetNetworkLabel(preset.network)}
                 </span>
               </span>
               <span className="font-mono text-[10.5px] text-subtle">{preset.url}</span>
@@ -436,17 +446,13 @@ export function ConnectPage() {
                     setElectrumUseTor(next);
                     invalidate();
                   }}
-                  primary="Reach this server over Tor"
+                  primary="Connect to Electrum via Tor"
                   secondary={
                     torForced
                       ? "Always on for an onion address"
-                      : "Hides which server you ask, and costs some speed"
+                      : "Tor connection latency can be high."
                   }
                 />
-                <p className="text-[11.5px] leading-5 text-subtle">
-                  Off by default so the chain stays readable even when Tor is slow to bootstrap.
-                  Swap traffic always goes over Tor either way.
-                </p>
               </>
             ) : (
               node && (
@@ -464,28 +470,37 @@ export function ConnectPage() {
                       onCommit={(port) => editNode({ port: Number(port) || node.port })}
                     />
                     <SummaryRow
+                      label="ZMQ Port"
+                      value={String(node.zmqPort)}
+                      onCommit={(zmqPort) => editNode({ zmqPort: Number(zmqPort) || node.zmqPort })}
+                    />
+                    <SummaryRow
                       label="RPC Username"
                       value={node.username}
                       inputMode="text"
                       onCommit={(username) => editNode({ username })}
                     />
+                    {/* Empty means "keep the one Rust holds", which starts as the default. */}
                     <SummaryRow
-                      label="ZMQ Port"
-                      value={String(node.zmqPort)}
-                      onCommit={(zmqPort) => editNode({ zmqPort: Number(zmqPort) || node.zmqPort })}
+                      label="RPC Password"
+                      value={node.password}
+                      placeholder={DEFAULT_NODE_PASSWORD}
+                      inputMode="text"
+                      secret
+                      onCommit={(password) => editNode({ password })}
                     />
                   </SummaryGroup>
-                  <PasswordField
-                    label="RPC Password"
-                    placeholder={
-                      node.passwordConfigured
-                        ? "Portal's default (enter to replace)"
-                        : "Enter RPC password"
-                    }
-                    autoComplete="current-password"
-                    value={node.password}
-                    onChange={(e) => editNode({ password: e.target.value })}
-                  />
+                  <p className="text-[11.5px] leading-5 text-subtle">
+                    Special node config is required. Sample{" "}
+                    <button
+                      type="button"
+                      onClick={() => void openExternal(SAMPLE_BITCOIN_CONF_URL)}
+                      className="cursor-pointer rounded-sm text-primary underline underline-offset-2 outline-none hover:text-primary/80 focus-visible:shadow-ring"
+                    >
+                      bitcoin.conf
+                    </button>
+                    .
+                  </p>
                 </>
               )
             )}
@@ -508,9 +523,9 @@ export function ConnectPage() {
             bodyClassName="flex flex-col gap-4 p-5"
           >
             <p className="text-[12px] leading-5 text-muted">
-              Tor routes all swap traffic, so your IP and coin history stay private. Portal
-              never touches a Tor already running on this machine. Next unlocks once it has
-              fully bootstrapped.
+              Tor routes all swap traffic, so your IP stays private. Portal runs and configures
+              its own Tor daemon, and doesn't touch system Tor. You can proceed once Tor
+              bootstrap is completed.
             </p>
             <TestResultRows
               rows={[

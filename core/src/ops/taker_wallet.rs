@@ -4,18 +4,18 @@
 //! `from_wallet_join_error`, not `AppError::internal` — a wrong password
 //! panics inside the crate instead of returning `Result`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
-use openswap::bitcoin::{Address, OutPoint, Txid};
+use openswap::bitcoin::{Address, OutPoint, ScriptBuf, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
-use openswap::wallet::{AddressType, Wallet};
+use openswap::wallet::{AddressType, UTXOSpendInfo, Wallet};
 use uuid::Uuid;
 
 use crate::storage::{self, resolve_data_dir, wallet_path};
@@ -697,10 +697,23 @@ pub async fn get_balances(taker: &TakerInstance) -> Result<BalancesDto, AppError
 /// Last address issued per type, cached next to the wallet — the crate's
 /// `get_next_external_address` always derives+increments with no "peek" mode, so this is the only
 /// way to know what to re-offer instead of burning a fresh gap-limit index every call.
+///
+/// The index is kept beside each address because the crate cannot say which index an address
+/// came from after the fact, and the receive panel shows its derivation path. Files written
+/// before the index was recorded still load; their addresses are replaced once (see below).
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct LastAddresses {
     p2wpkh: Option<String>,
     p2tr: Option<String>,
+    #[serde(default)]
+    p2wpkh_index: Option<u32>,
+    #[serde(default)]
+    p2tr_index: Option<u32>,
+    /// Every receive address handed out since paths were recorded, with its path. History
+    /// shows the addresses that were paid, and once a coin is spent its UTXO — the only other
+    /// place a path can be read from — is gone.
+    #[serde(default)]
+    issued: HashMap<String, String>,
 }
 
 fn last_address_path(taker: &TakerInstance) -> PathBuf {
@@ -710,7 +723,7 @@ fn last_address_path(taker: &TakerInstance) -> PathBuf {
         .join(format!("{}_last_address.json", taker.wallet_name))
 }
 
-fn load_last_addresses(path: &PathBuf) -> LastAddresses {
+fn load_last_addresses(path: &Path) -> LastAddresses {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -722,102 +735,90 @@ fn save_last_addresses(path: &Path, addrs: &LastAddresses) -> Result<(), AppErro
     crate::security::fs::write_private(path, json.as_bytes())
 }
 
-/// Recent transactions scanned to decide whether the last issued address has been paid.
-///
-/// Only the last address issued is ever under test, so any payment to it is recent by
-/// construction. Kept small because the Electrum backend's `list_transactions` fetches every
-/// input of every transaction in the window, one round trip each — the window, not the wallet,
-/// is what makes that call expensive.
-const USED_ADDRESS_LOOKBACK: usize = 10;
-
 /// Reuses the last address issued for this type until it actually receives a payment, matching
-/// the old app and standard HD-wallet gap-limit-safe behavior — repeat calls (page reload,
-/// clicking Generate again) shouldn't advance the derivation index for no reason.
-///
-/// Deliberately asks the chain nothing: a cached address is handed back unverified so the
-/// receive panel can render immediately, and `verify_last_address` does the expensive part
-/// afterwards. Blocking address issuance on that check is what made Receive slow.
+/// standard HD-wallet gap-limit-safe behavior — repeat calls (page reload, switching type) must
+/// not advance the derivation index for no reason.
 pub async fn get_new_address(
     taker: &TakerInstance,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
     let wallet = taker.wallet.clone();
     let path = last_address_path(taker);
-    let (addr_type, label) = address_kind(address_type);
-    tokio::task::spawn_blocking(move || -> Result<NewAddress, AppError> {
-        let mut cached = load_last_addresses(&path);
-        if let Some(existing) = address_slot(&mut cached, addr_type).clone() {
-            return Ok(NewAddress {
-                address: existing,
-                address_type: label.to_string(),
-                verified: false,
-            });
-        }
-
-        let address = wallet
-            .write()?
-            .get_next_external_address(addr_type)?
-            .to_string();
-        *address_slot(&mut cached, addr_type) = Some(address.clone());
-        save_last_addresses(&path, &cached)?;
-        Ok(NewAddress {
-            address,
-            address_type: label.to_string(),
-            verified: true,
-        })
-    })
-    .await
-    .map_err(AppError::internal)?
+    tokio::task::spawn_blocking(move || issue_unused_address(&wallet, &path, address_type))
+        .await
+        .map_err(AppError::internal)?
 }
 
-/// Confirms the cached address is still unpaid, issuing a fresh one if it isn't.
-///
-/// The slow half of address issuance, split out so it runs after the panel has already painted.
-/// Returns whatever address the user should be offering, always verified.
+/// Kept for the receive panel's second call. Issuance now checks locally and is already final,
+/// so this is the same answer as `get_new_address`.
 pub async fn verify_last_address(
     taker: &TakerInstance,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    let wallet = taker.wallet.clone();
-    let path = last_address_path(taker);
+    get_new_address(taker, address_type).await
+}
+
+/// The last address issued for this type unless the wallet now holds a coin paying it,
+/// otherwise the next index — recorded at `path` either way, so the next call re-offers it.
+///
+/// "Paid" is read from the wallet's own UTXO cache, not the chain: `sync` already fetched it, so
+/// the check costs no round trip, and it is exactly as current as the balances the user sees.
+/// The address only moves on once a sync has seen the payment. Shared with the router wallet,
+/// which is the same `Wallet` type with its own cache file. Blocking.
+pub(crate) fn issue_unused_address(
+    wallet: &RwLock<Wallet>,
+    path: &Path,
+    address_type: AddressTypeDto,
+) -> Result<NewAddress, AppError> {
     let (addr_type, label) = address_kind(address_type);
-    tokio::task::spawn_blocking(move || -> Result<NewAddress, AppError> {
-        let mut cached = load_last_addresses(&path);
-        let existing = address_slot(&mut cached, addr_type).clone();
+    let mut cached = load_last_addresses(path);
 
-        if let Some(existing) = existing {
-            let used = wallet
-                .read()?
-                .get_transactions(Some(USED_ADDRESS_LOOKBACK), None)?
-                .into_iter()
-                .any(|tx| {
-                    tx.detail
-                        .address
-                        .is_some_and(|a| a.assume_checked().to_string() == existing)
-                });
-            if !used {
-                return Ok(NewAddress {
-                    address: existing,
-                    address_type: label.to_string(),
-                    verified: true,
-                });
+    // A cached address without its index predates recording it. Replacing it costs one unused
+    // index, once, and is what lets every address on offer carry its path.
+    if let (Some(existing), Some(index)) = cached_slot(&cached, addr_type) {
+        let script = Address::from_str(&existing)
+            .map_err(AppError::internal)?
+            .assume_checked()
+            .script_pubkey();
+        let paid = wallet
+            .read()?
+            .list_all_utxo_spend_info()
+            .iter()
+            .any(|(utxo, _)| utxo.script_pub_key == script);
+        if !paid {
+            let path_str = receive_path(addr_type, &existing, index);
+            if !cached.issued.contains_key(&existing) {
+                cached.issued.insert(existing.clone(), path_str.clone());
+                save_last_addresses(path, &cached)?;
             }
+            let derivation_path = Some(path_str);
+            return Ok(NewAddress {
+                address: existing,
+                address_type: label.to_string(),
+                verified: true,
+                derivation_path,
+            });
         }
+    }
 
-        let address = wallet
-            .write()?
-            .get_next_external_address(addr_type)?
-            .to_string();
-        *address_slot(&mut cached, addr_type) = Some(address.clone());
-        save_last_addresses(&path, &cached)?;
-        Ok(NewAddress {
-            address,
-            address_type: label.to_string(),
-            verified: true,
-        })
+    let (address, index) = {
+        let mut wallet = wallet.write()?;
+        // Read under the same lock that derives from it, so no other caller can take this index
+        // in between.
+        let index = *wallet.get_external_index();
+        (wallet.get_next_external_address(addr_type)?.to_string(), index)
+    };
+    let path_str = receive_path(addr_type, &address, index);
+    set_cached_slot(&mut cached, addr_type, address.clone(), index);
+    cached.issued.insert(address.clone(), path_str.clone());
+    save_last_addresses(path, &cached)?;
+    let derivation_path = Some(path_str);
+    Ok(NewAddress {
+        address,
+        address_type: label.to_string(),
+        verified: true,
+        derivation_path,
     })
-    .await
-    .map_err(AppError::internal)?
 }
 
 fn address_kind(dto: AddressTypeDto) -> (AddressType, &'static str) {
@@ -827,10 +828,66 @@ fn address_kind(dto: AddressTypeDto) -> (AddressType, &'static str) {
     }
 }
 
-fn address_slot(cached: &mut LastAddresses, addr_type: AddressType) -> &mut Option<String> {
+fn cached_slot(cached: &LastAddresses, addr_type: AddressType) -> (Option<String>, Option<u32>) {
     match addr_type {
-        AddressType::P2WPKH => &mut cached.p2wpkh,
-        AddressType::P2TR => &mut cached.p2tr,
+        AddressType::P2WPKH => (cached.p2wpkh.clone(), cached.p2wpkh_index),
+        AddressType::P2TR => (cached.p2tr.clone(), cached.p2tr_index),
+    }
+}
+
+fn set_cached_slot(cached: &mut LastAddresses, addr_type: AddressType, address: String, index: u32) {
+    match addr_type {
+        AddressType::P2WPKH => {
+            cached.p2wpkh = Some(address);
+            cached.p2wpkh_index = Some(index);
+        }
+        AddressType::P2TR => {
+            cached.p2tr = Some(address);
+            cached.p2tr_index = Some(index);
+        }
+    }
+}
+
+/// BIP-44 coin type, read off the address: `Wallet` keeps its network private, and every
+/// non-mainnet network (testnet, signet, regtest) shares coin type 1.
+fn coin_type(address: &str) -> u32 {
+    if address.to_ascii_lowercase().starts_with("bc1") {
+        0
+    } else {
+        1
+    }
+}
+
+/// The full path from the master key, in the account layout the crate derives from:
+/// BIP-84 for SegWit, BIP-86 for Taproot, account 0.
+fn full_path(addr_type: AddressType, address: &str, keychain: u32, index: u32) -> String {
+    let purpose = match addr_type {
+        AddressType::P2WPKH => 84,
+        AddressType::P2TR => 86,
+    };
+    format!("m/{purpose}'/{}'/0'/{keychain}/{index}", coin_type(address))
+}
+
+fn receive_path(addr_type: AddressType, address: &str, index: u32) -> String {
+    full_path(addr_type, address, 0, index)
+}
+
+/// The full path of a wallet coin, for the UTXO lists. Seed coins and fidelity bonds have one;
+/// swap and contract coins sit on multisig or timelock scripts rather than an HD key.
+pub(crate) fn utxo_derivation_path(spend_info: &UTXOSpendInfo, address: Option<&str>) -> Option<String> {
+    match spend_info {
+        // The crate's path is relative to the account (`m/<keychain>/<index>`), so the account
+        // part is added here.
+        UTXOSpendInfo::SeedCoin { path, address_type, .. } => {
+            let mut parts = path.trim_start_matches("m/").split('/');
+            let keychain = parts.next()?.parse().ok()?;
+            let index = parts.next()?.parse().ok()?;
+            Some(full_path(*address_type, address?, keychain, index))
+        }
+        // Straight off the master key, outside the BIP-44 accounts: the crate's
+        // `FIDELITY_DERIVATION_PATH` (`m/175'/2`), then the bond's index.
+        UTXOSpendInfo::FidelityBondCoin { index, .. } => Some(format!("m/175'/2/{index}")),
+        _ => None,
     }
 }
 
@@ -840,24 +897,130 @@ pub async fn get_transactions(
     skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
     let wallet = taker.wallet.clone();
+    let issued_path = last_address_path(taker);
+    let seen_path = taker
+        .data_dir
+        .join("wallets")
+        .join(format!("{}_tx_first_seen.json", taker.wallet_name));
     tokio::task::spawn_blocking(move || -> Result<Vec<TxSummary>, AppError> {
-        let txs = wallet.read()?.get_transactions(count, skip)?;
+        let wallet = wallet.read()?;
+        let txs = wallet.get_transactions(count, skip)?;
+        let paths = AddressPaths::new(&wallet, &issued_path);
+        let first_seen = stamp_first_seen(&seen_path, &txs);
         Ok(txs
             .into_iter()
-            .map(|tx| TxSummary {
-                txid: tx.info.txid.to_string(),
-                category: format!("{:?}", tx.detail.category).to_lowercase(),
-                amount_sats: tx.detail.amount.to_sat(),
-                confirmations: tx.info.confirmations,
-                address: tx.detail.address.map(|a| a.assume_checked().to_string()),
-                time: tx.info.time,
-                fee_sats: tx.detail.fee.map(|f| f.to_sat()),
-                label: tx.detail.label,
+            .map(|tx| {
+                let address = tx.detail.address.map(|a| a.assume_checked().to_string());
+                let txid = tx.info.txid.to_string();
+                TxSummary {
+                    first_seen: first_seen.get(&txid).copied(),
+                    txid,
+                    category: format!("{:?}", tx.detail.category).to_lowercase(),
+                    amount_sats: tx.detail.amount.to_sat(),
+                    confirmations: tx.info.confirmations,
+                    derivation_path: address.as_deref().and_then(|a| paths.lookup(a)),
+                    address,
+                    time: tx.info.time,
+                    fee_sats: tx.detail.fee.map(|f| f.to_sat()),
+                    label: tx.detail.label,
+                }
             })
             .collect())
     })
     .await
     .map_err(AppError::internal)?
+}
+
+/// Serialises the read-modify-write of every wallet's first-seen file: two listings racing
+/// would otherwise each drop the other's new entries.
+static FIRST_SEEN_LOCK: Mutex<()> = Mutex::new(());
+
+/// When Portal first saw each transaction, recorded the first time a listing returns it and
+/// never moved after. Neither backend can answer this later — Electrum only knows block times —
+/// so it has to be written down while the transaction is new. Best effort: an unreadable or
+/// unwritable file costs the stamp, never the listing.
+pub(crate) fn record_first_seen(
+    path: &Path,
+    listed: impl Iterator<Item = (String, u64)>,
+) -> HashMap<String, u64> {
+    let _guard = FIRST_SEEN_LOCK.lock();
+    let mut seen: HashMap<String, u64> = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut changed = false;
+    for (txid, known) in listed {
+        seen.entry(txid).or_insert_with(|| {
+            changed = true;
+            known
+        });
+    }
+    if changed {
+        if let Ok(json) = serde_json::to_string(&seen) {
+            if let Err(e) = crate::security::fs::write_private(path, json.as_bytes()) {
+                log::warn!("could not record transaction first-seen times: {e:?}");
+            }
+        }
+    }
+    seen
+}
+
+/// Stamps a listing with first-seen times, recording any transaction this wallet has not been
+/// seen with before. The seed for a newcomer is the backend's best answer: Core's `timereceived`
+/// is when its wallet first saw the transaction; Electrum has no such thing and reports the
+/// block time (0 while unconfirmed), which is the best available for history that predates the
+/// record. Nothing known means it is new, so it was first seen now.
+pub(crate) fn stamp_first_seen(
+    path: &Path,
+    txs: &[openswap::bitcoind::bitcoincore_rpc::json::ListTransactionResult],
+) -> HashMap<String, u64> {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    record_first_seen(
+        path,
+        txs.iter().map(|tx| {
+            let known = [tx.info.timereceived, tx.info.blocktime.unwrap_or(0)]
+                .into_iter()
+                .find(|t| *t > 0)
+                .unwrap_or(now);
+            (tx.info.txid.to_string(), known.min(now))
+        }),
+    )
+}
+
+/// Paths for addresses named in history. The crate has no reverse lookup from an address to
+/// its HD path, so this asks the two places one is written down: a coin still held (its UTXO
+/// carries the path) and the log of receive addresses Portal handed out. An address in neither
+/// — a change output, or one issued before paths were recorded and since spent — has none.
+struct AddressPaths {
+    issued: HashMap<String, String>,
+    utxos: Vec<(ScriptBuf, UTXOSpendInfo)>,
+}
+
+impl AddressPaths {
+    fn new(wallet: &Wallet, issued_path: &Path) -> Self {
+        Self {
+            issued: load_last_addresses(issued_path).issued,
+            utxos: wallet
+                .list_all_utxo_spend_info()
+                .into_iter()
+                .map(|(utxo, info)| (utxo.script_pub_key, info))
+                .collect(),
+        }
+    }
+
+    fn lookup(&self, address: &str) -> Option<String> {
+        if let Some(path) = self.issued.get(address) {
+            return Some(path.clone());
+        }
+        let script = Address::from_str(address).ok()?.assume_checked().script_pubkey();
+        self.utxos
+            .iter()
+            .find(|(s, _)| *s == script)
+            .and_then(|(_, info)| utxo_derivation_path(info, Some(address)))
+    }
 }
 
 pub async fn list_utxos(taker: &TakerInstance) -> Result<Vec<UtxoEntry>, AppError> {
@@ -868,15 +1031,19 @@ pub async fn list_utxos(taker: &TakerInstance) -> Result<Vec<UtxoEntry>, AppErro
         let utxos = wallet.read()?.list_all_utxo_spend_info();
         Ok(utxos
             .into_iter()
-            .map(|(entry, spend_info)| UtxoEntry {
-                txid: entry.txid.to_string(),
-                vout: entry.vout,
-                amount_sats: entry.amount.to_sat(),
-                confirmations: entry.confirmations,
-                address: chain_backend::utxo_address(&entry, &backend, socks_port),
-                spendable: entry.spendable,
-                solvable: entry.solvable,
-                spend_type: spend_info.to_string(),
+            .map(|(entry, spend_info)| {
+                let address = chain_backend::utxo_address(&entry, &backend, socks_port);
+                UtxoEntry {
+                    txid: entry.txid.to_string(),
+                    vout: entry.vout,
+                    amount_sats: entry.amount.to_sat(),
+                    confirmations: entry.confirmations,
+                    derivation_path: utxo_derivation_path(&spend_info, address.as_deref()),
+                    address,
+                    spendable: entry.spendable,
+                    solvable: entry.solvable,
+                    spend_type: spend_info.to_string(),
+                }
             })
             .collect())
     })
@@ -1110,5 +1277,73 @@ mod staged_file_tests {
         assert!(!upload.exists());
         assert!(picked.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod derivation_path_tests {
+    use super::{receive_path, utxo_derivation_path};
+    use openswap::bitcoin::{Amount, ScriptBuf};
+    use openswap::wallet::{AddressType, UTXOSpendInfo};
+
+    fn seed(path: &str, address_type: AddressType) -> UTXOSpendInfo {
+        UTXOSpendInfo::SeedCoin {
+            path: path.to_string(),
+            input_value: Amount::from_sat(1_000),
+            address_type,
+        }
+    }
+
+    #[test]
+    fn receive_paths_follow_the_account_layout() {
+        assert_eq!(receive_path(AddressType::P2TR, "tb1pqqqq", 7), "m/86'/1'/0'/0/7");
+        assert_eq!(receive_path(AddressType::P2WPKH, "bc1qqqqq", 3), "m/84'/0'/0'/0/3");
+    }
+
+    #[test]
+    fn seed_coin_paths_gain_their_account_prefix() {
+        assert_eq!(
+            utxo_derivation_path(&seed("m/1/12", AddressType::P2WPKH), Some("tb1qqqqq")),
+            Some("m/84'/1'/0'/1/12".to_string()),
+        );
+    }
+
+    #[test]
+    fn fidelity_bonds_use_the_crate_bond_path() {
+        let bond = UTXOSpendInfo::FidelityBondCoin { index: 2, input_value: Amount::from_sat(1_000) };
+        assert_eq!(utxo_derivation_path(&bond, None), Some("m/175'/2/2".to_string()));
+    }
+
+    #[test]
+    fn coins_without_an_hd_key_have_no_path() {
+        let swap = UTXOSpendInfo::IncomingSwapCoin { multisig_redeemscript: ScriptBuf::new() };
+        assert_eq!(utxo_derivation_path(&swap, Some("tb1qqqqq")), None);
+        assert_eq!(utxo_derivation_path(&seed("m/0/1", AddressType::P2TR), None), None);
+    }
+}
+
+#[cfg(test)]
+mod first_seen_tests {
+    use super::record_first_seen;
+
+    #[test]
+    fn a_transaction_keeps_the_time_it_was_first_seen() {
+        let dir = std::env::temp_dir().join(format!("portal-first-seen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet_tx_first_seen.json");
+        let _ = std::fs::remove_file(&path);
+
+        let first = record_first_seen(&path, [("a".to_string(), 100)].into_iter());
+        assert_eq!(first.get("a"), Some(&100));
+
+        // Listed again later, with a block time now known, and alongside a newcomer.
+        let later = record_first_seen(
+            &path,
+            [("a".to_string(), 500), ("b".to_string(), 600)].into_iter(),
+        );
+        assert_eq!(later.get("a"), Some(&100));
+        assert_eq!(later.get("b"), Some(&600));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

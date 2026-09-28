@@ -94,6 +94,8 @@ export function SummaryRow({
   hint,
   readOnly = false,
   inputMode = "numeric",
+  placeholder,
+  secret = false,
   onCommit,
 }: {
   label: string;
@@ -106,6 +108,10 @@ export function SummaryRow({
   hint?: string;
   readOnly?: boolean;
   inputMode?: "numeric" | "decimal" | "text";
+  /** Shown while `value` is empty — at rest and in the edit box. */
+  placeholder?: string;
+  /** Masks the value at rest and while typing, for credentials. */
+  secret?: boolean;
   onCommit?: (next: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -128,7 +134,10 @@ export function SummaryRow({
       {editing && !readOnly ? (
         <input
           autoFocus
+          type={secret ? "password" : "text"}
+          autoComplete={secret ? "off" : undefined}
           inputMode={inputMode}
+          placeholder={placeholder}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
@@ -157,10 +166,10 @@ export function SummaryRow({
         <button
           type="button"
           onClick={open}
-          className="group flex items-center gap-2 rounded-sm text-right outline-none transition-colors hover:text-primary focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
+          className="group flex items-baseline gap-2 rounded-sm text-right outline-none transition-colors hover:text-primary focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
         >
           <span className="font-mono text-foreground group-hover:text-primary">
-            {display ?? value}
+            {value ? (secret ? "•".repeat(8) : (display ?? value)) : placeholder}
             {suffix && (
               <span className="ml-1 text-subtle group-hover:text-primary">
                 {suffix}

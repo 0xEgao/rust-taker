@@ -2,10 +2,10 @@ import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } f
 import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress, verifyLastAddress } from "../../api/commands";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
-import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
+import type { AddressType, Balances, FeeEstimate, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
 import { Card, Identifier, Modal, SatsAmount } from "../../components/ui/display";
 import { Button, PresetTile, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import {
@@ -218,8 +218,10 @@ function SendPanel() {
     }
   }
 
+  // Its own height, not the row's: opening Recent Addresses grows only the Receive card. The
+  // Receive card still stretches, so at rest the two stay level.
   return (
-    <Card className="flex flex-col gap-4 border-line-strong p-6">
+    <Card className="flex flex-col gap-4 self-start border-line-strong p-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full border border-danger/40 bg-danger/[0.08] text-danger">
@@ -227,12 +229,9 @@ function SendPanel() {
           </span>
           <h2 className="font-header text-[15px] font-bold text-foreground">Send</h2>
         </div>
-        <div className="flex items-center gap-2.5">
-          <span className="text-[11px] text-subtle">
-            Spendable: <SatsAmount sats={balances?.spendable ?? 0} className="text-foreground" />
-          </span>
-          <FaucetButton />
-        </div>
+        <span className="text-[11px] text-subtle">
+          Spendable: <SatsAmount sats={balances?.spendable ?? 0} className="text-foreground" />
+        </span>
       </div>
 
       {!walletReadyToSpend && (
@@ -450,97 +449,63 @@ function SendPanel() {
 // The Recent Addresses disclosure lists at most 8 entries, and every extra transaction in this
 // window costs Electrum an input fetch.
 const RECENT_ADDRESS_TX_WINDOW = 25;
+const EMPTY_HISTORY: TxSummary[] = [];
+// Module-level rather than a ref, so a request still in flight when the page is left blocks a
+// duplicate from the next visit, not just from this one.
+const receiveRequests = new Set<string>();
 
 function ReceivePanel() {
   const pushToast = useToastStore((s) => s.push);
-  const [addressType, setAddressType] = useState<AddressType>("p2wpkh");
-  // Kept per type: an unissued address stays valid until it is paid, so switching
-  // SegWit/Taproot and back is a lookup instead of another round trip to the wallet.
-  const [issued, setIssued] = useState<Partial<Record<AddressType, NewAddress>>>({});
+  const [addressType, setAddressType] = useState<AddressType>("p2tr");
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [pendingType, setPendingType] = useState<AddressType | null>(null);
-  const [transactions, setTransactions] = useState<TxSummary[]>([]);
-  const current = issued[addressType] ?? null;
-
-  // A ref, not `pendingType`: this has to reject a duplicate synchronously, before the state
-  // update lands, or toggling the two types quickly issues two requests for the same one.
-  const inFlight = useRef<Set<AddressType>>(new Set());
-  // Swapping an address out from under a copy would leave the user pasting one thing while the
-  // panel shows another, so a copied address is only ever replaced on request.
-  const copied = useRef<Set<string>>(new Set());
-
-  const generate = useCallback(
-    async (type: AddressType) => {
-      if (inFlight.current.has(type)) return;
-      inFlight.current.add(type);
-      setPendingType(type);
-      try {
-        const next = await verifyLastAddress(type);
-        setIssued((prev) => ({ ...prev, [type]: next }));
-      } catch (e) {
-        pushToast("error", (e as { message?: string })?.message ?? "Failed to generate address.");
-      } finally {
-        inFlight.current.delete(type);
-        setPendingType((p) => (p === type ? null : p));
-      }
-    },
-    [pushToast],
-  );
+  // Both the address and the Recent Addresses history live in the wallet cache, stamped with
+  // the sync they were read at, so revisiting this page paints from there. They are only asked
+  // for again once a newer sync has landed: the address moves on when a synced coin pays it,
+  // and history is where that payment shows up.
+  const syncedAt = useWalletCacheStore((s) => s.lastSuccessfulSyncAt);
+  const cachedAddress = useWalletCacheStore((s) => s.receiveAddresses[addressType]);
+  const receiveHistory = useWalletCacheStore((s) => s.receiveHistory);
+  const current = cachedAddress?.address ?? null;
+  const transactions = receiveHistory?.transactions ?? EMPTY_HISTORY;
 
   useEffect(() => {
-    if (issued[addressType]) return;
-    if (inFlight.current.has(addressType)) return;
-    inFlight.current.add(addressType);
-    setPendingType(addressType);
-    void getNewAddress(addressType)
-      .then((next) => setIssued((prev) => ({ ...prev, [addressType]: next })))
+    if (cachedAddress && cachedAddress.syncedAt === syncedAt) return;
+    const key = `${addressType}:${syncedAt ?? "never"}`;
+    if (receiveRequests.has(key)) return;
+    receiveRequests.add(key);
+    const type = addressType;
+    setPendingType(type);
+    void getNewAddress(type)
+      .then((next) => {
+        const cache = useWalletCacheStore.getState();
+        // Keeps the object when nothing changed, so the QR is not redrawn.
+        const same = cache.receiveAddresses[type]?.address.address === next.address;
+        cache.setReceiveAddress(type, same ? cache.receiveAddresses[type]!.address : next, syncedAt);
+      })
       .catch((e) =>
-        pushToast("error", (e as { message?: string })?.message ?? "Failed to generate address."),
+        pushToast("error", (e as { message?: string })?.message ?? "Failed to get an address."),
       )
       .finally(() => {
-        inFlight.current.delete(addressType);
-        setPendingType((p) => (p === addressType ? null : p));
+        receiveRequests.delete(key);
+        setPendingType((p) => (p === type ? null : p));
       });
-  }, [addressType, issued, pushToast]);
+  }, [addressType, cachedAddress, syncedAt, pushToast]);
 
-  // The chain check the fast path skipped. Runs once per type, after the address is on screen;
-  // if the cached address turns out to have been paid, the fresh one replaces it silently —
-  // unless the user has already copied it, in which case they are told instead.
-  const verified = useRef<Set<AddressType>>(new Set());
+  // Deferred behind the first address: both calls take the wallet's read lock, and this one
+  // feeds a disclosure the user has to open before it is even visible.
+  const hasAddress = current !== null;
   useEffect(() => {
-    const current = issued[addressType];
-    if (!current || current.verified || verified.current.has(addressType)) return;
-    verified.current.add(addressType);
-    void verifyLastAddress(addressType)
-      .then((next) => {
-        if (next.address === current.address) {
-          setIssued((prev) => ({ ...prev, [addressType]: next }));
-          return;
-        }
-        if (copied.current.has(current.address)) {
-          pushToast(
-            "warning",
-            "The address you copied has been paid. Generate a new address before reusing it.",
-          );
-          return;
-        }
-        setIssued((prev) => ({ ...prev, [addressType]: next }));
-      })
-      .catch(() => {
-        // A failed check leaves the address on offer: it is the last one issued and almost
-        // certainly still unused, and refusing to show one would be worse than not confirming it.
-        verified.current.delete(addressType);
-      });
-  }, [addressType, issued, pushToast]);
-
-  // Deferred behind the first address, and only ever fetched once: both calls take the wallet's
-  // read lock, and this one feeds a disclosure the user has to open before it is even visible.
-  const historyRequested = useRef(false);
-  useEffect(() => {
-    if (!current || historyRequested.current) return;
-    historyRequested.current = true;
-    void getTransactions(RECENT_ADDRESS_TX_WINDOW, 0).then(setTransactions).catch(() => {});
-  }, [current]);
+    if (!hasAddress) return;
+    if (receiveHistory && receiveHistory.syncedAt === syncedAt) return;
+    const key = `history:${syncedAt ?? "never"}`;
+    if (receiveRequests.has(key)) return;
+    receiveRequests.add(key);
+    void getTransactions(RECENT_ADDRESS_TX_WINDOW, 0)
+      .then((history) => useWalletCacheStore.getState().setReceiveHistory(history, syncedAt))
+      .catch(() => {})
+      .finally(() => receiveRequests.delete(key));
+  }, [hasAddress, receiveHistory, syncedAt]);
 
   useEffect(() => {
     // Cleared, not left standing: the panel is labelled with the selected type, so holding the
@@ -557,17 +522,20 @@ function ReceivePanel() {
   }, [current]);
 
   const recentAddresses = useMemo(() => {
-    const seen = new Map<string, number>();
+    const seen = new Map<string, { sats: number; path?: string }>();
     for (const tx of transactions) {
       if (!tx.address || tx.amountSats <= 0) continue;
-      seen.set(tx.address, (seen.get(tx.address) ?? 0) + tx.amountSats);
+      const entry = seen.get(tx.address);
+      seen.set(tx.address, {
+        sats: (entry?.sats ?? 0) + tx.amountSats,
+        path: entry?.path ?? tx.derivationPath,
+      });
     }
     return [...seen.entries()].slice(0, 8);
   }, [transactions]);
 
   function copyAddress() {
     if (!current) return;
-    copied.current.add(current.address);
     void copyText(current.address).then((ok) =>
       ok
         ? pushToast("success", "Address copied.")
@@ -576,7 +544,10 @@ function ReceivePanel() {
   }
 
   function exportCsv() {
-    const rows = ["address,received_sats", ...recentAddresses.map(([addr, sats]) => `${addr},${sats}`)];
+    const rows = [
+      "address,derivation_path,received_sats",
+      ...recentAddresses.map(([addr, { sats, path }]) => `${addr},${path ?? ""},${sats}`),
+    ];
     const blob = new Blob([rows.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -603,8 +574,8 @@ function ReceivePanel() {
         value={addressType}
         onChange={setAddressType}
         options={[
-          { value: "p2wpkh", label: "SegWit" },
           { value: "p2tr", label: "Taproot" },
+          { value: "p2wpkh", label: "SegWit" },
         ]}
       />
 
@@ -632,7 +603,14 @@ function ReceivePanel() {
           {current ? (
             // `select-all` so one click takes the whole address: this is the value a user
             // falls back to lifting by hand when the clipboard is out of reach.
-            <Identifier value={current.address} className="select-all text-[12.5px] leading-[1.5] text-muted" />
+            <span className="min-w-0">
+              <Identifier value={current.address} className="block select-all text-[12.5px] leading-[1.5] text-muted" />
+              {current.derivationPath && (
+                <span className="mt-0.5 block font-mono text-[10.5px] text-subtle">
+                  {current.derivationPath}
+                </span>
+              )}
+            </span>
           ) : (
             <span className="font-mono text-[12.5px] text-subtle">
               {pendingType === addressType ? "Generating…" : "—"}
@@ -642,22 +620,13 @@ function ReceivePanel() {
             type="button"
             onClick={copyAddress}
             disabled={!current}
+            aria-label="Copy address"
             className="grid h-[26px] w-[26px] flex-none place-items-center rounded text-subtle hover:bg-primary/10 hover:text-primary disabled:opacity-40"
           >
             <Copy size={13} strokeWidth={2} />
           </button>
         </div>
       </label>
-
-      {/* Bypasses the per-type cache: this is the one control that asks the wallet whether the
-          address it issued has been paid, and hands over a fresh one if it has. */}
-      <Button
-        variant="secondary"
-        onClick={() => void generate(addressType)}
-        loading={pendingType !== null}
-      >
-        Generate New Address
-      </Button>
 
       <details className="border-t border-dashed border-line pt-3">
         <summary className="flex cursor-pointer list-none items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle marker:content-none hover:text-foreground">
@@ -666,9 +635,12 @@ function ReceivePanel() {
         </summary>
         <div className="mt-3 flex flex-col divide-y divide-line">
           {recentAddresses.length === 0 && <p className="py-2 text-[11.5px] text-subtle">No incoming transactions yet.</p>}
-          {recentAddresses.map(([addr, sats]) => (
+          {recentAddresses.map(([addr, { sats, path }]) => (
             <div key={addr} className="flex items-center justify-between gap-3 py-2 text-[11.5px]">
-              <Identifier value={addr} className="text-[11.5px] leading-[1.45] text-muted" />
+              <span className="min-w-0">
+                <Identifier value={addr} className="block text-[11.5px] leading-[1.45] text-muted" />
+                {path && <span className="mt-0.5 block font-mono text-[10px] text-subtle">{path}</span>}
+              </span>
               <SatsAmount sats={sats} className="flex-none font-semibold text-success" />
             </div>
           ))}
@@ -694,7 +666,6 @@ export function SendPage() {
     <div className="flex h-full flex-col overflow-y-auto px-8 pb-8 pt-2">
       <div className="shrink-0 pb-4">
         <h1 className="font-header text-[26px] font-bold text-foreground">Send &amp; Receive</h1>
-        <p className="mt-1 text-[13.5px] text-muted">One shared balance — send a payment or generate a receiving address here.</p>
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <SendPanel />

@@ -6,9 +6,10 @@
 //! (`BalancesDto`, `UtxoEntry`, `NewAddress`) are
 //! shared, not duplicated.
 
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use openswap::wallet::{AddressType, Wallet};
+use openswap::wallet::Wallet;
 
 use crate::ops::chain_backend;
 use crate::error::AppError;
@@ -78,15 +79,19 @@ pub async fn list_maker_utxos(
         let utxos = wallet.read()?.list_all_utxo_spend_info();
         Ok(utxos
             .into_iter()
-            .map(|(entry, spend_info)| UtxoEntry {
-                txid: entry.txid.to_string(),
-                vout: entry.vout,
-                amount_sats: entry.amount.to_sat(),
-                confirmations: entry.confirmations,
-                address: chain_backend::utxo_address(&entry, &backend, socks_port),
-                spendable: entry.spendable,
-                solvable: entry.solvable,
-                spend_type: spend_info.to_string(),
+            .map(|(entry, spend_info)| {
+                let address = chain_backend::utxo_address(&entry, &backend, socks_port);
+                UtxoEntry {
+                    txid: entry.txid.to_string(),
+                    vout: entry.vout,
+                    amount_sats: entry.amount.to_sat(),
+                    confirmations: entry.confirmations,
+                    derivation_path: crate::ops::taker_wallet::utxo_derivation_path(&spend_info, address.as_deref()),
+                    address,
+                    spendable: entry.spendable,
+                    solvable: entry.solvable,
+                    spend_type: spend_info.to_string(),
+                }
             })
             .collect())
     })
@@ -101,19 +106,26 @@ pub async fn get_maker_transactions(
     skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
     let wallet = get_maker_wallet_handle(state, &router_id)?;
+    let seen_path = maker_wallet_file(state, &router_id, "tx_first_seen.json")?;
     tokio::task::spawn_blocking(move || -> Result<Vec<TxSummary>, AppError> {
         let txs = wallet.read()?.get_transactions(count, skip)?;
+        let first_seen = crate::ops::taker_wallet::stamp_first_seen(&seen_path, &txs);
         Ok(txs
             .into_iter()
-            .map(|tx| TxSummary {
-                txid: tx.info.txid.to_string(),
-                category: format!("{:?}", tx.detail.category).to_lowercase(),
-                amount_sats: tx.detail.amount.to_sat(),
-                confirmations: tx.info.confirmations,
-                address: tx.detail.address.map(|a| a.assume_checked().to_string()),
-                time: tx.info.time,
-                fee_sats: tx.detail.fee.map(|f| f.to_sat()),
-                label: tx.detail.label,
+            .map(|tx| {
+                let txid = tx.info.txid.to_string();
+                TxSummary {
+                    first_seen: first_seen.get(&txid).copied(),
+                    derivation_path: None,
+                    txid,
+                    category: format!("{:?}", tx.detail.category).to_lowercase(),
+                    amount_sats: tx.detail.amount.to_sat(),
+                    confirmations: tx.info.confirmations,
+                    address: tx.detail.address.map(|a| a.assume_checked().to_string()),
+                    time: tx.info.time,
+                    fee_sats: tx.detail.fee.map(|f| f.to_sat()),
+                    label: tx.detail.label,
+                }
             })
             .collect())
     })
@@ -121,29 +133,31 @@ pub async fn get_maker_transactions(
     .map_err(AppError::internal)?
 }
 
-/// Unlike `commands::taker_wallet::get_new_address`, this always derives a fresh address rather
-/// than re-offering the last unused one — no gap-limit-safe caching for the maker wallet yet.
+/// A file beside the router's wallet, named after it: `<data dir>/wallets/<wallet>_<suffix>`.
+fn maker_wallet_file(state: &Arc<AppState>, router_id: &str, suffix: &str) -> Result<PathBuf, AppError> {
+    let makers = state.makers.lock()?;
+    let settings = &makers
+        .get(router_id)
+        .ok_or_else(|| AppError::maker_not_found(router_id))?
+        .settings;
+    Ok(crate::ops::maker_settings::maker_data_dir(settings)?
+        .join("wallets")
+        .join(format!("{}_{suffix}", settings.wallet_name)))
+}
+
+
+/// Re-offers the last address issued for this type until it is paid, as the taker wallet does,
+/// so the receive panel can fetch one on every visit without burning a gap-limit index each time.
+/// The cache sits beside the router's wallet file, where the taker's sits beside its own.
 pub async fn get_maker_new_address(
     state: &Arc<AppState>,
     router_id: String,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
     let wallet = get_maker_wallet_handle(state, &router_id)?;
-    let (addr_type, label) = match address_type {
-        AddressTypeDto::P2wpkh => (AddressType::P2WPKH, "p2wpkh"),
-        AddressTypeDto::P2tr => (AddressType::P2TR, "p2tr"),
-    };
-    tokio::task::spawn_blocking(move || -> Result<NewAddress, AppError> {
-        let address = wallet
-            .write()?
-            .get_next_external_address(addr_type)?
-            .to_string();
-        Ok(NewAddress {
-            address,
-            address_type: label.to_string(),
-            // Always freshly derived here, so there is nothing to check.
-            verified: true,
-        })
+    let path = maker_wallet_file(state, &router_id, "last_address.json")?;
+    tokio::task::spawn_blocking(move || {
+        crate::ops::taker_wallet::issue_unused_address(&wallet, &path, address_type)
     })
     .await
     .map_err(AppError::internal)?

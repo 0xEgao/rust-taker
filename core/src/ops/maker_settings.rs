@@ -101,7 +101,7 @@ fn settings_path() -> Result<PathBuf, AppError> {
     crate::storage::makers_registry()
 }
 
-fn maker_data_dir(settings: &MakerSettingsDto) -> Result<PathBuf, AppError> {
+pub(crate) fn maker_data_dir(settings: &MakerSettingsDto) -> Result<PathBuf, AppError> {
     match settings.data_dir.as_deref() {
         Some(data_dir) => Ok(PathBuf::from(data_dir)),
         None => crate::storage::maker_data_dir(&settings.router_id),

@@ -305,8 +305,8 @@ function RouterCard({
               }
             >
               <p className="text-[12.5px] text-muted">
-                This router's wallet is encrypted. Its password isn't stored between app
-                launches, so it's needed again to start the router.
+                This router's wallet is encrypted. Please provide wallet password to start the
+                router.
               </p>
               <div className="mt-4">
                 <PasswordField

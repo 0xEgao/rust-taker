@@ -207,6 +207,8 @@ export interface NewAddress {
   addressType: string;
   /** False for a re-offered cached address that hasn't been checked for payments yet. */
   verified: boolean;
+  /** Full path from the master key, e.g. `m/86'/1'/0'/0/7`. */
+  derivationPath?: string;
 }
 
 export interface AddressValidation {
@@ -223,6 +225,10 @@ export interface TxSummary {
   time: number;
   feeSats?: number;
   label?: string;
+  /** Unix seconds Portal first saw this transaction. */
+  firstSeen?: number;
+  /** Full HD path of `address` when Portal knows it. Taker listings only, for now. */
+  derivationPath?: string;
 }
 
 export interface UtxoEntry {
@@ -231,6 +237,8 @@ export interface UtxoEntry {
   amountSats: number;
   confirmations: number;
   address?: string;
+  /** Seed coins only; swap and contract coins are not on an HD key. */
+  derivationPath?: string;
   spendable: boolean;
   solvable: boolean;
   spendType: string;

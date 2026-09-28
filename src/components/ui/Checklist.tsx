@@ -47,11 +47,18 @@ function Marker({ state }: { state: CheckState }) {
             transition={{ duration: 1.5, repeat: reduceMotion ? 0 : Infinity, ease: "easeInOut" }}
           />
           {/* Radar ring rather than a bar sliding on a loop: it reads as waiting instead of
-              as progress it cannot actually measure. */}
+              as progress it cannot actually measure.
+              `transform`, not `scale`: framer only hands `transform` and `opacity` to WAAPI.
+              With `scale` the growth ran on the main thread while the fade ran on the
+              compositor, and every main-thread hitch during init showed as a jittering ring.
+              Same period as the dot, so the marker pulses as one signal. */}
           <motion.span
             className="absolute inset-0 rounded-full border border-primary"
-            animate={{ scale: reduceMotion ? 1 : [1, 1.75], opacity: reduceMotion ? 0.35 : [0.55, 0] }}
-            transition={{ duration: 1.7, repeat: reduceMotion ? 0 : Infinity, ease: "easeOut" }}
+            animate={{
+              transform: reduceMotion ? "scale(1)" : ["scale(1)", "scale(1.75)"],
+              opacity: reduceMotion ? 0.35 : [0.55, 0],
+            }}
+            transition={{ duration: 1.5, repeat: reduceMotion ? 0 : Infinity, ease: "easeOut" }}
           />
         </>
       )}

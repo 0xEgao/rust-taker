@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Check,
   CircleDollarSign,
   Copy,
   LockKeyhole,
@@ -12,7 +13,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
   useNavigate,
@@ -27,11 +28,9 @@ import {
   getRouterLogs,
   getRouterNewAddress,
   getRouterStatus,
-  getRouterTransactions,
   getSavedRouterSettings,
   listRouterFidelityBonds,
   listRouterSwapReports,
-  listRouterUtxos,
   startRouter,
   stopRouter,
   sendRouterToAddress,
@@ -46,8 +45,6 @@ import type {
   RouterSettings,
   RouterStatus,
   RouterSwapReportSummary,
-  NewAddress,
-  TxSummary,
   UtxoEntry,
   WalletInfo,
 } from "../../api/types";
@@ -70,11 +67,18 @@ import {
   SummaryGroup,
   SummaryRow,
 } from "../../components/ui/inputs";
-import { formatTorEndpoint } from "../../lib/market-format";
 import { copyText } from "../../lib/clipboard";
 import { formatRelativeTime } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { LogPanel } from "../../components/app/LogPanel";
+import { FaucetButton } from "../../components/app/FaucetButton";
+import { formatTimestamp } from "../../components/ui/report";
+import { useHeaderActionsStore } from "../../store/header-actions";
+import {
+  refreshRouterWallet,
+  useRouterWalletCacheStore,
+  useRouterWalletSnapshot,
+} from "../../store/router-wallet-cache";
 
 type Tab = "overview" | "wallet" | "logs" | "settings";
 const TAB_OPTIONS: { value: Tab; label: string }[] = [
@@ -132,6 +136,8 @@ function OverviewPanel({
   bonds: FidelityBond[];
   reports: RouterSwapReportSummary[];
 }) {
+  const [copied, setCopied] = useState(false);
+  const tor = status.torAddress;
   const total = balances
     ? balances.regular + balances.swap + balances.contract + balances.fidelity
     : 0;
@@ -234,9 +240,38 @@ function OverviewPanel({
             <i className={`h-1.5 w-1.5 rounded-full ${status.running ? "bg-success" : "bg-subtle"}`} /> {status.phase.phase}
           </span>
         </div>
-        <div className="grid grid-cols-3 gap-px bg-line max-[800px]:grid-cols-1">
+        {/* The first column is sized to its content so the Tor address sits on one line; the
+            others share what is left, where the data directory already truncates. */}
+        <div className="grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)_minmax(0,1fr)] gap-px bg-line max-[800px]:grid-cols-1">
           {[
-            { label: "Wallet", value: info.walletName, title: info.walletName },
+            {
+              label: "Tor address",
+              // In full, never truncated: this is the value an operator copies out to check
+              // their router is reachable. Wraps only when the window is too narrow for it.
+              wrap: true,
+              value: tor ? (
+                <button
+                  type="button"
+                  title="Copy Tor address"
+                  onClick={() =>
+                    void copyText(tor).then((ok) => {
+                      if (!ok) return;
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1200);
+                    })
+                  }
+                  className="group flex max-w-full items-start gap-2 rounded-sm text-left outline-none hover:text-primary focus-visible:shadow-ring"
+                >
+                  <span className="break-all">{tor}</span>
+                  <Copy
+                    size={12}
+                    className={`mt-0.5 flex-none ${copied ? "text-success" : "text-subtle group-hover:text-primary"}`}
+                  />
+                </button>
+              ) : (
+                <span className="text-subtle">Available once the router has started</span>
+              ),
+            },
             {
               label: "Data directory",
               value: info.dataDir,
@@ -251,13 +286,13 @@ function OverviewPanel({
               value: `${settings.socksPort} / ${settings.controlPort}`,
             },
             { label: "Status", value: status.phase.phase },
-          ].map(({ label, value, title }) => (
+          ].map(({ label, value, title, wrap }: { label: string; value: React.ReactNode; title?: string; wrap?: boolean }) => (
             <div key={label} className="min-w-0 bg-surface/80 p-4 transition-colors duration-200 hover:bg-white/[0.035]">
               <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
                 {label}
               </span>
               <strong
-                className="mt-1.5 block truncate font-mono text-[11.5px] text-foreground"
+                className={`mt-1.5 block font-mono text-[11.5px] text-foreground ${wrap ? "" : "truncate"}`}
                 title={title}
               >
                 {value}
@@ -411,6 +446,10 @@ function RouterSendPanel({
   );
 }
 
+// Module-level, not a ref: the Tx tab remounts on every visit, and a request still in flight
+// from the last one must still block a duplicate, or the backend derives two addresses for one.
+const addressRequests = new Set<string>();
+
 function WalletPanel({
   routerId,
   running,
@@ -418,14 +457,13 @@ function WalletPanel({
   routerId: string;
   running: boolean;
 }) {
-  const pushToast = useToastStore((state) => state.push);
-  const [utxos, setUtxos] = useState<UtxoEntry[]>([]);
-  const [transactions, setTransactions] = useState<TxSummary[]>([]);
-  const [address, setAddress] = useState<NewAddress | null>(null);
-  const [addressType, setAddressType] = useState<AddressType>("p2wpkh");
-  const [generating, setGenerating] = useState(false);
+  const { utxos, transactions, addresses } = useRouterWalletSnapshot(routerId);
+  const [addressType, setAddressType] = useState<AddressType>("p2tr");
+  const [addressError, setAddressError] = useState<string | null>(null);
+  const address = addresses[addressType] ?? null;
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const pushToast = useToastStore((state) => state.push);
   useEffect(() => {
     setQrDataUrl(null);
     if (!address) return;
@@ -438,20 +476,43 @@ function WalletPanel({
     };
   }, [address]);
 
+  // Both backends list oldest-first. Sorted on first sight, newest on top; the backend's own
+  // order breaks ties, reversed, so rows seen in the same second still read newest-first.
+  const newestFirst = useMemo(
+    () =>
+      transactions
+        .map((tx, i) => ({ tx, i }))
+        .sort((a, b) => (b.tx.firstSeen ?? b.tx.time) - (a.tx.firstSeen ?? a.tx.time) || b.i - a.i)
+        .map(({ tx }) => tx),
+    [transactions],
+  );
+
+  // The cached snapshot is already on screen; this only brings it up to date behind it.
   const load = useCallback(async () => {
     if (!running) return;
-    setLoading(true);
-    const [u, t] = await Promise.all([
-      listRouterUtxos(routerId),
-      getRouterTransactions(routerId, 30, 0),
-    ]);
-    setUtxos(u);
-    setTransactions(t);
-    setLoading(false);
+    await refreshRouterWallet(routerId).catch(() => {});
   }, [routerId, running]);
   useEffect(() => {
-    void load().catch(() => setLoading(false));
+    void load();
   }, [load]);
+
+  // Asked again whenever the transactions reload, since that is when a payment to the address
+  // on offer shows up. The backend re-offers the same address until then, so this never burns
+  // a derivation index — only a paid address moves it on.
+  useEffect(() => {
+    const key = `${routerId}:${addressType}`;
+    if (!running || addressRequests.has(key)) return;
+    addressRequests.add(key);
+    const type = addressType;
+    void getRouterNewAddress(routerId, type)
+      .then((next) => {
+        setAddressError(null);
+        useRouterWalletCacheStore.getState().setAddress(routerId, type, next);
+      })
+      .catch((e) => setAddressError(e?.message ?? "Could not get a receive address."))
+      .finally(() => addressRequests.delete(key));
+  }, [routerId, running, addressType, transactions]);
+
   if (!running)
     return (
       <Card className="grid min-h-[300px] place-items-center border-dashed border-line-strong text-center">
@@ -465,36 +526,35 @@ function WalletPanel({
       </Card>
     );
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
+    // Fills the height the workspace hands it: Send/Receive keep their size and the two lists
+    // share the rest, each scrolling inside its own card instead of the page scrolling.
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="grid flex-none grid-cols-2 gap-4 max-[900px]:grid-cols-1">
       <RouterSendPanel routerId={routerId} utxos={utxos} onSent={load} />
       <Card className="border-line-strong p-5">
         <div className="flex items-center justify-between gap-4">
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-            Receive Bitcoin
+          <span className="flex items-center gap-3">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+              Receive Bitcoin
+            </span>
+            <FaucetButton />
           </span>
           <SegmentedToggle
             groupId="router-address-type"
             value={addressType}
             onChange={(next) => {
               setAddressType(next);
-              // Cleared rather than left standing: the panel is labelled with the selected
-              // type, so holding the previous one offers the wrong address to copy — and the
-              // QR is a picture of that same wrong address.
-              setAddress(null);
-              setQrDataUrl(null);
+              setAddressError(null);
             }}
             options={[
-              { value: "p2wpkh", label: "SegWit" },
               { value: "p2tr", label: "Taproot" },
+              { value: "p2wpkh", label: "SegWit" },
             ]}
           />
         </div>
         <div className="mt-4 flex justify-center">
-          {/* The plate is always here, empty or not: a button that reaches the wallet and comes
-              back with nothing on screen reads as a button that did nothing. The white ground
-              only appears with a QR on it — a bare white square waiting looks like a broken
-              image rather than something loading. */}
+          {/* The white ground only appears with a QR on it: a bare white square waiting looks
+              like a broken image rather than something loading. */}
           <div
             className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
               qrDataUrl
@@ -504,59 +564,61 @@ function WalletPanel({
           >
             {qrDataUrl ? (
               <img src={qrDataUrl} alt="Router receive address QR code" width={184} height={184} />
-            ) : generating ? (
-              <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
-            ) : (
-              <span className="px-4 text-center text-[11.5px] leading-5 text-subtle">
-                Generate a fresh {addressType === "p2tr" ? "Taproot" : "SegWit"} address to
-                receive into this router's wallet.
+            ) : addressError ? (
+              <span className="px-4 text-center text-[11.5px] leading-5 text-danger">
+                {addressError}
               </span>
+            ) : (
+              <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
             )}
           </div>
         </div>
         {address && (
-          <code
-            className="mt-4 block break-all rounded-control border border-line bg-surface p-3
-              text-[11px] text-foreground"
-          >
-            {address.address}
-          </code>
+          <div className="mt-4 flex items-start justify-between gap-2 rounded-control border border-line bg-surface p-3">
+            <span className="min-w-0">
+              {/* `select-all` so one click takes the whole address when the clipboard is out
+                  of reach and it has to be lifted by hand. */}
+              <Identifier
+                value={address.address}
+                className="block select-all text-[11px] leading-[1.5] text-foreground"
+              />
+              {address.derivationPath && (
+                <span className="mt-1 block font-mono text-[10px] text-subtle">
+                  {address.derivationPath}
+                </span>
+              )}
+            </span>
+            <IconButton
+              label={copied ? "Copied" : "Copy address"}
+              onClick={() =>
+                void copyText(address.address).then((ok) => {
+                  if (!ok) {
+                    pushToast("warning", "Could not reach the clipboard — select the address and copy it.");
+                    return;
+                  }
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1200);
+                })
+              }
+              className={copied ? "text-success" : ""}
+              icon={copied ? <Check size={14} strokeWidth={2} /> : <Copy size={14} strokeWidth={1.8} />}
+            />
+          </div>
         )}
-        <Button
-          className="mt-4 w-full"
-          loading={generating}
-          onClick={() => {
-            setGenerating(true);
-            void getRouterNewAddress(routerId, addressType)
-              .then(setAddress)
-              .catch((e) => pushToast("error", e.message))
-              .finally(() => setGenerating(false));
-          }}
-        >
-          Generate address
-        </Button>
       </Card>
       </div>
-      <Card className="border-line-strong">
-        <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-3">
+      {/* The floor keeps both lists usable on a short window; below it the page scrolls. */}
+      <div className="grid min-h-[280px] flex-1 grid-cols-2 grid-rows-1 gap-4 max-[1100px]:min-h-[480px] max-[1100px]:grid-cols-1 max-[1100px]:grid-rows-2">
+      <Card className="flex min-h-0 min-w-0 flex-col border-line-strong">
+        <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-4">
           <h2 className="font-header text-[14px] font-bold">
             UTXOs{" "}
             <span className="ml-2 font-mono text-[10px] text-subtle">
               {utxos.length}
             </span>
           </h2>
-          <IconButton
-            label="Sync wallet"
-            disabled={loading}
-            onClick={() =>
-              void syncRouterWallet(routerId)
-                .then(load)
-                .catch((e) => pushToast("error", e.message))
-            }
-            icon={<RefreshCw size={16} strokeWidth={1.8} className={loading ? "animate-spin" : ""} />}
-          />
         </div>
-        <div className="max-h-[330px] overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-surface">
               <tr className="text-subtle">
@@ -575,6 +637,11 @@ function WalletPanel({
                       value={utxo.address ?? `${utxo.txid}:${utxo.vout}`}
                       className="leading-[1.45]"
                     />
+                    {utxo.derivationPath && (
+                      <span className="mt-1 block font-mono text-[10px] text-subtle">
+                        {utxo.derivationPath}
+                      </span>
+                    )}
                   </td>
                   <td className="px-5 py-3 align-top text-muted">{utxo.spendType}</td>
                   <td className="px-5 py-3 align-top font-mono">{utxo.confirmations}</td>
@@ -595,19 +662,25 @@ function WalletPanel({
           )}
         </div>
       </Card>
-      <Card className="border-line-strong">
+      <Card className="flex min-h-0 min-w-0 flex-col border-line-strong">
         <div className="border-b border-line px-5 py-4">
           <h2 className="font-header text-[14px] font-bold">
             Recent transactions
           </h2>
         </div>
-        <div className="divide-y divide-line">
-          {transactions.slice(0, 8).map((tx) => (
+        {/* All of the fetched window rather than the first 8: the list scrolls now. */}
+        <div className="min-h-0 flex-1 divide-y divide-line overflow-auto">
+          {newestFirst.map((tx) => (
             <div
               key={`${tx.txid}:${tx.category}`}
               className="flex items-center justify-between gap-4 px-5 py-3"
             >
-              <Identifier value={tx.txid} className="min-w-0 text-[11px] leading-[1.45] text-muted" />
+              <span className="min-w-0">
+                <Identifier value={tx.txid} className="block text-[11px] leading-[1.45] text-muted" />
+                <span className="mt-1 block font-mono text-[10px] text-subtle">
+                  {formatTimestamp(tx.firstSeen ?? tx.time)}
+                </span>
+              </span>
               <span className="flex flex-none items-center gap-2">
                 <strong
                   className={`font-mono text-[11.5px] ${tx.amountSats >= 0 ? "text-success" : "text-danger"}`}
@@ -625,6 +698,7 @@ function WalletPanel({
           )}
         </div>
       </Card>
+      </div>
     </div>
   );
 }
@@ -1151,7 +1225,6 @@ export function RouterWorkspacePage() {
   const [showStart, setShowStart] = useState(false);
   const [walletPassword, setWalletPassword] = useState("");
   const [startError, setStartError] = useState<string | undefined>();
-  const [copied, setCopied] = useState(false);
   const load = useCallback(async () => {
     const [nextStatus, nextSettings, nextInfo] = await Promise.all([
       getRouterStatus(id),
@@ -1182,6 +1255,34 @@ export function RouterWorkspacePage() {
   }, [load, pushToast]);
   const phase = status?.phase.phase ?? "notConfigured";
   const running = phase === "running" || phase === "starting";
+
+  // The shell's header button, beside Sign out, as on the wallet side. Syncing is what makes a
+  // new payment show up at all — the page's 5s poll only re-reads what the wallet already holds
+  // — so it lives in the header for every tab, not inside the Tx tab's tables.
+  // Its own guard, not the header's `refreshing`: the wallet page can leave that set if it
+  // unmounts mid-refresh, which would otherwise block this sync for good.
+  const syncing = useRef(false);
+  const sync = useCallback(async () => {
+    if (syncing.current) return;
+    syncing.current = true;
+    useHeaderActionsStore.getState().setRefreshing(true);
+    try {
+      await syncRouterWallet(id);
+      await Promise.all([load(), refreshRouterWallet(id)]);
+    } catch (e) {
+      pushToast("error", (e as { message?: string })?.message ?? "Could not sync the router wallet.");
+    } finally {
+      syncing.current = false;
+      useHeaderActionsStore.getState().setRefreshing(false);
+    }
+  }, [id, load, pushToast]);
+  useEffect(() => {
+    if (phase !== "running") return;
+    // Whatever page held the header last may have left its spinner on.
+    useHeaderActionsStore.getState().setRefreshing(syncing.current);
+    useHeaderActionsStore.getState().register(() => void sync());
+    return () => useHeaderActionsStore.getState().register(null);
+  }, [phase, sync]);
   const transitioning = ["initializing", "starting", "stopping"].includes(
     phase,
   );
@@ -1217,21 +1318,22 @@ export function RouterWorkspacePage() {
       setActionLoading(false);
     }
   }
+  // The Tx tab sizes itself to the window so only its two lists scroll. The offline card
+  // and every other tab keep the ordinary scrolling page.
+  const fitScreen = tab === "wallet" && running;
   if (loading || !status || !settings || !info)
     return (
       <div className="mx-auto w-full max-w-xl pt-20">
         <SkeletonLines count={10} />
       </div>
     );
-  const tor = status.torAddress;
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto w-full max-w-[1380px] pb-8">
+    <div className={`h-full overflow-y-auto p-8 ${fitScreen ? "flex flex-col" : ""}`}>
+      <div className={`mx-auto w-full max-w-[1380px] ${fitScreen ? "flex min-h-0 flex-1 flex-col" : "pb-8"}`}>
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
             <BackButton to="/router" label="Back to routers" />
             <div className="min-w-0">
-              <span className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-primary">Router workspace · Signet</span>
               <div className="flex items-center gap-2">
                 <h1 className="truncate font-header text-[27px] font-bold">
                   {id}
@@ -1248,29 +1350,6 @@ export function RouterWorkspacePage() {
                   }`}
                 />
               </div>
-              <button
-                type="button"
-                disabled={!tor}
-                onClick={() =>
-                  tor &&
-                  void copyText(tor).then((ok) => {
-                    if (!ok) return;
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1200);
-                  })
-                }
-                className="mt-1 flex max-w-full items-center gap-2 text-left font-mono text-[10.5px]
-                  text-subtle disabled:cursor-default"
-              >
-                <span className="truncate">
-                  {tor
-                    ? formatTorEndpoint(tor, 24, 14, true)
-                    : `Status · ${phase}`}
-                </span>
-                {tor && (
-                  <Copy size={12} className={copied ? "text-success" : ""} />
-                )}
-              </button>
             </div>
           </div>
           <div className="flex gap-2">
@@ -1316,7 +1395,7 @@ export function RouterWorkspacePage() {
             options={TAB_OPTIONS}
           />
         </div>
-        <main className="mt-5">
+        <main className={`mt-5 ${fitScreen ? "flex min-h-0 flex-1 flex-col" : ""}`}>
           {tab === "overview" && (
             <OverviewPanel
               status={status}

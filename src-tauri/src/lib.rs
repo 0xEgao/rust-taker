@@ -218,17 +218,29 @@ pub fn run() {
                 }
             });
 
-            // Replaces the predefined Quit, whose native terminate lands in `RunEvent::Exit`
-            // already inside the OS termination watchdog — too late to stop a maker's closing
-            // wallet sync properly. Tauri builds the macOS app submenu first with Quit last.
-            let menu = Menu::default(app.handle())?;
-            // macOS only: it is the platform with an application submenu holding a predefined
-            // Quit, and the only one where the menu bar is the usual way out. Everywhere else
-            // the tray item below is that route, so building this item off macOS would leave
-            // it unattached — dead on Linux and Windows, and a build failure under
-            // `-D warnings`.
+            // No menu bar off macOS: nothing in it is Portal's, and the tray is the way out there.
+            // Tauri only installs a default menu on macOS, so leaving it unset is enough.
+            //
+            // On macOS the menu bar is the platform's, so it is cut to the minimum that keeps the
+            // app working: the application submenu, for Quit, and Edit — its items are what route
+            // Cmd+C/V/X/A and undo into WKWebView's text fields, which get none of them without it.
+            // File, View, Window and Help go.
             #[cfg(target_os = "macos")]
             {
+                let menu = Menu::default(app.handle())?;
+                for (i, item) in menu.items()?.into_iter().enumerate() {
+                    let keep = i == 0
+                        || item
+                            .as_submenu()
+                            .and_then(|submenu| submenu.text().ok())
+                            .is_some_and(|text| text == "Edit");
+                    if !keep {
+                        menu.remove(&item)?;
+                    }
+                }
+                // Replaces the predefined Quit, whose native terminate lands in `RunEvent::Exit`
+                // already inside the OS termination watchdog — too late to stop a maker's
+                // closing wallet sync properly. Tauri builds the app submenu first, Quit last.
                 let app_quit =
                     MenuItem::with_id(app, "quit", "Quit Portal", true, Some("CmdOrCtrl+Q"))?;
                 if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
@@ -237,13 +249,13 @@ pub fn run() {
                     }
                     app_menu.append(&app_quit)?;
                 }
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id.as_ref() == "quit" {
+                        shutdown::begin_quit(app);
+                    }
+                });
             }
-            app.set_menu(menu)?;
-            app.on_menu_event(|app, event| {
-                if event.id.as_ref() == "quit" {
-                    shutdown::begin_quit(app);
-                }
-            });
 
             let open = MenuItem::with_id(app, "open", "Open Portal", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "tray-quit", "Quit Portal", true, None::<&str>)?;

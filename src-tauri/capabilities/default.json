@@ -18,6 +18,9 @@
           "url": "https://github.com/citadel-tech/coinswap/*"
         },
         {
+          "url": "https://github.com/citadel-foss/openswap/blob/master/docs/bitcoin.conf"
+        },
+        {
           "url": "https://faucet.citadelfoss.xyz"
         },
         {
