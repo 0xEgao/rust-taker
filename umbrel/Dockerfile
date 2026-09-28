@@ -7,6 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsconfig.node.json vite.config.ts index.html ./
 COPY src ./src
+COPY public ./public
 RUN npx tsc --noEmit && npx vite build --mode web
 
 FROM rust:1-bookworm AS backend
@@ -38,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # directory does not need to pre-exist inside the mount.
 RUN groupadd --gid 1000 portal \
  && useradd --system --create-home --home-dir /data/home --uid 1000 --gid 1000 portal
-COPY --from=backend /build/target/release/portal-web /usr/local/bin/portal-web
+COPY --from=backend /build/target/release/portal-web /usr/local/bin/portal
 COPY --from=frontend /build/dist/web /opt/portal/web
 USER portal
 ENV HOME=/data/home
@@ -49,6 +50,6 @@ EXPOSE 3000
 # report healthy forever. Public, cached and side-effect free by design — it never starts Tor
 # or touches a wallet lock.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s \
-  CMD ["/usr/local/bin/portal-web", "--healthcheck"]
-ENTRYPOINT ["/usr/local/bin/portal-web"]
+  CMD ["/usr/local/bin/portal", "--healthcheck"]
+ENTRYPOINT ["/usr/local/bin/portal"]
 CMD ["--bind", "0.0.0.0:3000", "--assets-dir", "/opt/portal/web"]

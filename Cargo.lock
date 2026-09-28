@@ -3259,7 +3259,7 @@ dependencies = [
 [[package]]
 name = "openswap"
 version = "0.2.2"
-source = "git+https://github.com/citadel-foss/openswap?branch=master#4e525c759f2d0953752d65375d7343b1b3736444"
+source = "git+https://github.com/citadel-foss/openswap?branch=master#ff826ba5be3f7249b2c354a7d0863f3184466b63"
 dependencies = [
  "aes-gcm",
  "bip39",

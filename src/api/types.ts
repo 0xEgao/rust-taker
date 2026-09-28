@@ -37,7 +37,6 @@ export interface ChainBackendConfig {
  *  protocol crate's own `MakerServerConfig::default()`, and a second copy in the UI is exactly
  *  how the app ended up running ten times core's figures without anyone noticing. */
 export interface RouterDefaults {
-  minSwapAmount: number;
   fidelityAmount: number;
   fidelityTimelock: number;
   /** sats/vB for the bond transaction; the crate's relay minimum is also the floor. */
@@ -311,7 +310,6 @@ export interface RouterSettings {
   rpcPort: number;
   socksPort: number;
   controlPort: number;
-  minSwapAmount: number;
   fidelityAmount: number;
   fidelityTimelock: number;
   /** sats/vB for the bond transaction; the crate's relay minimum is also the floor. */

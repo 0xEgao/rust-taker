@@ -125,7 +125,7 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    log::info!("portal-web listening on {bind}");
+    log::info!("Portal listening on {bind}");
     if state.auth.has_owner() {
         console.line("sign in with the owner password for this installation");
     } else {
@@ -144,7 +144,7 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         ));
     } else {
         console.line(&format!(
-            "\nportal-web API on {} — the UI is served separately in development",
+            "\nPortal API on {} — the UI is served separately in development",
             state.config.browsable_url()
         ));
     }

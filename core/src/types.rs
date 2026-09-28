@@ -69,7 +69,6 @@ pub struct ChainBackendView {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RouterDefaultsDto {
-    pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
     pub fidelity_feerate: f64,
@@ -795,7 +794,6 @@ pub struct MakerInitConfig {
     pub rpc_port: u16,
     pub socks_port: u16,
     pub control_port: u16,
-    pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
     pub fidelity_feerate: f64,
@@ -819,7 +817,6 @@ pub struct MakerSettingsDto {
     pub rpc_port: u16,
     pub socks_port: u16,
     pub control_port: u16,
-    pub min_swap_amount: u64,
     pub fidelity_amount: u64,
     pub fidelity_timelock: u32,
     // Registrations saved before this field existed; `config.toml` overrides it on load anyway.
@@ -842,7 +839,6 @@ impl MakerSettingsDto {
             rpc_port: c.rpc_port,
             socks_port: c.socks_port,
             control_port: c.control_port,
-            min_swap_amount: c.min_swap_amount,
             fidelity_amount: c.fidelity_amount,
             fidelity_timelock: c.fidelity_timelock,
             fidelity_feerate: c.fidelity_feerate,
@@ -863,7 +859,6 @@ impl MakerSettingsDto {
             rpc_port: self.rpc_port,
             socks_port: self.socks_port,
             control_port: self.control_port,
-            min_swap_amount: self.min_swap_amount,
             fidelity_amount: self.fidelity_amount,
             fidelity_timelock: self.fidelity_timelock,
             fidelity_feerate: self.fidelity_feerate,

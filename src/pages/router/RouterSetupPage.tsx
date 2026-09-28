@@ -137,6 +137,13 @@ export function RouterSetupPage() {
   useEffect(() => {
     if (stage === "live" || stage === "error") return;
     const tick = async () => {
+      // `maker://phase-changed` is the only other way out of the bond wait, and a push lost to
+      // a dropped or proxied event stream is never replayed. Only from `bonding`: earlier, a
+      // `failed` left over from a previous attempt can still be the phase before this start lands.
+      if (stage === "bonding") {
+        const status = await getRouterStatus(id).catch(() => null);
+        if (status) applyPhase(status.phase);
+      }
       const lines = await getRouterLogs(id, 300).catch(() => null);
       if (!lines) return;
       setLogs(lines);
@@ -151,7 +158,7 @@ export function RouterSetupPage() {
     void tick();
     const timer = setInterval(() => void tick(), LOG_POLL_MS);
     return () => clearInterval(timer);
-  }, [id, stage]);
+  }, [id, stage, applyPhase]);
 
   // Fallback for a deposit whose log markers never appear — a balance is proof enough.
   useEffect(() => {

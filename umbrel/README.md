@@ -1,121 +1,89 @@
-# Portal for Umbrel
+# Portal container image
 
-This folder replaces `deploy/container`. It builds **Portal web**, including its
-frontend, Rust server and embedded Tor. The desktop app is not built.
+This folder builds the **Portal** container image: the web frontend, the Rust server
+(`portal-web`) and embedded Tor. The desktop app is not built. The image is what the
+Umbrel App Store package runs.
 
 ```text
 umbrel/
-  Dockerfile                 Build recipe; uses the Portal repository as context
-  compose.local.yaml         Standalone localhost smoke test
-  compose.standalone.yaml    Standalone external TLS proxy deployment
-  STANDALONE.md              Standalone usage and data notes
-  portal/                   Copy this directory into an Umbrel app-store source
-    docker-compose.yml      Image, Umbrel proxy, environment and persistent mount
-    umbrel-app.yml           App metadata and browser launch port
-    data/portal/.gitkeep     Tracks the otherwise-empty persistent data directory
+  Dockerfile                Build recipe; the repository root is the build context
+  Dockerfile.dockerignore   Keeps node_modules, target, .git and secrets out of the context
+  compose.local.yaml        Builds the image and runs it on localhost for a smoke test
 ```
 
-The Dockerfile is a recipe. Build it to produce an **image**, then push that image
-to a registry for public distribution. Umbrel pulls the image; it does not build
-the Dockerfile. The `portal/` package is portable once its image is available.
-Moving the build recipe alone does not copy the application source: always use
-the Portal source repository as the Docker build context.
+The Umbrel package itself (`umbrel-app.yml`, `docker-compose.yml`) is not kept here. It lives
+in `getumbrel/umbrel-apps` under `portal/`, submitted in
+[getumbrel/umbrel-apps#6125](https://github.com/getumbrel/umbrel-apps/pull/6125). Umbrel never
+builds this Dockerfile: it pulls the published image named in that package.
 
-## Local image for the existing OrbStack test instance
-
-Run from the Portal repository root:
+## Try it locally
 
 ```sh
-docker build -f umbrel/Dockerfile -t portal:umbrel-test .
-docker save portal:umbrel-test | docker exec -i portal-umbrel-test docker load
+docker compose -f umbrel/compose.local.yaml up --build
 ```
 
-The two Docker engines have separate image stores. Umbrel 2.0 also pulls images
-unconditionally during installation, so loading a local tag alone is insufficient.
-Start a loopback-only registry inside the test instance (once):
+Then open <http://localhost:3000>. If port 3000 is taken, set `PORTAL_LOCAL_PORT=3100` for
+both the published port and the browser origin. This uses the same `trusted-http-proxy`
+profile the Umbrel package runs under, so keep it bound to `127.0.0.1`: its session cookie is
+not marked `Secure`.
+
+## Publish a new image
+
+Umbrel requires both `linux/amd64` and `linux/arm64`, pinned by the multi-architecture index
+digest. From the repository root:
 
 ```sh
-docker exec portal-umbrel-test docker run -d --name portal-test-registry \
-  --restart unless-stopped -p 127.0.0.1:5001:5000 \
-  -v portal-test-registry:/var/lib/registry registry:2
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f umbrel/Dockerfile -t <image>:<version> --push .
+docker buildx imagetools inspect <image>:<version>
 ```
 
-For each build, after loading it, publish it to this local registry:
+Use the top-level `Digest:` from `inspect`, not a per-architecture one. The image must be
+publicly pullable. Use a new tag for every release; never overwrite a published tag.
+
+Then, in the `umbrel-apps` package:
+
+1. Set `image:` in `portal/docker-compose.yml` to `<image>:<version>@sha256:<index digest>`.
+2. Bump `version:` in `portal/umbrel-app.yml` to match, and fill `releaseNotes:` for updates.
+   Umbrel only offers installed users an update when `version` changes.
+3. Run `npm run lint:apps -- portal --check-images` and `git diff --check`.
+4. Test through Umbrel (below), then push to the PR branch.
+
+## Test on a local Umbrel
+
+The containerized umbrelOS instance runs under OrbStack as `portal-umbrel-test`:
 
 ```sh
-docker exec portal-umbrel-test docker tag portal:umbrel-test localhost:5001/portal:umbrel-test
-docker exec portal-umbrel-test docker push localhost:5001/portal:umbrel-test
+open -a OrbStack
+docker --context orbstack start portal-umbrel-test
 ```
 
-This publishes only to the local test instance, not a public registry. The package
-references `localhost:5001/portal:umbrel-test`, which Umbrel's Docker engine can pull.
-
-After completing Umbrel onboarding, copy the package using tar through `docker exec`.
-`docker cp` cannot access the runtime-mounted store path in this container setup.
-Run these commands from the Portal repository root:
+Copy the package from the `umbrel-apps` checkout into the instance's app-store source, as
+Umbrel's UID/GID 1000:1000 (otherwise Portal cannot write its data directory). `docker cp`
+cannot reach the runtime-mounted store path, so use tar:
 
 ```sh
-COPYFILE_DISABLE=1 tar -C umbrel -cf - portal | docker exec --user 1000:1000 -i portal-umbrel-test \
+COPYFILE_DISABLE=1 tar -C <umbrel-apps checkout> -cf - portal | \
+  docker --context orbstack exec --user 1000:1000 -i portal-umbrel-test \
   tar --no-same-owner -xf - -C /home/umbrel/umbrel/app-stores/getumbrel-umbrel-apps-github-53f74447
-docker exec portal-umbrel-test umbreld client apps.install.mutate --appId portal
+docker --context orbstack exec portal-umbrel-test umbreld client apps.install.mutate --appId portal
 ```
 
-Extract as Umbrel's UID/GID 1000:1000 and ignore the archive's macOS ownership;
-otherwise Portal cannot write its mounted data directory.
+For an existing install, use `apps.update.mutate` instead, which keeps its data.
+`apps.uninstall.mutate` deletes the app's data, wallets included. A store refresh may replace
+the copied package; this is a disposable test workflow, not a publication method.
 
-The tar copy overlays package files without nesting `portal/portal` or deleting
-other apps. A store refresh may replace local edits; this is a disposable local
-test workflow, not a publication method.
-
-Open Portal from the Umbrel dashboard, normally at `http://umbrel.local:3101`.
-Use the configured device hostname, not localhost or an IP alias: Portal checks
-the browser origin. This package targets the HTTP LAN route behind Umbrel auth;
-HTTPS and onion browser access require separate origin/profile configuration and
-verification. Portal's embedded Tor for swaps is independent of browser access.
-
-Create the Portal owner password, connect the chain backend, and verify Tor,
-wallet setup and persistence through an Umbrel restart. Umbrel login protects the
-route; Portal's owner password and wallet passwords remain separate.
-
-`app_proxy` intentionally has no image in the source Compose file: Umbrel injects
-its proxy implementation. Do not run this package directly with Docker Compose;
-use `compose.local.yaml` for a standalone smoke test.
-
-## Public registry and App Store submission
-
-The checked-in package currently uses `localhost:5001/portal:umbrel-test`. It is **not yet a
-public release package**. Before submission:
-
-1. Build and publish both architectures to a registry namespace you control:
-
-   ```sh
-   docker buildx build --platform linux/amd64,linux/arm64 \
-     -f umbrel/Dockerfile -t ghcr.io/YOUR_OWNER/portal:0.1.0 --push .
-   docker buildx imagetools inspect ghcr.io/YOUR_OWNER/portal:0.1.0
-   ```
-
-2. Make the registry package publicly readable. Replace the `image` in
-   `portal/docker-compose.yml` with `ghcr.io/YOUR_OWNER/portal:0.1.0@sha256:...`,
-   using the actual multi-architecture index digest printed by inspect. Do not
-   use an architecture-specific digest. Match the manifest version to the release.
-3. Confirm the external port is free in the current App Store, confirm submitter
-   metadata, and fill `submission` with the real PR URL. Supply screenshots and a
-   logo to the reviewers; Umbrel manages official gallery assets.
-4. Copy `portal/` into a checkout of `getumbrel/umbrel-apps`. Run its package
-   linter: `npm run lint:apps -- portal --check-images`. Test a fresh installation
-   through Umbrel with the published image, including onboarding, connectivity,
-   restart and persistent data. Record which architectures were actually tested.
-5. Submit that `portal/` directory to `getumbrel/umbrel-apps`.
-
-No registry upload or app installation is performed by merely copying this folder.
+Open Portal from the Umbrel home screen, normally `http://umbrel.local:3101`. Use the device
+hostname, not `localhost` or an IP address: Portal accepts requests only from the configured
+browser origin. Check the owner password setup, the chain connection, Tor, wallet setup, and
+that data survives an app restart.
 
 ## Persistent data
 
-`${APP_DATA_DIR}/data/portal` is mounted at `/data`. It holds Portal's home directory
-and `.openswap` state. The image uses UID/GID 1000:1000 to match Umbrel's package
-directory ownership. `.gitkeep` is empty and executes nothing; Umbrel removes it
-when installing. Keep all wallet/recovery state in the persistent mount. Take
-service backups while Portal is stopped; wallet exports alone are not full backups.
+`${APP_DATA_DIR}/data/portal` is mounted at `/data` and holds Portal's home directory and
+`.openswap` state: wallets, the swap tracker, router state and the owner-password hash. The
+image runs as UID/GID 1000:1000 to match Umbrel's data directory ownership. Take service
+backups while Portal is stopped; an encrypted wallet export alone is not a full backup.
 
 ## References
 

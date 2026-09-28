@@ -137,7 +137,7 @@ export interface CircuitView {
    * name different stages of the same swap.
    */
   title: string;
-  /** How much longer the live leg has: a block while a tx is confirming, otherwise unhedged. */
+  /** A block per leg still to confirm; once every leg has, only protocol chatter is left. */
   etaLabel: string;
   hopsConfirmed: number;
   sendAmountSats?: number;
@@ -328,6 +328,8 @@ export function useSwapCircuit(
           ? "Your wallet · Waiting for its contract to confirm on-chain"
           : `${focusHop.label} · ${STAGE_DOING[focusHop.stage]}`;
 
+    const unconfirmedLegs = edges.filter((e) => e.stage !== "confirmed").length;
+
     const title = failed
       ? "Swap Failed"
       : finished
@@ -349,9 +351,9 @@ export function useSwapCircuit(
       liveEdgeIndex: liveEdge === -1 ? null : liveEdge,
       activity,
       title,
-      // A confirmation wait is the only stretch with a real unit; everything else is protocol
-      // chatter measured in seconds, and a countdown on it would be invented.
-      etaLabel: failed || finished ? "—" : onChainWait ? "10 mins" : "Soon",
+      // Confirmations are the only stretch with a real unit, and every leg waits for its own
+      // block in turn; the protocol chatter between them is seconds, so it adds nothing.
+      etaLabel: failed || finished ? "—" : unconfirmedLegs > 0 ? `${unconfirmedLegs * 10} mins` : "Soon",
       hopsConfirmed: edges.filter((e) => e.stage === "confirmed").length,
       sendAmountSats: summary?.sendAmountSats ?? tracker?.sendAmountSats,
       receiveAmountSats: summary?.estimatedReceiveAmountSats,

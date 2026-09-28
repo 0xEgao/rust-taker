@@ -185,6 +185,16 @@ pub struct ActiveSwap {
     pub backend_fingerprint: String,
     pub started_at: Option<SystemTime>,
     pub error: Option<String>,
+    pub outgoing: Arc<OutgoingConfirmation>,
+}
+
+/// Whether our taproot funding has confirmed. Finding out is an Electrum round trip, so it runs
+/// off the progress poll's request path, one check at a time, and latches: one failed or
+/// skipped check must not walk the circuit back a hop.
+#[derive(Default)]
+pub struct OutgoingConfirmation {
+    pub confirmed: AtomicBool,
+    pub checking: AtomicBool,
 }
 
 pub struct PendingFileSelection {
