@@ -3,7 +3,7 @@
 //! move the data root or widen the access policy.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};
 
@@ -30,9 +30,9 @@ pub struct Config {
     #[arg(long, default_value = "127.0.0.1:3000", env = "PORTAL_BIND")]
     pub bind: SocketAddr,
 
-    /// Built frontend to serve. Required for a production start; omitted in development,
-    /// where Vite serves the UI and proxies the API here. Only this directory is served;
-    /// API errors never fall back to `index.html`.
+    /// Built frontend to serve. Packaged binaries discover an adjacent `assets` directory;
+    /// this option overrides it. In development Vite serves the UI and proxies the API here.
+    /// Only this directory is served; API errors never fall back to `index.html`.
     #[arg(long, env = "PORTAL_ASSETS_DIR")]
     pub assets_dir: Option<PathBuf>,
 
@@ -75,6 +75,21 @@ pub struct Config {
 }
 
 impl Config {
+    /// Use the frontend shipped beside a downloaded server binary while preserving an explicit
+    /// `--assets-dir`. Development binaries have no adjacent built UI and remain API-only.
+    pub(crate) fn use_bundled_assets(&mut self, executable: &Path) {
+        if self.assets_dir.is_some() {
+            return;
+        }
+        let Some(parent) = executable.parent() else {
+            return;
+        };
+        let bundled = parent.join("assets");
+        if bundled.join("index.html").is_file() {
+            self.assets_dir = Some(bundled);
+        }
+    }
+
     /// Rejects combinations that would serve wallet data over an unprotected transport. There
     /// is deliberately no override: a target that cannot provide a tested protected path is
     /// not ready for release, and a flag to skip this would become the way every deployment
@@ -179,6 +194,31 @@ mod tests {
             shutdown_timeout_secs: 110,
             healthcheck: false,
         }
+    }
+
+    #[test]
+    fn packaged_assets_are_discovered_without_overriding_configuration() {
+        let root = std::env::temp_dir().join(format!(
+            "portal-bundled-assets-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("index.html"), "<!doctype html>").unwrap();
+        let executable = root.join("portal-server");
+
+        let mut packaged = config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None);
+        packaged.assets_dir = None;
+        packaged.use_bundled_assets(&executable);
+        assert_eq!(packaged.assets_dir, Some(assets));
+
+        let configured = PathBuf::from("/configured/assets");
+        let mut explicit = config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None);
+        explicit.assets_dir = Some(configured.clone());
+        explicit.use_bundled_assets(&executable);
+        assert_eq!(explicit.assets_dir, Some(configured));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
