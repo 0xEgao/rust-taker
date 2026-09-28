@@ -22,7 +22,9 @@ use crate::state::WebState;
 /// Deliberately not `#[tokio::main]`: the signal disposition is claimed before the runtime
 /// exists, so nothing that starts afterwards can be running while the process is unarmed.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::parse();
+    let mut config = Config::parse();
+    let executable = std::env::current_exe()?;
+    config.use_bundled_assets(&executable);
 
     // Before validate(), and before the mask: a probe talks to an instance that is already
     // running, needs no assets directory or access profile of its own, and exits in seconds.

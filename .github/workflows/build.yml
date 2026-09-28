@@ -1,4 +1,4 @@
-name: Build desktop app
+name: Build downloadable apps
 
 on:
   push:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
+    name: Build ${{ matrix.name }} apps
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 90
     strategy:
@@ -26,10 +26,16 @@ jobs:
             platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             rust_targets: x86_64-unknown-linux-gnu
-          - name: macOS Universal
+            desktop_bundles: appimage,deb,rpm
+            server_artifact: portal-server-linux-x86_64
+            desktop_artifact_prefix: portal-desktop-linux-x86_64
+          - name: macOS Apple Silicon
             platform: macos-latest
-            target: universal-apple-darwin
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            target: aarch64-apple-darwin
+            rust_targets: aarch64-apple-darwin
+            desktop_bundles: dmg
+            server_artifact: portal-server-macos-apple-silicon
+            desktop_artifact_prefix: portal-desktop-macos-apple-silicon
 
     steps:
       - name: Checkout
@@ -75,12 +81,36 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and upload installers
+      - name: Build and upload Portal Desktop packages
         uses: tauri-apps/tauri-action@v1.0.0
         env:
           # Ad-hoc signing keeps unsigned macOS artifacts launchable after download.
           APPLE_SIGNING_IDENTITY: "-"
         with:
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.desktop_bundles }}
           uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: portal-[platform]-[arch]-[bundle]
+          workflowArtifactNamePattern: ${{ matrix.desktop_artifact_prefix }}-[bundle]
+
+      - name: Build Portal Server
+        run: npm run web:build -- --target ${{ matrix.target }}
+
+      - name: Package Portal Server
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ matrix.server_artifact }}
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          package_dir="${RUNNER_TEMP}/${PACKAGE_NAME}"
+          mkdir -p "${package_dir}/assets"
+          install -m 755 "target/${RUST_TARGET}/release/portal-web" "${package_dir}/portal-server"
+          cp -R dist/web/. "${package_dir}/assets/"
+          tar -C "${RUNNER_TEMP}" -czf "${RUNNER_TEMP}/${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
+
+      - name: Upload Portal Server package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.server_artifact }}
+          path: ${{ runner.temp }}/${{ matrix.server_artifact }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
