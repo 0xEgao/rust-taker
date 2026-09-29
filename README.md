@@ -126,6 +126,8 @@ are seeded fresh each launch and held in memory only, so a node's RPC password i
 
 # Development
 
+See the [developer guide](docs/DEVELOPMENT.md) for the architecture, code map, host boundaries, and contribution workflow.
+
 | Command | What it does |
 | --- | --- |
 | `npm run tauri dev` | Full desktop app, real window |
