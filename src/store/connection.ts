@@ -18,7 +18,7 @@ const OUR_SIGNET_CHALLENGE = "0014a3ec9c731da66d9725d54947aede5c830623f33d";
 /** Consulted only when no challenge is available, which is every Electrum session: Electrum
  *  synthesizes its chain info from the header tip, and all signets share a genesis hash, so
  *  the endpoint is the only remaining evidence of which signet this is. */
-const OUR_INFRASTRUCTURE = /(^|\.)citadelfoss\.xyz$/;
+const OUR_INFRASTRUCTURE = /(^|\.)(citadelfoss\.xyz|openswap\.live)$/;
 
 export const FAUCET_URL = "https://faucet.citadelfoss.xyz";
 

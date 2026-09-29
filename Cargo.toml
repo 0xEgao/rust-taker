@@ -3,14 +3,15 @@ resolver = "2"
 members = ["core", "src-tauri", "src-web"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-beta"
 edition = "2021"
 license = "MIT"
 
 # Single source of truth for versions shared by the hosts and the core library, so a bump
 # cannot leave two crates linking different copies of the same types.
 [workspace.dependencies]
-openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
+# Testing openswap PR #1069 before it merges; revert to citadel-foss master afterwards.
+openswap = { git = "https://github.com/0xEgao/openswap", branch = "rank-makers" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"

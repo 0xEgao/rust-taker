@@ -207,6 +207,9 @@ async fn open_taker(
         // tool, not something to switch on because an upstream bump made the field required.
         check_blocklist: None,
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
+        ldk_server_url: None,
+        ldk_api_key_path: None,
+        ldk_tls_cert_path: None,
     };
 
     // `Taker::init` runs startup recovery inline, which blocks on a block being mined and can
@@ -543,9 +546,14 @@ pub async fn restore_wallet(
     wallet_name: String,
     socks_port: Option<u16>,
     selection_id: Uuid,
-    password: Option<String>,
+    password: String,
 ) -> Result<(), AppError> {
     validate_leaf_name(&wallet_name, "walletName")?;
+    // Portal's backups are always encrypted. Checked before the one-shot file selection is
+    // consumed, like the name clash below.
+    if password.is_empty() {
+        return Err(AppError::new(ErrorCode::InvalidInput, "enter the backup password"));
+    }
     let _operation = SensitiveOperationGuard::acquire(
         &state.sensitive_operation_active,
         SensitiveOperation::RestorePrivateKey,
@@ -600,7 +608,7 @@ pub async fn restore_wallet(
             Some(wallet_name),
             backend,
             backup_path,
-            password,
+            Some(password),
         )
     })
     .await

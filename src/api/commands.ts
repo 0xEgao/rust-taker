@@ -121,7 +121,7 @@ export function restoreWallet(
   walletName: string,
   socksPort: number | undefined,
   selectionId: string,
-  password?: string,
+  password: string,
   dataDir?: string,
 ): Promise<void> {
   return invoke("restore_wallet", {

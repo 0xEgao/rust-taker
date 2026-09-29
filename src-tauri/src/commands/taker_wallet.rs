@@ -90,7 +90,7 @@ pub async fn choose_restore_backup(
 
 #[tauri::command]
 pub async fn restore_wallet(
-    state: tauri::State<'_, Arc<AppState>>, data_dir: Option<String>, wallet_name: String, socks_port: Option<u16>, selection_id: Uuid, password: Option<String>,
+    state: tauri::State<'_, Arc<AppState>>, data_dir: Option<String>, wallet_name: String, socks_port: Option<u16>, selection_id: Uuid, password: String,
 ) -> Result<(), AppError> {
     taker_wallet::restore_wallet(&state, DESKTOP_SESSION, data_dir, wallet_name, socks_port, selection_id, password).await
 }

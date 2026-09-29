@@ -611,6 +611,9 @@ pub struct RecoveryContractDto {
     /// "timelock" — this wallet's own funding, reclaimable only once the refund delay matures.
     pub claim_path: String,
     pub confirmations: u32,
+    /// The first router's payment for a swap this wallet already received, rather than funds of
+    /// its own: the router claims it, and it has no refund wait worth counting.
+    pub router_owed: bool,
     /// Blocks still to wait. Timelock contracts only; `None` means nothing left to wait for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks_remaining: Option<u32>,
@@ -626,6 +629,9 @@ pub struct RecoveryContractDto {
 #[serde(rename_all = "camelCase")]
 pub struct RecoveredContractDto {
     pub contract_txid: String,
+    /// "incoming" | "outgoing" — the same resolution means opposite things on the two legs: an
+    /// outgoing contract spent by someone else is the router's claim, not money lost.
+    pub leg: String,
     /// "hashlock" | "timelock" | "key_path" | "discarded" | "unresolved"
     pub resolution: String,
     /// The transaction that claimed it back.
@@ -674,6 +680,9 @@ pub struct RecoveryStatus {
     pub failed_at_phase: Option<String>,
     pub router_count: usize,
     pub send_amount_sats: u64,
+    /// This swap's incoming coins were claimed, so it went through for this wallet and what is
+    /// left is settling the router's payment.
+    pub swap_received: bool,
     /// Contracts still holding funds.
     pub pending: Vec<RecoveryContractDto>,
     /// Contracts already claimed back.
@@ -681,7 +690,10 @@ pub struct RecoveryStatus {
     /// The longest wait left across every pending timelock contract.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks_remaining: Option<u32>,
+    /// This wallet's own funds still in contracts.
     pub locked_sats: u64,
+    /// Router payments still in contracts, which are not this wallet's to spend.
+    pub router_owed_sats: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<u64>,
 }

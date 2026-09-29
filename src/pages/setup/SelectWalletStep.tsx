@@ -204,13 +204,13 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   }
 
   function submitRestore() {
-    if (!restoreSelection || !restoreName.trim()) return;
+    if (!restoreSelection || !restoreName.trim() || !restorePassword) return;
     runChecks({
       mode: "restore",
       walletName: restoreName.trim(),
       selectionId: restoreSelection.selectionId,
       displayName: restoreSelection.displayName,
-      password: restorePassword || undefined,
+      password: restorePassword,
     });
   }
 
@@ -286,12 +286,14 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     <div className="flex flex-col gap-5 text-left">
       <TextField
         label="Wallet name"
+        autoComplete="username"
         required
         value={createName}
         onChange={(e) => setCreateName(e.target.value)}
       />
       <PasswordField
         label="Password"
+        autoComplete="new-password"
         required
         value={createPassword}
         onChange={(e) => setCreatePassword(e.target.value)}
@@ -303,6 +305,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       />
       <PasswordField
         label="Confirm password"
+        autoComplete="new-password"
         required
         value={createConfirm}
         onChange={(e) => setCreateConfirm(e.target.value)}
@@ -535,24 +538,22 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
                   </div>
                   <TextField
                     label="New wallet name"
+                    autoComplete="off"
                     value={restoreName}
                     onChange={(e) => setRestoreName(e.target.value)}
                   />
                   <PasswordField
                     label="Backup password"
-                    placeholder="Leave empty only for a legacy plaintext backup"
+                    autoComplete="off"
+                    required
                     value={restorePassword}
                     onChange={(e) => setRestorePassword(e.target.value)}
                     onKeyDown={onEnter(submitRestore)}
                   />
-                  <p className="text-[11.5px] leading-5 text-warning">
-                    Portal always creates encrypted backups. An empty password is supported only
-                    when importing an older backup created elsewhere.
-                  </p>
                 </div>
                 <div className="flex gap-3 border-t border-line px-8 py-5">
                   <Button variant="secondary" onClick={() => setViewMode("grid")}>Cancel</Button>
-                  <Button className="flex-1" disabled={!restoreName.trim()} onClick={submitRestore}>
+                  <Button className="flex-1" disabled={!restoreName.trim() || !restorePassword} onClick={submitRestore}>
                     Restore &amp; continue
                   </Button>
                 </div>

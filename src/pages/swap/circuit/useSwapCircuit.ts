@@ -319,9 +319,12 @@ export function useSwapCircuit(
     // A router that hasn't been reached yet isn't the story — the phase is. Once the swap is
     // working on one, that router's stage is the specific thing to say.
     const focusHop = focusIndex === null ? null : hops[focusIndex];
+    const paymentAddress = summary?.payment?.address ?? tracker?.paymentAddress;
     const activity =
       failed || focusHop === null || focusHop.stage === "waiting"
-        ? PHASE_DOING[failed ? "failed" : phase]
+        ? paymentAddress && !failed && phase === "completed"
+          ? "Paid to the receiver's address"
+          : PHASE_DOING[failed ? "failed" : phase]
         : // Leg 0 is our own funding, not a router's contract. The first router reads as
           // `confirming` throughout that wait, so naming it here credits our transaction to it.
           liveEdge === 0 && onChainWait
@@ -360,7 +363,7 @@ export function useSwapCircuit(
       totalFeeSats: summary?.totalEstimatedFeeSats,
       routerFeeSats: summary?.routerFeeSats,
       miningFeeSats: summary?.miningFeeSats,
-      paymentAddress: summary?.payment?.address ?? tracker?.paymentAddress,
+      paymentAddress,
       paymentAmountSats: summary?.payment?.amountSats ?? tracker?.paymentAmountSats,
     };
   }, [tracker, summary, failure, finished]);

@@ -37,9 +37,11 @@ export interface RouterForm {
   set: (key: keyof Values) => (next: string) => void;
   walletName: string;
   setWalletName: (next: string) => void;
-  /** Empty means "use the router ID", as with the wallet name. */
-  publicName: string;
+  /** Null until the user edits it; until then the name follows the wallet name. */
+  publicName: string | null;
   setPublicName: (next: string) => void;
+  /** The name published when the user hasn't set one: the wallet name, else the router ID. */
+  defaultPublicName: (routerId: string) => string;
   publicNameError: string | null;
   dataDir: string;
   setDataDir: (next: string) => void;
@@ -58,7 +60,7 @@ export interface RouterForm {
 export function useRouterForm(): RouterForm {
   const [values, setValues] = useState<Values>(INITIAL_VALUES);
   const [walletName, setWalletName] = useState("");
-  const [publicName, setPublicName] = useState("");
+  const [publicName, setPublicName] = useState<string | null>(null);
   const [dataDir, setDataDir] = useState("");
   const [torError, setTorError] = useState<string | null>(null);
   const [portErrors, setPortErrors] = useState<RouterPortCheck>({});
@@ -129,7 +131,10 @@ export function useRouterForm(): RouterForm {
     return () => clearTimeout(timer);
   }, [numbers.networkPort, numbers.rpcPort, numbers.socksPort, numbers.controlPort]);
 
-  const publicNameError = publicName.trim() ? routerNameError(publicName) : null;
+  const publicNameError = publicName?.trim() ? routerNameError(publicName) : null;
+  // Neither the wallet name nor the id has a length cap; the published name does.
+  const defaultPublicName = (routerId: string) =>
+    (walletName.trim() || routerId).slice(0, ROUTER_NAME_MAX);
 
   return {
     values,
@@ -138,6 +143,7 @@ export function useRouterForm(): RouterForm {
     setWalletName,
     publicName,
     setPublicName,
+    defaultPublicName,
     publicNameError,
     dataDir,
     setDataDir,
@@ -157,8 +163,7 @@ export function useRouterForm(): RouterForm {
         routerId,
         // A router's wallet is its own, so the id doubles as the wallet name unless overridden.
         walletName: walletName.trim() || routerId,
-        // The id has no length cap; the published name does.
-        name: publicName.trim() || routerId.slice(0, ROUTER_NAME_MAX),
+        name: publicName?.trim() || defaultPublicName(routerId),
         dataDir: dataDir.trim() || undefined,
         walletPassword,
         networkPort: numbers.networkPort,
@@ -201,8 +206,12 @@ export function PublicNameField({ form, routerId }: { form: RouterForm; routerId
   return (
     <TextField
       label="Public name"
-      placeholder={routerId.slice(0, ROUTER_NAME_MAX) || "Same as router ID"}
-      value={form.publicName}
+      // Sits right above the wallet password, where a password manager otherwise guesses the
+      // username goes, and fills in whatever it saved for the previous router.
+      autoComplete="off"
+      placeholder={form.defaultPublicName(routerId) || "Same as wallet name"}
+      // Filled in rather than left as a placeholder, so a value nobody typed is visible.
+      value={form.publicName ?? form.defaultPublicName(routerId)}
       onChange={(e) => form.setPublicName(e.target.value)}
       error={form.publicNameError ?? undefined}
       hint={

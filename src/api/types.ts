@@ -558,6 +558,9 @@ export interface RecoveryContract {
   /** `hashlock` is spendable once confirmed; `timelock` waits out the refund delay. */
   claimPath: "hashlock" | "timelock";
   confirmations: number;
+  /** The first router's payment for a swap this wallet already received — the router's to
+   *  claim, not this wallet's to reclaim. */
+  routerOwed: boolean;
   /** Blocks still to wait. Timelock only. */
   blocksRemaining?: number;
   /** The refund delay in full, so progress through it can be shown. Timelock only. */
@@ -567,6 +570,8 @@ export interface RecoveryContract {
 /** A contract the recovery loop has already claimed back. */
 export interface RecoveredContract {
   contractTxid: string;
+  /** The same resolution means opposite things on the two legs. */
+  leg: "incoming" | "outgoing";
   resolution: ContractResolution;
   spendingTxid?: string;
 }
@@ -598,13 +603,19 @@ export interface RecoveryStatus {
   failedAtPhase?: TrackerPhase;
   routerCount: number;
   sendAmountSats: number;
+  /** The swap's incoming coins were claimed: it went through, and only the router's payment
+   *  is left to settle. */
+  swapReceived: boolean;
   /** Contracts still holding funds. */
   pending: RecoveryContract[];
   /** Contracts already claimed back. */
   resolved: RecoveredContract[];
   /** The longest wait left across every pending timelock contract. */
   blocksRemaining?: number;
+  /** This wallet's own funds still in contracts. */
   lockedSats: number;
+  /** Router payments still in contracts — not this wallet's. */
+  routerOwedSats: number;
   updatedAt?: number;
 }
 

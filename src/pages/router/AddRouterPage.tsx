@@ -103,6 +103,7 @@ export function AddRouterPage() {
             <TextField
               label="Router ID"
               placeholder="router-02"
+              autoComplete="username"
               autoFocus
               required
               value={routerId}

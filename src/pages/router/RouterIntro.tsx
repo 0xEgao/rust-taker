@@ -104,6 +104,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void create()}
                 placeholder="my-router"
+                autoComplete="username"
                 autoFocus
                 required
                 error={malformed ? "Letters, numbers, hyphens and underscores only." : undefined}

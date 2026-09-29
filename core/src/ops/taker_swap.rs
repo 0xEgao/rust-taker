@@ -760,6 +760,8 @@ pub async fn get_recovery_status(
     // A healthy swap in flight holds its funds in contracts too, so a live contract UTXO is not
     // on its own evidence of recovery.
     let swap_running = taker.swap_running();
+    let (config, wallet_name, socks_port) =
+        (taker.chain_backend.clone(), taker.wallet_name.clone(), taker.socks_port);
 
     tokio::task::spawn_blocking(move || -> Result<RecoveryStatus, AppError> {
         let (live, locked_sats) = {
@@ -768,6 +770,14 @@ pub async fn get_recovery_status(
             let locked_sats = guard.get_balances()?.contract.to_sat();
             (live, locked_sats)
         };
+        // The crate records a UTXO's confirmations when it first caches it and never updates
+        // them, so a contract first seen in the mempool reads 0 for good and the refund lock
+        // never appears to count. Its own connection, like the swap page's: the recovery loop
+        // holds the wallet across its waits.
+        let chain = crate::ops::chain_backend::resolve_from(&config, &wallet_name, Some(socks_port))
+            .ok()
+            .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
+            .and_then(|chain| Some((chain.get_block_count().ok()?, chain)));
 
         let tracker = SwapTracker::load_or_create(&data_dir)?;
         // `incomplete_swaps` already excludes anything cleaned up. With no `swap_id` the newest
@@ -804,11 +814,29 @@ pub async fn get_recovery_status(
             .iter()
             .map(|r| refund_locktime_blocks(r.maker_count))
             .max();
+        // Once a swap's incoming coins are claimed, its outgoing contract is the first router's
+        // payment: the crate holds the refund back for that router's hashlock claim, so counting
+        // it as this wallet's money being reclaimed would be wrong twice over.
+        let router_owed: std::collections::HashSet<Txid> = candidates
+            .iter()
+            .filter(|r| swap_received(r))
+            .flat_map(|r| r.outgoing_contract_txids.iter().copied())
+            .collect();
 
         let mut pending: Vec<RecoveryContractDto> = live
             .iter()
             .map(|(utxo, info)| {
                 let timelocked = matches!(info, UTXOSpendInfo::TimelockContract { .. });
+                let confirmations = match &chain {
+                    Some((tip, chain)) => match chain.tx_block_height(&utxo.txid) {
+                        Ok(Some(height)) => (tip + 1).saturating_sub(height) as u32,
+                        Ok(None) => 0,
+                        Err(_) => utxo.confirmations,
+                    },
+                    None => utxo.confirmations,
+                };
+                let router_owed = timelocked && router_owed.contains(&utxo.txid);
+                let lock_blocks = offset.filter(|_| timelocked && !router_owed);
                 RecoveryContractDto {
                     outpoint: crate::types::Outpoint {
                         txid: utxo.txid.to_string(),
@@ -816,11 +844,10 @@ pub async fn get_recovery_status(
                     },
                     amount_sats: utxo.amount.to_sat(),
                     claim_path: if timelocked { "timelock" } else { "hashlock" }.to_string(),
-                    confirmations: utxo.confirmations,
-                    blocks_remaining: offset.filter(|_| timelocked).map(|offset| {
-                        offset.saturating_sub(utxo.confirmations)
-                    }),
-                    lock_blocks: offset.filter(|_| timelocked),
+                    confirmations,
+                    router_owed,
+                    blocks_remaining: lock_blocks.map(|lock| lock.saturating_sub(confirmations)),
+                    lock_blocks,
                 }
             })
             .collect();
@@ -833,6 +860,9 @@ pub async fn get_recovery_status(
             .filter_map(|c| c.blocks_remaining)
             .max()
             .filter(|blocks| *blocks > 0);
+        let router_owed_sats: u64 =
+            pending.iter().filter(|c| c.router_owed).map(|c| c.amount_sats).sum();
+        let locked_sats = locked_sats.saturating_sub(router_owed_sats);
 
         let Some(record) = record else {
             return Ok(RecoveryStatus {
@@ -845,10 +875,12 @@ pub async fn get_recovery_status(
                 failed_at_phase: None,
                 router_count: 0,
                 send_amount_sats: 0,
+                swap_received: false,
                 pending,
                 resolved: Vec::new(),
                 blocks_remaining,
                 locked_sats,
+                router_owed_sats,
                 updated_at: None,
             });
         };
@@ -857,9 +889,11 @@ pub async fn get_recovery_status(
             .recovery
             .incoming
             .iter()
-            .chain(record.recovery.outgoing.iter())
-            .map(|o| RecoveredContractDto {
+            .map(|o| ("incoming", o))
+            .chain(record.recovery.outgoing.iter().map(|o| ("outgoing", o)))
+            .map(|(leg, o)| RecoveredContractDto {
                 contract_txid: o.contract_txid.to_string(),
+                leg: leg.to_string(),
                 resolution: resolution_label(&o.resolution).to_string(),
                 spending_txid: o.spending_txid.map(|t| t.to_string()),
             })
@@ -880,15 +914,25 @@ pub async fn get_recovery_status(
             failed_at_phase: record.failed_at_phase.map(|p| tracker_phase_label(p).to_string()),
             router_count: record.maker_count,
             send_amount_sats: record.send_amount_sat,
+            swap_received: swap_received(&record),
             pending,
             resolved,
             blocks_remaining,
             locked_sats,
+            router_owed_sats,
             updated_at: Some(record.updated_at),
         })
     })
     .await
     .map_err(AppError::internal)?
+}
+
+/// Mirrors the crate's own test for holding a refund back (`incoming_claimed`, `pub(crate)`
+/// there): the tracker records each incoming claim as soon as its sweep lands.
+fn swap_received(record: &SwapRecord) -> bool {
+    record.recovery.incoming.iter().any(|o| {
+        matches!(o.resolution, ContractResolution::Hashlock | ContractResolution::KeyPath)
+    })
 }
 
 fn resolution_label(r: &ContractResolution) -> &'static str {

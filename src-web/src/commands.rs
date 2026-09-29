@@ -657,7 +657,7 @@ pub static DURABLE: &[Operation] = &[
             wallet_name: String,
             socks_port: Option<u16>,
             selection_id: Uuid,
-            password: Option<String>,
+            password: String,
             }
             let body: Args = parse(args)?;
             encode(&ops::taker_wallet::restore_wallet(&ctx.rt, &ctx.session, None, body.wallet_name, body.socks_port, body.selection_id, body.password).await?)

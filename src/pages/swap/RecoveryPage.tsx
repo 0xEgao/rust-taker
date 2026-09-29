@@ -5,6 +5,7 @@ import { getLogs, getRecoveryStatus, getSwapTracker, recoverSwap } from "../../a
 import { isAppError } from "../../api/types";
 import type {
   LogLine,
+  RecoveredContract,
   RecoveryContract,
   RecoveryStatus,
   SwapTrackerProgress,
@@ -41,13 +42,41 @@ const PHASE_LABEL: Record<string, string> = {
   cleaned_up: "Fully reclaimed",
 };
 
-const RESOLUTION_LABEL: Record<string, string> = {
-  hashlock: "Claimed with the preimage",
-  timelock: "Refunded after the lock",
-  key_path: "Swept with the key",
-  discarded: "Discarded",
-  unresolved: "Unresolved",
-};
+/** Whose money a settled contract turned out to be. The crate's resolution says how the output
+ *  was spent, not by whom, so it reads differently per leg: an outgoing contract spent by
+ *  someone else ("discarded") is the router taking its payment. */
+function settled(r: RecoveredContract, swapReceived: boolean): { label: string; yours: boolean } {
+  if (r.resolution === "unresolved") return { label: "Unresolved", yours: false };
+  if (r.leg === "incoming") {
+    return r.resolution === "hashlock" || r.resolution === "key_path"
+      ? { label: "Claimed into your wallet", yours: true }
+      : { label: "Taken back by the router", yours: false };
+  }
+  if (r.resolution === "timelock") return { label: "Refunded to you", yours: true };
+  return r.resolution === "discarded" && !swapReceived
+    ? { label: "Never funded — nothing to reclaim", yours: false }
+    : { label: "Claimed by the router", yours: false };
+}
+
+function SettledRow({ contract, swapReceived }: { contract: RecoveredContract; swapReceived: boolean }) {
+  const outcome = settled(contract, swapReceived);
+  return (
+    <div className="flex items-center justify-between gap-3 py-3">
+      <span className="flex min-w-0 flex-col gap-1.5">
+        <Identifier value={contract.contractTxid} className="text-[12px] leading-[1.45] text-muted" />
+        <StatusChip tone={outcome.yours ? "success" : "subtle"} className="self-start">
+          {outcome.label}
+        </StatusChip>
+      </span>
+      {contract.spendingTxid && (
+        <span className="flex flex-none items-center gap-2">
+          <CopyButton text={contract.spendingTxid} />
+          <ExternalLinkButton txid={contract.spendingTxid} />
+        </span>
+      )}
+    </div>
+  );
+}
 
 function Stat({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -78,6 +107,27 @@ function LockProgress({ elapsed, total }: { elapsed: number; total: number }) {
 }
 
 function ContractRow({ contract }: { contract: RecoveryContract }) {
+  if (contract.routerOwed) {
+    return (
+      <div className="flex items-center justify-between gap-3 py-3">
+        <span className="flex min-w-0 flex-col gap-1.5">
+          <Identifier
+            value={`${contract.outpoint.txid}:${contract.outpoint.vout}`}
+            className="text-[12px] leading-[1.45] text-muted"
+          />
+          <StatusChip tone="subtle" className="self-start">
+            The router's payment — waiting for its claim
+          </StatusChip>
+        </span>
+        <span className="flex flex-none items-center gap-2">
+          <span className="font-numeric text-[12.5px] text-muted">
+            <SatsAmount sats={contract.amountSats} />
+          </span>
+          <ExternalLinkButton txid={contract.outpoint.txid} />
+        </span>
+      </div>
+    );
+  }
   const blocks = contract.blocksRemaining;
   const waiting = blocks !== undefined && blocks > 0;
   const total = contract.lockBlocks;
@@ -178,6 +228,7 @@ export function RecoveryPage() {
   // A finished recovery still has a story to tell — it is reachable from the history, where the
   // question is "what happened to that swap?", not "is anything outstanding?".
   if (status && !status.active && status.swapId) {
+    const refunded = status.resolved.some((r) => r.leg === "outgoing" && r.resolution === "timelock");
     return (
       <div className="h-full overflow-y-auto px-8 py-10">
         <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
@@ -188,11 +239,14 @@ export function RecoveryPage() {
             </span>
             <div>
               <h1 className="font-header text-[26px] font-bold text-foreground">
-                Recovered
+                {status.swapReceived ? "Swap completed" : "Recovered"}
               </h1>
               <p className="mt-1 max-w-2xl text-[13.5px] leading-6 text-muted">
-                This swap stopped after its funds were committed, and Portal has claimed every
-                contract back into your wallet. Nothing is outstanding.
+                {!status.swapReceived
+                  ? "This swap stopped after its funds were committed, and Portal has claimed every contract back into your wallet. Nothing is outstanding."
+                  : refunded
+                    ? "You received your swapped coins, and the router's payment came back to you because the router backed out of the swap. Nothing is outstanding."
+                    : "You received your swapped coins, and the router claimed its payment for routing them. Nothing is outstanding."}
               </p>
             </div>
           </div>
@@ -205,8 +259,11 @@ export function RecoveryPage() {
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <Stat label="Amount" value={<SatsAmount sats={status.sendAmountSats} />} />
               <Stat label="Routers" value={String(status.routerCount)} />
-              <Stat label="Contracts reclaimed" value={String(status.resolved.length)} />
-              <Stat label="Outcome" value={PHASE_LABEL[status.phase] ?? status.phase} />
+              <Stat label="Contracts settled" value={String(status.resolved.length)} />
+              <Stat
+                label="Outcome"
+                value={status.swapReceived ? "Completed" : (PHASE_LABEL[status.phase] ?? status.phase)}
+              />
             </div>
             {status.failureReason && (
               <div>
@@ -221,22 +278,15 @@ export function RecoveryPage() {
           {status.resolved.length > 0 && (
             <Card className="flex flex-col border-line-strong p-5">
               <h2 className="font-header text-[14px] font-bold text-foreground">
-                How each contract came back
+                How each contract settled
               </h2>
               <div className="mt-1 divide-y divide-line">
                 {status.resolved.map((c) => (
-                  <div
+                  <SettledRow
                     key={`${c.contractTxid}-${c.spendingTxid ?? ""}`}
-                    className="flex items-center justify-between gap-3 py-3"
-                  >
-                    <span className="flex min-w-0 flex-col gap-1.5">
-                      <Identifier value={c.contractTxid} className="text-[12px] leading-[1.45] text-muted" />
-                      <StatusChip tone="success" className="self-start">
-                        {RESOLUTION_LABEL[c.resolution] ?? c.resolution}
-                      </StatusChip>
-                    </span>
-                    {c.spendingTxid && <ExternalLinkButton txid={c.spendingTxid} />}
-                  </div>
+                    contract={c}
+                    swapReceived={status.swapReceived}
+                  />
                 ))}
               </div>
             </Card>
@@ -262,46 +312,69 @@ export function RecoveryPage() {
   }
 
   const blocks = status?.blocksRemaining;
-  // The pending list is sorted longest-wait-last, so the contract holding everything up is
-  // the one whose lock the headline should count against.
-  const longest = status?.pending?.[(status.pending.length ?? 1) - 1];
+  const pending = status?.pending ?? [];
+  const yours = pending.filter((c) => !c.routerOwed);
+  const routerOwed = pending.filter((c) => c.routerOwed);
+  // The swap went through and nothing of the user's own is left in a contract: all that remains
+  // is the router taking its payment, which Portal neither does nor can speed up.
+  const routerSide = status?.swapReceived === true && yours.length === 0;
+  // Router payments carry no lock, so they sort first and the contract holding everything up
+  // is still the last one.
+  const longest = pending[pending.length - 1];
   const lockTotal = longest?.lockBlocks;
   const lockElapsed =
     lockTotal !== undefined && blocks !== undefined ? Math.max(0, lockTotal - blocks) : undefined;
   // Nothing is counting down until the contracts confirm.
-  const unconfirmed = (status?.pending ?? []).filter((c) => c.confirmations === 0).length;
+  const unconfirmed = yours.filter((c) => c.confirmations === 0).length;
   const waiting = blocks !== undefined && blocks > 0;
-  const claimableNow = (status?.pending ?? []).filter(
+  const claimableNow = yours.filter(
     (c) => c.claimPath === "hashlock" || (c.blocksRemaining ?? 0) === 0,
   );
   const resolvedCount = status?.resolved.length ?? 0;
-  const pendingCount = status?.pending.length ?? 0;
+  const pendingCount = pending.length;
+  const routerSettled = status?.resolved.find(
+    (r) => r.leg === "outgoing" && r.resolution !== "unresolved",
+  );
 
   // The three things that actually happen, in order. Each state is read off the contracts rather
   // than a timer: the crate writes no progress until a claim lands.
-  const steps: { label: string; state: CheckState }[] = [
-    {
-      label: "Funds identified in their contracts",
-      state: pendingCount > 0 || resolvedCount > 0 ? "passed" : "running",
-    },
-    {
-      label: waiting
-        ? unconfirmed > 0
-          ? `Waiting for the contracts to confirm · the ${lockTotal ?? blocks}-block refund lock starts then`
-          : `Waiting out the refund lock · ${lockElapsed ?? 0} of ${lockTotal ?? blocks} blocks · ${formatBlockWait(blocks)} left`
-        : "Refund lock matured",
-      state: waiting ? "running" : pendingCount > 0 || resolvedCount > 0 ? "passed" : "idle",
-    },
-    {
-      label:
-        resolvedCount > 0 && pendingCount === 0
-          ? "Claimed back into your wallet"
-          : claimableNow.length > 0 && !waiting
-            ? "Broadcasting the claim transaction"
-            : "Claiming back into your wallet",
-      state: resolvedCount > 0 && pendingCount === 0 ? "passed" : waiting ? "idle" : "running",
-    },
-  ];
+  const steps: { label: string; state: CheckState }[] = routerSide
+    ? [
+        { label: "Swapped coins received in your wallet", state: "passed" },
+        routerOwed.length > 0
+          ? { label: "Waiting for the router to claim its payment", state: "running" }
+          : routerSettled?.resolution === "timelock"
+            ? { label: "Refunded to you — the router backed out of the swap", state: "passed" }
+            : routerSettled
+              ? { label: "The router claimed its payment", state: "passed" }
+              : // Spent, so gone from the wallet's coins, but the crate records it only once
+                // the spend confirms.
+                { label: "The router's claim is confirming", state: "running" },
+        { label: "Swap settled", state: routerSettled ? "running" : "idle" },
+      ]
+    : [
+        {
+          label: "Funds identified in their contracts",
+          state: pendingCount > 0 || resolvedCount > 0 ? "passed" : "running",
+        },
+        {
+          label: waiting
+            ? unconfirmed > 0
+              ? `Waiting for the contracts to confirm · the ${lockTotal ?? blocks}-block refund lock starts then`
+              : `Waiting out the refund lock · ${lockElapsed ?? 0} of ${lockTotal ?? blocks} blocks · ${formatBlockWait(blocks)} left`
+            : "Refund lock matured",
+          state: waiting ? "running" : pendingCount > 0 || resolvedCount > 0 ? "passed" : "idle",
+        },
+        {
+          label:
+            resolvedCount > 0 && yours.length === 0
+              ? "Claimed back into your wallet"
+              : claimableNow.length > 0 && !waiting
+                ? "Broadcasting the claim transaction"
+                : "Claiming back into your wallet",
+          state: resolvedCount > 0 && yours.length === 0 ? "passed" : waiting ? "idle" : "running",
+        },
+      ];
 
   return (
     <div className="h-full overflow-y-auto px-8 py-10">
@@ -310,16 +383,31 @@ export function RecoveryPage() {
 
         <div className="flex items-start gap-3">
           <span className="mt-0.5 grid h-10 w-10 flex-none place-items-center rounded-card border border-success/40 bg-success/[0.08] text-success">
-            <ShieldCheck size={20} strokeWidth={1.8} />
+            {routerSide ? (
+              <CheckCircle2 size={20} strokeWidth={1.8} />
+            ) : (
+              <ShieldCheck size={20} strokeWidth={1.8} />
+            )}
           </span>
           <div>
             <h1 className="font-header text-[26px] font-bold text-foreground">
-              Your funds are safe
+              {routerSide ? "Your swap went through" : "Your funds are safe"}
             </h1>
             <p className="mt-1 max-w-2xl text-[13.5px] leading-6 text-muted">
-              This swap stopped after its funds were already committed, so they are sitting in
-              Bitcoin contracts that <strong className="text-foreground">only you</strong> can
-              spend. Portal is claiming them back. Nothing here needs you to act.
+              {routerSide ? (
+                <>
+                  You received your swapped coins. What is left in a contract is{" "}
+                  <strong className="text-foreground">the router's payment</strong> for routing
+                  them, not your money: the router claims it with its own key, and Portal leaves
+                  it alone. Nothing here needs you to act.
+                </>
+              ) : (
+                <>
+                  This swap stopped after its funds were already committed, so they are sitting in
+                  Bitcoin contracts that <strong className="text-foreground">only you</strong> can
+                  spend. Portal is claiming them back. Nothing here needs you to act.
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -331,7 +419,8 @@ export function RecoveryPage() {
                 What happens next
               </h2>
               <p className="mt-1 text-[11.5px] leading-5 text-muted">
-                Portal retries every minute. This page follows it on its own.
+                {routerSide ? "Portal checks the chain" : "Portal retries"} every minute. This page
+                follows it on its own.
               </p>
             </div>
             <Checklist steps={steps} />
@@ -346,14 +435,26 @@ export function RecoveryPage() {
 
           <div className="flex flex-col gap-4">
             <Card className="flex flex-col gap-3 border-line-strong p-4.5">
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                  Held in contracts
-                </span>
-                <strong className="font-numeric text-[15px] text-foreground">
-                  <SatsAmount sats={status?.lockedSats ?? 0} />
-                </strong>
-              </div>
+              {!routerSide && (
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                    Yours, in contracts
+                  </span>
+                  <strong className="font-numeric text-[15px] text-foreground">
+                    <SatsAmount sats={status?.lockedSats ?? 0} />
+                  </strong>
+                </div>
+              )}
+              {(routerSide || (status?.routerOwedSats ?? 0) > 0) && (
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                    Router's payment
+                  </span>
+                  <strong className="font-numeric text-[15px] text-muted">
+                    {routerOwed.length > 0 ? <SatsAmount sats={status?.routerOwedSats ?? 0} /> : "Claimed"}
+                  </strong>
+                </div>
+              )}
               {waiting && (
                 <div className="flex flex-col gap-2 border-t border-line pt-3">
                   <div className="flex items-baseline justify-between gap-3">
@@ -387,21 +488,28 @@ export function RecoveryPage() {
             {/* The claim is signed with this wallet's key, so only Portal can make it — but it
                 is the maturing lock that gates it, not elapsed uptime. Telling the user to sit
                 through the whole wait would be both wrong and unusable at ten hours. */}
-            <Notice tone="warning" icon={<AlertTriangle size={16} strokeWidth={2} />}>
-              {waiting ? (
-                <>
-                  You don't have to wait here. Portal claims the funds itself, but only while it is
-                  running — so quit if you like and reopen it once the lock has matured
-                  {blocks !== undefined && ` (${formatBlockWait(blocks)})`}. The contracts are
-                  unaffected by anything that happens in between.
-                </>
-              ) : (
-                <>
-                  Leave Portal open while it claims. The claim transactions are signed here, so
-                  quitting pauses recovery until the next launch — the funds stay safe either way.
-                </>
-              )}
-            </Notice>
+            {routerSide ? (
+              <Notice tone="primary" icon={<ShieldCheck size={16} strokeWidth={2} />}>
+                Nothing to wait for here. The router claims its payment on its own, whether Portal
+                is open or not. Portal refunds it to you only if the router backs out of the swap.
+              </Notice>
+            ) : (
+              <Notice tone="warning" icon={<AlertTriangle size={16} strokeWidth={2} />}>
+                {waiting ? (
+                  <>
+                    You don't have to wait here. Portal claims the funds itself, but only while it is
+                    running — so quit if you like and reopen it once the lock has matured
+                    {blocks !== undefined && ` (${formatBlockWait(blocks)})`}. The contracts are
+                    unaffected by anything that happens in between.
+                  </>
+                ) : (
+                  <>
+                    Leave Portal open while it claims. The claim transactions are signed here, so
+                    quitting pauses recovery until the next launch — the funds stay safe either way.
+                  </>
+                )}
+              </Notice>
+            )}
 
             <Card className="flex flex-col gap-2.5 border-line-strong p-4.5">
               <p className="text-[12px] leading-5 text-muted">
@@ -422,7 +530,7 @@ export function RecoveryPage() {
           <header className="flex items-baseline gap-3 border-b border-line px-4.5 py-3.5">
             <h2 className="font-header text-[14px] font-bold text-foreground">Contracts</h2>
             <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-              {pendingCount} holding funds · {resolvedCount} claimed
+              {pendingCount} holding funds · {resolvedCount} settled
             </span>
           </header>
           <div className="flex flex-col divide-y divide-line px-4.5">
@@ -430,20 +538,7 @@ export function RecoveryPage() {
               <ContractRow key={`${c.outpoint.txid}:${c.outpoint.vout}`} contract={c} />
             ))}
             {(status?.resolved ?? []).map((r) => (
-              <div key={r.contractTxid} className="flex items-center justify-between gap-3 py-3">
-                <span className="flex min-w-0 flex-col gap-1.5">
-                  <Identifier value={r.contractTxid} className="text-[12px] leading-[1.45] text-muted" />
-                  <StatusChip tone="success" className="self-start">
-                    Claimed back
-                  </StatusChip>
-                </span>
-                {r.spendingTxid && (
-                  <span className="flex flex-none items-center gap-2">
-                    <CopyButton text={r.spendingTxid} />
-                    <ExternalLinkButton txid={r.spendingTxid} />
-                  </span>
-                )}
-              </div>
+              <SettledRow key={r.contractTxid} contract={r} swapReceived={status?.swapReceived ?? false} />
             ))}
             {pendingCount === 0 && resolvedCount === 0 && (
               <p className="py-5 text-[12px] text-subtle">
