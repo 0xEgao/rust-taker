@@ -312,6 +312,20 @@ impl Journal {
     /// Unresolved work that could actually conflict with a new spend from `wallet_id`. Empty
     /// is the normal case. A record with no wallet recorded
     /// conflicts with every wallet, since nothing says which one it spent from.
+    /// Whether a spend from this wallet is still being carried out. A browser that lost track of
+    /// one (a dropped status poll reads as a failure) must not be able to start a second beside
+    /// it, or pressing Send again pays twice.
+    pub fn spend_in_flight(&self, wallet_id: Option<&str>) -> bool {
+        let Ok(index) = self.index.lock() else {
+            return true;
+        };
+        index.values().any(|r| {
+            moves_funds(&r.kind)
+                && matches!(r.state, OperationState::Accepted | OperationState::Running)
+                && belongs_to(r, wallet_id)
+        })
+    }
+
     pub fn blocking_conflicts(&self, wallet_id: Option<&str>) -> Vec<OperationRecord> {
         let Ok(index) = self.index.lock() else {
             return Vec::new();
@@ -426,6 +440,19 @@ mod tests {
         assert!(j.admit(&id, "send", None, 1, &other).is_err());
         // A different operation kind under the same key is equally not a retry.
         assert!(j.admit(&id, "swap", None, 1, &request()).is_err());
+    }
+
+    #[test]
+    fn a_spend_still_running_counts_as_in_flight_until_it_settles() {
+        let j = Journal::default();
+        let send = key();
+        j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()).unwrap();
+        assert!(j.spend_in_flight(Some("w")));
+        j.mark_running(&send).unwrap();
+        assert!(j.spend_in_flight(Some("w")));
+        assert!(!j.spend_in_flight(Some("other")), "another wallet's spend does not conflict");
+        j.mark_succeeded(&send, serde_json::json!({ "txid": "abc" })).unwrap();
+        assert!(!j.spend_in_flight(Some("w")));
     }
 
     /// The lockout came from gating on operations that cannot conflict with a spend.

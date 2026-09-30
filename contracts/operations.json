@@ -291,6 +291,15 @@
       "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
     },
     {
+      "name": "estimate_send_fee",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Read-only coin selection and sizing for the send confirmation; builds no transaction."
+    },
+    {
       "name": "estimate_swap_funding",
       "executionClass": "read",
       "desktop": true,

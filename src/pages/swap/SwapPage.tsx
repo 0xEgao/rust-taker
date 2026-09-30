@@ -46,6 +46,7 @@ import {
   Disclosure,
   Identifier,
   LogViewer,
+  Notice,
   SatsAmount,
 } from "../../components/ui/display";
 import {
@@ -621,8 +622,6 @@ export function SwapPage() {
     !submitting &&
     !paymentsHeld;
 
-  // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
-  // dialog, bound to the authoritative prepared summary; there is no second renderer modal.
   // Only while `submitting`: this is the one window where the taker mutex is held by a call that
   // reports nothing, so the tracker file is the only progress signal there is.
   useEffect(() => {
@@ -788,6 +787,21 @@ export function SwapPage() {
               {phase === "failed" && "Swap Failed"}
             </h1>
           </div>
+
+          {phase === "running" && (
+            <Notice
+              tone="warning"
+              icon={<AlertTriangle size={20} strokeWidth={2} />}
+              className="mt-5"
+            >
+              <p className="text-[14px] font-bold text-warning">
+                Do not stop the app during the swap.
+              </p>
+              <p className="mt-1 text-muted">
+                If it stops or crashes, start it again as soon as you can.
+              </p>
+            </Notice>
+          )}
 
           <Card className="mt-5 flex flex-col gap-4 border-line-strong p-6">
             {routeKnown ? (

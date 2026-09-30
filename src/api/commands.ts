@@ -1,6 +1,7 @@
 import { invoke } from "./transport";
 import type {
   SwapPreparation,
+  SendFeeEstimate,
   WalletListing,
   AddressType,
   AddressValidation,
@@ -168,6 +169,15 @@ export function getTransactions(
 
 export function listUtxos(): Promise<UtxoEntry[]> {
   return invoke("list_utxos");
+}
+
+export function estimateSendFee(
+  address: string,
+  amountSats: number,
+  feeRate?: number,
+  outpoints?: Outpoint[],
+): Promise<SendFeeEstimate> {
+  return invoke("estimate_send_fee", { address, amountSats, feeRate, outpoints });
 }
 
 export function sendToAddress(

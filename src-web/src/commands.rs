@@ -101,6 +101,21 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::taker_wallet::estimate_fees().await?)
         })
     }),
+    op("estimate_send_fee", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+            address: String,
+            amount_sats: u64,
+            fee_rate: Option<f64>,
+            outpoints: Option<Vec<Outpoint>>,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::taker_wallet::estimate_send_fee(&*ctx.taker()?, body.address, body.amount_sats, body.fee_rate, body.outpoints).await?)
+        })
+    }),
     op("estimate_swap_funding", false, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {

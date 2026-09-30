@@ -3,6 +3,7 @@
 
 import { AlertCircle, CheckCircle2, CircleHelp, XCircle, type LucideIcon } from "lucide-react";
 import type { SwapStatus } from "../api/types";
+import { chainName, useConnectionStore } from "../store/connection";
 
 export function truncateMiddle(value: string, start = 12, end = 8): string {
   if (!value || value.length <= start + end + 1) return value;
@@ -67,16 +68,28 @@ export function getTransactionKind(category: string, label: string | undefined, 
   return amountSats >= 0 ? "received" : "sent";
 }
 
-export const EXPLORER_BASE_URL = "https://mempool.citadelfoss.xyz";
+const PORTAL_SIGNET_EXPLORER = "https://mempool.citadelfoss.xyz";
+const PUBLIC_EXPLORERS: Record<string, string> = {
+  bitcoin: "https://mempool.space",
+  testnet: "https://mempool.space/testnet",
+  testnet4: "https://mempool.space/testnet4",
+};
+
+/** Read when the link is opened, from the chain this session is connected to: our signet
+ *  explorer knows nothing about mainnet, and looking a txid up there hands it to our server. */
+function explorerBase(): string {
+  const chain = chainName(useConnectionStore.getState().status);
+  return (chain && PUBLIC_EXPLORERS[chain]) || PORTAL_SIGNET_EXPLORER;
+}
 
 export function explorerTxUrl(txid: string): string {
-  return `${EXPLORER_BASE_URL}/tx/${encodeURIComponent(txid)}`;
+  return `${explorerBase()}/tx/${encodeURIComponent(txid)}`;
 }
 
 /** The address page, which lists every transaction that ever touched a coin — what you want
  *  when the row you clicked is a UTXO rather than the transaction that created it. */
 export function explorerAddressUrl(address: string): string {
-  return `${EXPLORER_BASE_URL}/address/${encodeURIComponent(address)}`;
+  return `${explorerBase()}/address/${encodeURIComponent(address)}`;
 }
 
 // ---------------------------------------------------------------------------

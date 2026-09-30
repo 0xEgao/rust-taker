@@ -187,6 +187,18 @@ pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
 }
 
 #[tauri::command]
+pub async fn estimate_send_fee(
+    state: tauri::State<'_, Arc<AppState>>,
+    address: String,
+    amount_sats: u64,
+    fee_rate: Option<f64>,
+    outpoints: Option<Vec<Outpoint>>,
+) -> Result<portal_core::types::SendFeeEstimate, AppError> {
+    taker_wallet::estimate_send_fee(&*desktop_taker(&state)?, address, amount_sats, fee_rate, outpoints)
+        .await
+}
+
+#[tauri::command]
 pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
     taker_wallet::get_btc_price().await
 }

@@ -307,6 +307,14 @@ export interface OfferBookView {
 // Router operations
 // ---------------------------------------------------------------------------
 
+/** The mining fee a send would pay, sized from the coins it would spend. An upper bound: it
+ *  assumes a change output. */
+export interface SendFeeEstimate {
+  feeSats: number;
+  vsize: number;
+  inputs: number;
+}
+
 /** A wallet in the picker. `network` is absent until Portal can tell, and `"test"` when all it
  *  knows is that the wallet is on some test network. */
 export interface WalletListing {

@@ -2,10 +2,10 @@ import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } f
 import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { estimateFees, estimateSendFee, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
-import type { AddressType, Balances, FeeEstimate, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
+import type { AddressType, Balances, FeeEstimate, Outpoint, SendFeeEstimate, TxSummary, UtxoEntry } from "../../api/types";
 import { Card, Identifier, Modal, SatsAmount } from "../../components/ui/display";
 import { Button, PresetTile, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import {
@@ -26,7 +26,6 @@ import { copyText } from "../../lib/clipboard";
 /** Fixed, always-distinct choices. The mempool quote informs the hint below them, not the tiles
  *  themselves — API-derived tiers collapse to the same number on a quiet mempool. */
 const FEE_PRESETS = [1, 2, 3] as const;
-const MAX_PRESET = FEE_PRESETS[FEE_PRESETS.length - 1];
 
 type FeeKey = (typeof FEE_PRESETS)[number] | "custom";
 
@@ -52,6 +51,8 @@ function SendPanel() {
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [sending, setSending] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [sendFee, setSendFee] = useState<SendFeeEstimate | null>(null);
+  const [sendFeeError, setSendFeeError] = useState<string | null>(null);
   const recordSend = usePendingSendsStore((s) => s.record);
 
   const load = useCallback(async () => {
@@ -113,6 +114,24 @@ function SendPanel() {
     [feeKey, customFeeRate],
   );
 
+  // The mempool quote is the default — as a preset when it is one, as Custom otherwise — until
+  // the user picks a rate themselves.
+  const feeTouched = useRef(false);
+  useEffect(() => {
+    if (mempoolRate === null || feeTouched.current) return;
+    const preset = FEE_PRESETS.find((rate) => rate === mempoolRate);
+    if (preset !== undefined) {
+      setFeeKey(preset);
+    } else {
+      setFeeKey("custom");
+      setCustomFeeRate(String(mempoolRate));
+    }
+  }, [mempoolRate]);
+  function chooseFee(key: FeeKey) {
+    feeTouched.current = true;
+    setFeeKey(key);
+  }
+
   const spendableUtxos = useMemo(() => utxos.filter((u) => u.spendable && u.solvable), [utxos]);
   const selectedTotal = useMemo(() => {
     const set = new Set(selectedOutpoints.map((o) => `${o.txid}:${o.vout}`));
@@ -129,6 +148,34 @@ function SendPanel() {
   }
 
   const amountError = amountInput.length > 0 && amountSats <= 0 ? "Enter a valid amount." : undefined;
+
+  // Priced when the confirmation opens, from the coins the send would actually spend: the rate
+  // alone hides what a typo like 2000 for 20 costs.
+  useEffect(() => {
+    if (!confirming) return;
+    let live = true;
+    setSendFee(null);
+    setSendFeeError(null);
+    estimateSendFee(
+      recipient.trim(),
+      amountSats,
+      feeRate,
+      selectedOutpoints.length > 0 ? selectedOutpoints : undefined,
+    )
+      .then((estimate) => live && setSendFee(estimate))
+      .catch((e) => live && setSendFeeError(isAppError(e) ? e.message : "Could not work out the fee."));
+    return () => {
+      live = false;
+    };
+  }, [confirming, recipient, amountSats, feeRate, selectedOutpoints]);
+  const feeWarning =
+    sendFee === null
+      ? null
+      : sendFee.feeSats > amountSats / 10
+        ? `This fee is ${Math.round((sendFee.feeSats / amountSats) * 100)}% of the amount you are sending.`
+        : fees !== null && feeRate > fees.high * 3
+          ? `This rate is ${Math.round(feeRate / fees.high)}× what the mempool is asking right now.`
+          : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -302,14 +349,14 @@ function SendPanel() {
           {FEE_PRESETS.map((rate) => (
             <PresetTile
               key={rate}
-              onClick={() => setFeeKey(rate)}
+              onClick={() => chooseFee(rate)}
               selected={feeKey === rate}
               label={`${rate} s/vB`}
               size="sm"
             />
           ))}
           <PresetTile
-            onClick={() => setFeeKey("custom")}
+            onClick={() => chooseFee("custom")}
             selected={feeKey === "custom"}
             label="Custom"
             size="sm"
@@ -318,9 +365,9 @@ function SendPanel() {
         {/* The presets cover a normal mempool; this is the line that tells you when it isn't one,
             so a spike doesn't silently leave every preset too low to confirm. */}
         {mempoolRate !== null && (
-          <p className={`text-[11.5px] ${mempoolRate > MAX_PRESET ? "text-warning" : "text-subtle"}`}>
-            {mempoolRate > MAX_PRESET
-              ? `The mempool is asking about ${mempoolRate} s/vB — use Custom, or these will be slow to confirm.`
+          <p className={`text-[11.5px] ${feeRate < mempoolRate ? "text-warning" : "text-subtle"}`}>
+            {feeRate < mempoolRate
+              ? `The mempool is asking about ${mempoolRate} s/vB — this rate will be slow to confirm.`
               : `Mempool right now: ${mempoolRate} s/vB.`}
           </p>
         )}
@@ -338,7 +385,10 @@ function SendPanel() {
             inputMode="decimal"
             placeholder="e.g. 8"
             value={customFeeRate}
-            onChange={(e) => setCustomFeeRate(e.target.value)}
+            onChange={(e) => {
+              feeTouched.current = true;
+              setCustomFeeRate(e.target.value);
+            }}
           />
         )}
       </div>
@@ -429,6 +479,26 @@ function SendPanel() {
               </span>
             </span>
             <span className="flex items-baseline justify-between gap-3">
+              <span className="text-[12px] text-muted">Network fee</span>
+              <span className="font-numeric text-[12.5px] text-foreground">
+                {sendFee ? (
+                  <SatsAmount sats={sendFee.feeSats} />
+                ) : sendFeeError ? (
+                  <span className="text-danger">{sendFeeError}</span>
+                ) : (
+                  "Working it out…"
+                )}
+              </span>
+            </span>
+            {sendFee && (
+              <span className="flex items-baseline justify-between gap-3 border-t border-line pt-2.5">
+                <span className="text-[12px] text-muted">Total</span>
+                <strong className="font-numeric text-[13.5px] text-foreground">
+                  <SatsAmount sats={amountSats + sendFee.feeSats} />
+                </strong>
+              </span>
+            )}
+            <span className="flex items-baseline justify-between gap-3">
               <span className="text-[12px] text-muted">Inputs</span>
               <span className="text-[12.5px] text-foreground">
                 {selectedOutpoints.length > 0
@@ -437,8 +507,10 @@ function SendPanel() {
               </span>
             </span>
           </div>
+          {feeWarning && <p className="text-[11.5px] leading-5 text-warning">{feeWarning}</p>}
           <p className="text-[11.5px] leading-5 text-subtle">
-            The wallet builds the final network fee from this rate. Broadcasting cannot be undone.
+            The network fee is the most this payment pays; with no change left over it pays a
+            little less. Broadcasting cannot be undone.
           </p>
         </Modal>
       )}

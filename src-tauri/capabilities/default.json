@@ -15,6 +15,9 @@
           "url": "https://mempool.citadelfoss.xyz/*"
         },
         {
+          "url": "https://mempool.space/*"
+        },
+        {
           "url": "https://github.com/citadel-tech/coinswap/*"
         },
         {
@@ -38,6 +41,7 @@
     "allow-choose-restore-backup",
     "allow-clear-maker-settings",
     "allow-estimate-fees",
+    "allow-estimate-send-fee",
     "allow-estimate-swap-funding",
     "allow-get-balances",
     "allow-get-btc-price",

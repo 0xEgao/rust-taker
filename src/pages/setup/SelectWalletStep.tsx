@@ -262,7 +262,9 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       }));
       setFailure({
         message:
-          wrongPassword ? "Incorrect password. Try again." : (err?.message ?? "Something went wrong."),
+          wrongPassword
+            ? `Incorrect ${wallet.mode === "restore" ? "backup " : ""}password. Try again.`
+            : (err?.message ?? "Something went wrong."),
       });
     }
   }

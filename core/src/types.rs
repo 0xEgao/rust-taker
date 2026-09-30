@@ -916,6 +916,15 @@ pub enum MakerPhase {
     },
 }
 
+/// The mining fee a send would pay, before it is broadcast.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFeeEstimate {
+    pub fee_sats: u64,
+    pub vsize: u64,
+    pub inputs: usize,
+}
+
 /// A wallet in the picker. `network` is `None` until Portal can tell, and `"test"` when all it
 /// knows is that the wallet is on some test network.
 #[derive(Debug, Clone, serde::Serialize)]

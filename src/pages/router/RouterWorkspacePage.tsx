@@ -23,6 +23,8 @@ import {
 import {
   checkTor,
   clearRouterSettings,
+  estimateFees,
+  getBtcPrice,
   getRouterBalances,
   getRouterInfo,
   getRouterLogs,
@@ -39,6 +41,7 @@ import {
 } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type {
+  FeeEstimate,
   AddressType,
   Balances,
   FidelityBond,
@@ -68,7 +71,13 @@ import {
   SummaryRow,
 } from "../../components/ui/inputs";
 import { copyText } from "../../lib/clipboard";
-import { formatRelativeTime } from "../../lib/wallet-format";
+import {
+  formatRelativeTime,
+  formatUnitAmount,
+  satsToUnitString,
+  unitStringToSats,
+  type Unit,
+} from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { LogPanel } from "../../components/app/LogPanel";
 import { FaucetButton } from "../../components/app/FaucetButton";
@@ -377,11 +386,44 @@ function RouterSendPanel({
   const [amount, setAmount] = useState("");
   const [feeRate, setFeeRate] = useState("2");
   const [sending, setSending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [unit, setUnit] = useState<Unit>("sats");
+  const [btcPrice, setBtcPrice] = useState<number | null>(null);
+  const [btcPriceCached, setBtcPriceCached] = useState(false);
+
+  const [fees, setFees] = useState<FeeEstimate | null>(null);
+  const feeTouched = useRef(false);
+
+  // Best-effort, as on the wallet's Send: without a price only the USD option is unavailable,
+  // and without a mempool quote only the hint and the default.
+  useEffect(() => {
+    void getBtcPrice()
+      .then((p) => {
+        setBtcPrice(p.usd);
+        setBtcPriceCached(p.cached);
+      })
+      .catch(() => setBtcPrice(null));
+    void estimateFees()
+      .then(setFees)
+      .catch(() => setFees(null));
+  }, []);
+  // The wallet's Send rounds the quote the same way: the midpoint, in whole sats/vB.
+  const mempoolRate = fees === null ? null : Math.round((fees.low + fees.high) / 2);
+  // The default until the user edits the rate, as on the wallet's Send.
+  useEffect(() => {
+    if (mempoolRate !== null && !feeTouched.current) setFeeRate(String(mempoolRate));
+  }, [mempoolRate]);
+
+  function changeUnit(next: Unit) {
+    setAmount(satsToUnitString(unitStringToSats(amount, unit, btcPrice), next, btcPrice));
+    setUnit(next);
+  }
 
   const spendable = utxos
     .filter((u) => u.spendable && u.solvable)
     .reduce((sum, u) => sum + u.amountSats, 0);
-  const amountSats = Math.floor(Number(amount)) || 0;
+  const amountSats = unitStringToSats(amount, unit, btcPrice);
+  const otherUnits = (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit);
   const rate = Number(feeRate);
   const blocked =
     recipient.trim().length === 0 ||
@@ -391,6 +433,7 @@ function RouterSendPanel({
     rate <= 0;
 
   async function send() {
+    setConfirming(false);
     setSending(true);
     try {
       const { txid } = await sendRouterToAddress(routerId, recipient.trim(), amountSats, rate);
@@ -424,26 +467,98 @@ function RouterSendPanel({
           autoComplete="off"
           spellCheck={false}
         />
-        <div className="grid grid-cols-[1fr_110px] gap-3">
+        <div className="grid grid-cols-[1fr_auto] items-end gap-3">
           <TextField
             label="Amount"
-            inputMode="numeric"
+            inputMode="decimal"
             placeholder="0"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             error={amountSats > spendable ? "More than this wallet holds." : undefined}
           />
-          <TextField
-            label="s/vB"
-            inputMode="decimal"
-            value={feeRate}
-            onChange={(e) => setFeeRate(e.target.value)}
+          <SegmentedToggle
+            groupId="router-send-unit"
+            value={unit}
+            onChange={changeUnit}
+            options={[
+              { value: "sats", label: "sats" },
+              { value: "btc", label: "BTC" },
+              {
+                value: "usd",
+                label: "USD",
+                disabled: btcPrice === null,
+                title:
+                  btcPrice === null
+                    ? "BTC price unavailable"
+                    : btcPriceCached
+                      ? "Using the last saved BTC price because the live update failed"
+                      : undefined,
+              },
+            ]}
           />
         </div>
-        <Button className="w-full" disabled={blocked} loading={sending} onClick={() => void send()}>
+        {amountSats > 0 && (
+          <div className="-mt-1.5 flex items-center justify-between px-1 text-[11px] text-subtle">
+            <span>{formatUnitAmount(amountSats, otherUnits[0], btcPrice) ?? "—"}</span>
+            <span>{formatUnitAmount(amountSats, otherUnits[1], btcPrice) ?? "—"}</span>
+          </div>
+        )}
+        <TextField
+          label="Fee rate (s/vB)"
+          inputMode="decimal"
+          value={feeRate}
+          onChange={(e) => {
+            feeTouched.current = true;
+            setFeeRate(e.target.value);
+          }}
+          hint={mempoolRate !== null ? `Mempool right now: ${mempoolRate} s/vB.` : undefined}
+        />
+        <Button className="w-full" disabled={blocked} loading={sending} onClick={() => setConfirming(true)}>
           Send
         </Button>
       </div>
+      {confirming && (
+        <Modal
+          title="Confirm this payment"
+          onClose={() => setConfirming(false)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+              <Button onClick={() => void send()} loading={sending}>
+                Broadcast
+              </Button>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-2.5 rounded-control border border-line bg-surface-raised px-3.5 py-3">
+            <span className="flex flex-col gap-1">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">To</span>
+              <span className="break-all font-mono text-[12px] text-foreground">{recipient.trim()}</span>
+            </span>
+            <span className="flex items-baseline justify-between gap-3 border-t border-line pt-2.5">
+              <span className="text-[12px] text-muted">Amount</span>
+              <strong className="font-numeric text-[13.5px] text-foreground">
+                <SatsAmount sats={amountSats} />
+              </strong>
+            </span>
+            <span className="flex items-baseline justify-between gap-3">
+              <span className="text-[12px] text-muted">Fee rate</span>
+              <span className="font-numeric text-[12.5px] text-foreground">{rate} s/vB</span>
+            </span>
+          </div>
+          {(fees ? rate > fees.high * 3 : rate > 100) && (
+            <p className="text-[11.5px] leading-5 text-warning">
+              {fees
+                ? `This rate is ${Math.round(rate / fees.high)}× what the mempool is asking right now.`
+                : `${rate} s/vB is far above a normal rate.`}{" "}
+              Check it before broadcasting.
+            </p>
+          )}
+          <p className="text-[11.5px] leading-5 text-subtle">Broadcasting cannot be undone.</p>
+        </Modal>
+      )}
     </Card>
   );
 }
@@ -1215,8 +1330,9 @@ function SettingsPanel({
         >
           <p className="text-[12px] leading-5 text-muted">
             This removes <strong className="text-foreground">{displayName}</strong>{" "}
-            from the app, permanently — it will not reappear. Its wallet file
-            and anything on-chain are left untouched.
+            from the app. Its wallet file and anything on-chain are left untouched:
+            to bring it back, add a router with the same router ID and its wallet
+            password.
           </p>
         </Modal>
       )}

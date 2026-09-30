@@ -168,27 +168,29 @@ async fn construct_server(
 
 /// Unwinds a failed `init_maker` so the attempt can be retried.
 ///
-/// `init_maker` proves the wallet file is absent before `MakerServer::init` runs, so anything
-/// at that path afterwards was created by this attempt — `MakerServer::init` goes through
+/// `created` is the wallet this attempt made, if it made one: `MakerServer::init` goes through
 /// `Wallet::load_or_init` and can create the wallet before a later step (sync, watch service,
-/// report load) fails. Leaving it behind would make the pre-existence check reject every
-/// retry of the same wallet name, and no command can register an already-created wallet.
+/// report load) fails, and leaving it behind would reject every retry of the same name. A
+/// wallet that was already there — a removed router being registered again — is `None`, and
+/// is never touched: it holds that router's funds and bond.
 fn abort_failed_creation(
     state: &AppState,
     router_id: &str,
-    wallet_file: &Path,
+    created: Option<&Path>,
     error: &AppError,
 ) -> Result<(), AppError> {
-    match std::fs::remove_file(wallet_file) {
-        Ok(()) => log::info!(
-            "removed wallet from failed maker creation: {}",
-            wallet_file.display()
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => log::warn!(
-            "could not remove wallet from failed maker creation {}: {e}",
-            wallet_file.display()
-        ),
+    if let Some(wallet_file) = created {
+        match std::fs::remove_file(wallet_file) {
+            Ok(()) => log::info!(
+                "removed wallet from failed maker creation: {}",
+                wallet_file.display()
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log::warn!(
+                "could not remove wallet from failed maker creation {}: {e}",
+                wallet_file.display()
+            ),
+        }
     }
     state.makers.lock()?.remove(router_id);
     crate::logging::unregister_maker(router_id);
@@ -292,18 +294,19 @@ pub async fn init_maker(
     crate::security::fs::ensure_private_dir(&data_dir.join("wallets"))?;
     ensure_unique_registration(&router_id, &data_dir, config.network_port, config.rpc_port)?;
     // `ensure_unique_registration` has already ruled out a registration for this ID or data
-    // directory, so a wallet sitting here has none — and nothing can register an existing one.
+    // directory, so a wallet sitting here belongs to a router that was removed. Registering it
+    // again — only with the password that opens it — brings back its funds and bond.
     let wallet_file = wallet_path(&data_dir, &config.wallet_name);
-    if wallet_file.exists() {
-        return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "a wallet named '{}' already exists in this data directory — choose a different \
-                 wallet name or data directory",
-                config.wallet_name
-            ),
-        ));
+    let readding = wallet_file.exists();
+    if readding {
+        let (path, password) = (wallet_file.clone(), password.to_string());
+        tokio::task::spawn_blocking(move || {
+            crate::ops::taker_wallet::verify_wallet_password(&path, Some(password))
+        })
+        .await
+        .map_err(AppError::internal)??;
     }
+    let created = (!readding).then_some(wallet_file.as_path());
 
     let settings = MakerSettingsDto::from_init(&config, &data_dir);
     {
@@ -341,7 +344,7 @@ pub async fn init_maker(
     let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
-            abort_failed_creation(state, &router_id, &wallet_file, &error)?;
+            abort_failed_creation(state, &router_id, created, &error)?;
             return Err(error);
         }
     };
@@ -350,7 +353,7 @@ pub async fn init_maker(
     {
         server.watch_service.shutdown();
         drop(server);
-        abort_failed_creation(state, &router_id, &wallet_file, &error)?;
+        abort_failed_creation(state, &router_id, created, &error)?;
         return Err(error);
     }
     // `MakerServer::init` is the crate's only wallet create/load API and starts

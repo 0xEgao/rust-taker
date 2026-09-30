@@ -51,6 +51,7 @@ fn main() {
         "send_to_address",
         "sync_wallet",
         "estimate_fees",
+        "estimate_send_fee",
         "get_btc_price",
         "get_offers",
         "sync_offerbook",

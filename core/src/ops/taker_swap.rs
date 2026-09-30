@@ -9,7 +9,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use std::str::FromStr;
-use std::time::SystemTime;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use openswap::bitcoin::{Address, Amount, OutPoint, Txid};
 use openswap::protocol::ProtocolVersion;
@@ -18,7 +19,9 @@ use openswap::taker::swap_tracker::{
     RecoveryPhase, SwapPhase, SwapRecord, SwapTracker, TaprootExchangeProgress,
 };
 use openswap::taker::{SwapParams, SwapSummary};
-use openswap::utill::{funding_fee_policy_sats, sweep_fee_policy_sats, MAX_TX_COUNT};
+use openswap::utill::{
+    funding_fee_policy_sats, sweep_fee_policy_sats, MAX_TX_COUNT, MIN_RELAY_FEE_RATE,
+};
 use openswap::wallet::{AnyBlockchain, Blockchain, UTXOSpendInfo};
 use crate::events::AppEvent;
 
@@ -217,7 +220,52 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
 /// Every route figure is the ceiling `prepare_swap` will quote — the crate prices a hop at the
 /// full `max_input_budget` on every one of `tx_count` splits — so the settled cost can only
 /// come in under it. The fee rate, split count and input budget all come from `SwapParams`
-/// rather than being restated here, since `prepare_swap` sends it the same defaults.
+/// rather than being restated here, since `prepare_swap` builds it the same way.
+/// Blocks a swap's own transactions are priced to confirm within. The last hop's refund lock is
+/// only 20 blocks past its contract, so they have to clear well inside that.
+const SWAP_CONF_TARGET: u16 = 2;
+/// Ceiling on an estimate: it comes from the chain server, and a wrong or hostile one must not be
+/// able to spend a swap's coins on mining fees.
+const MAX_SWAP_FEERATE: u64 = 250;
+/// The Swap page re-quotes on every edit; one estimate serves them for this long.
+const SWAP_FEERATE_TTL: Duration = Duration::from_secs(60);
+static SWAP_FEERATE: Mutex<Option<(String, Instant, u64)>> = Mutex::new(None);
+
+/// What a swap pays per vbyte. Left unset, the crate prices every swap transaction at the 1 sat/vB
+/// relay floor. Taken from the wallet's own chain server, so it is right for the network — a
+/// public fee API quotes mainnet even on signet — and from mempool.space only when the server has
+/// no estimate.
+async fn swap_feerate(taker: &TakerInstance) -> Result<u64, AppError> {
+    let fingerprint =
+        crate::ops::chain_backend::fingerprint(&taker.chain_backend, Some(taker.socks_port));
+    if let Some((_, _, rate)) = SWAP_FEERATE
+        .lock()?
+        .as_ref()
+        .filter(|(cached, at, _)| *cached == fingerprint && at.elapsed() < SWAP_FEERATE_TTL)
+    {
+        return Ok(*rate);
+    }
+    let (config, wallet_name, socks_port) =
+        (taker.chain_backend.clone(), taker.wallet_name.clone(), taker.socks_port);
+    let from_server = tokio::task::spawn_blocking(move || {
+        let backend =
+            crate::ops::chain_backend::resolve_from(&config, &wallet_name, Some(socks_port)).ok()?;
+        AnyBlockchain::from_config(&backend)
+            .ok()?
+            .estimate_feerate(SWAP_CONF_TARGET)
+            .ok()
+    })
+    .await
+    .map_err(AppError::internal)?;
+    let estimate = match from_server {
+        Some(rate) => rate,
+        None => crate::ops::taker_wallet::estimate_fees().await?.high,
+    };
+    let rate = (estimate.ceil() as u64).clamp(MIN_RELAY_FEE_RATE as u64, MAX_SWAP_FEERATE);
+    *SWAP_FEERATE.lock()? = Some((fingerprint, Instant::now(), rate));
+    Ok(rate)
+}
+
 pub async fn estimate_swap_funding(
     taker: &TakerInstance,
     amount_sats: u64,
@@ -231,7 +279,8 @@ pub async fn estimate_swap_funding(
         ProtocolVersionDto::Taproot => ProtocolVersion::Taproot,
     };
     // Only the fee defaults are read off this; the hop count never reaches a quote.
-    let mut params = SwapParams::new(protocol, Amount::from_sat(amount_sats), 2);
+    let mut params = SwapParams::new(protocol, Amount::from_sat(amount_sats), 2)
+        .with_feerate(swap_feerate(taker).await?);
     if let Some(count) = tx_count {
         params = params.with_tx_count(validate_tx_count(count)?);
     }
@@ -349,7 +398,8 @@ pub async fn prepare_swap(
         protocol,
         Amount::from_sat(request.amount_sats),
         request.router_count,
-    );
+    )
+    .with_feerate(swap_feerate(instance).await?);
     if let Some(outpoints) = request.outpoints {
         let converted = outpoints
             .into_iter()

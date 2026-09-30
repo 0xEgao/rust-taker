@@ -339,11 +339,13 @@ async fn session(
     State(state): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let caller = authenticate(&state, &headers)?;
+    authenticate(&state, &headers)?;
     let body = Json(json!({
         "installationId": state.installation_id,
         "runtimeId": state.runtime_id,
-        "csrfToken": caller.csrf,
+        // No `csrfToken`: only a login hands it out. On a shared host (Umbrel) the session
+        // cookie reaches every app, and a token readable with the cookie alone would let any of
+        // them make changes as the owner.
         "capabilities": {
             "nativeFilePicker": false,
             "canQuit": false,
@@ -443,6 +445,16 @@ async fn durable(
                 "blocking": blocking.iter().map(|r| &r.operation_id).collect::<Vec<_>>(),
             }));
             return Err(ApiError(StatusCode::CONFLICT, error));
+        }
+        if state.journal.spend_in_flight(wallet_id.as_deref()) {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                AppError::new(
+                    ErrorCode::SwapInProgress,
+                    "A payment from this wallet is still going through. Wait for it to finish \
+                     before spending again.",
+                ),
+            ));
         }
     }
 

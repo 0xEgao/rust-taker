@@ -129,6 +129,7 @@ pub fn run() {
             taker_wallet::send_to_address,
             taker_wallet::sync_wallet,
             taker_wallet::estimate_fees,
+            taker_wallet::estimate_send_fee,
             taker_wallet::get_btc_price,
             // market / offerbook
             market::get_offers,
