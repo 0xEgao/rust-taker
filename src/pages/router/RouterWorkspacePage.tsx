@@ -74,9 +74,8 @@ import { copyText } from "../../lib/clipboard";
 import {
   formatRelativeTime,
   formatUnitAmount,
-  satsToUnitString,
-  unitStringToSats,
   type Unit,
+  useUnitAmount,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { LogPanel } from "../../components/app/LogPanel";
@@ -383,12 +382,12 @@ function RouterSendPanel({
 }) {
   const pushToast = useToastStore((state) => state.push);
   const [recipient, setRecipient] = useState("");
-  const [amount, setAmount] = useState("");
   const [feeRate, setFeeRate] = useState("2");
   const [sending, setSending] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [unit, setUnit] = useState<Unit>("sats");
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
+  const { unit, input: amount, setInput: setAmount, changeUnit, sats: amountSats } =
+    useUnitAmount(btcPrice);
   const [btcPriceCached, setBtcPriceCached] = useState(false);
 
   const [fees, setFees] = useState<FeeEstimate | null>(null);
@@ -414,15 +413,9 @@ function RouterSendPanel({
     if (mempoolRate !== null && !feeTouched.current) setFeeRate(String(mempoolRate));
   }, [mempoolRate]);
 
-  function changeUnit(next: Unit) {
-    setAmount(satsToUnitString(unitStringToSats(amount, unit, btcPrice), next, btcPrice));
-    setUnit(next);
-  }
-
   const spendable = utxos
     .filter((u) => u.spendable && u.solvable)
     .reduce((sum, u) => sum + u.amountSats, 0);
-  const amountSats = unitStringToSats(amount, unit, btcPrice);
   const otherUnits = (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit);
   const rate = Number(feeRate);
   const blocked =
@@ -548,9 +541,9 @@ function RouterSendPanel({
               <span className="font-numeric text-[12.5px] text-foreground">{rate} s/vB</span>
             </span>
           </div>
-          {(fees ? rate > fees.high * 3 : rate > 100) && (
+          {(fees && fees.high > 0 ? rate > fees.high * 3 : rate > 100) && (
             <p className="text-[11.5px] leading-5 text-warning">
-              {fees
+              {fees && fees.high > 0
                 ? `This rate is ${Math.round(rate / fees.high)}× what the mempool is asking right now.`
                 : `${rate} s/vB is far above a normal rate.`}{" "}
               Check it before broadcasting.

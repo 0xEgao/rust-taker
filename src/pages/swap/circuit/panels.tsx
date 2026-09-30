@@ -8,7 +8,8 @@ import { EDGE_STAGE_LABEL, type CircuitView } from "./useSwapCircuit";
  *  host like every other explorer link. */
 export function openInBrowser(e: { preventDefault: () => void }, txid: string) {
   e.preventDefault();
-  void openExternal(explorerTxUrl(txid));
+  const url = explorerTxUrl(txid);
+  if (url) void openExternal(url);
 }
 
 /**
@@ -88,7 +89,7 @@ export function NowPanel({ view }: { view: CircuitView }) {
       {edge?.txids.map((txid) => (
         <a
           key={txid}
-          href={explorerTxUrl(txid)}
+          href={explorerTxUrl(txid) ?? undefined}
           onClick={(e) => openInBrowser(e, txid)}
           className="mt-1 block break-all font-mono text-[10px] text-primary underline decoration-dotted"
         >

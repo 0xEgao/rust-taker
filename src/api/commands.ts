@@ -343,6 +343,10 @@ export function startSwap(swapId: string): Promise<void> {
   return invoke("start_swap", { swapId });
 }
 
+export function cancelSwap(swapId: string): Promise<void> {
+  return invoke("cancel_swap", { swapId });
+}
+
 export function getSwapProgress(): Promise<SwapProgress | null> {
   return invoke("get_swap_progress");
 }

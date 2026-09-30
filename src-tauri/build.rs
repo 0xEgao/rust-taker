@@ -60,6 +60,7 @@ fn main() {
         "prepare_swap",
         "estimate_swap_funding",
         "start_swap",
+        "cancel_swap",
         "get_swap_progress",
         "get_swap_tracker",
         "get_swap_preparation",

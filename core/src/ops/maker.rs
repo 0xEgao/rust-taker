@@ -121,12 +121,12 @@ pub fn router_defaults() -> crate::types::RouterDefaultsDto {
 }
 
 fn build_config(
-    session: &str,
+    chain: &crate::types::ChainBackendConfig,
     config: MakerInitConfig,
     data_dir: PathBuf,
 ) -> Result<MakerServerConfig, AppError> {
     let tor = crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
-    let backend = chain_backend::resolve(session, &config.wallet_name, Some(tor.socks_port))?;
+    let backend = chain_backend::resolve_from(chain, &config.wallet_name, Some(tor.socks_port))?;
     Ok(MakerServerConfig {
         data_dir,
         name: config.name,
@@ -157,12 +157,15 @@ async fn construct_server(
     let socks_port = crate::tor::ensure_tor()
         .map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?
         .socks_port;
-    let server_config = build_config(session, config, data_dir.clone())?;
+    // Read once: the network recorded must be the one this server was built on, even if the
+    // session's backend changes while `MakerServer::init` runs.
+    let chain = chain_backend::load(session);
+    let server_config = build_config(&chain, config, data_dir.clone())?;
     let server = tokio::task::spawn_blocking(move || MakerServer::init(server_config))
         .await
         .map_err(from_wallet_join_error)?
         .map_err(AppError::from)?;
-    chain_backend::record_network_once(session, data_dir, chain_backend::load(session), socks_port);
+    chain_backend::record_network_once(session, data_dir, chain, socks_port);
     Ok(Arc::new(server))
 }
 

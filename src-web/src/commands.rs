@@ -501,6 +501,18 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::maker_reports::verify_maker_deniability(&ctx.rt, body.router_id, body.swap_id).await?)
         })
     }),
+    op("cancel_swap", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+            swap_id: String,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::taker_swap::cancel_swap(&*ctx.taker()?, body.swap_id)?)
+        })
+    }),
     op("check_tor", true, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {

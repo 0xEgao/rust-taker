@@ -249,7 +249,7 @@ async fn swap_feerate(taker: &TakerInstance) -> Result<u64, AppError> {
         (taker.chain_backend.clone(), taker.wallet_name.clone(), taker.socks_port);
     let from_server = tokio::task::spawn_blocking(move || {
         let backend =
-            crate::ops::chain_backend::resolve_from(&config, &wallet_name, Some(socks_port)).ok()?;
+            crate::ops::chain_backend::resolve_bounded(&config, &wallet_name, Some(socks_port)).ok()?;
         AnyBlockchain::from_config(&backend)
             .ok()?
             .estimate_feerate(SWAP_CONF_TARGET)
@@ -450,6 +450,19 @@ pub async fn prepare_swap(
         funding_waits: Default::default(),
     });
     Ok(dto)
+}
+
+/// Backs out of a prepared swap. Nothing is funded before `start_swap`; the crate keeps its
+/// Negotiated record until the next `Taker::init` removes it, and the reports hide it until then.
+pub fn cancel_swap(instance: &TakerInstance, swap_id: String) -> Result<(), AppError> {
+    let mut guard = instance.active_swap.lock()?;
+    if guard
+        .as_ref()
+        .is_some_and(|a| a.swap_id == swap_id && a.phase == SwapLifecycle::Prepared)
+    {
+        *guard = None;
+    }
+    Ok(())
 }
 
 /// Progress for a `prepare_swap` still in flight.
@@ -699,7 +712,7 @@ pub async fn get_swap_tracker(
                 // Its own connection rather than the wallet's: the swap holds the wallet for most
                 // of the wait, and a `try_read` on it was refused for whole hops at a time.
                 let (config, wallet_name, socks_port) = chain;
-                let confirmed = crate::ops::chain_backend::resolve_from(&config, &wallet_name, Some(socks_port))
+                let confirmed = crate::ops::chain_backend::resolve_bounded(&config, &wallet_name, Some(socks_port))
                     .ok()
                     .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
                     .is_some_and(|chain| {
@@ -839,7 +852,7 @@ pub async fn get_recovery_status(
         // them, so a contract first seen in the mempool reads 0 for good and the refund lock
         // never appears to count. Its own connection, like the swap page's: the recovery loop
         // holds the wallet across its waits.
-        let chain = crate::ops::chain_backend::resolve_from(&config, &wallet_name, Some(socks_port))
+        let chain = crate::ops::chain_backend::resolve_bounded(&config, &wallet_name, Some(socks_port))
             .ok()
             .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
             .and_then(|chain| Some((chain.get_block_count().ok()?, chain)));

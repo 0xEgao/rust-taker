@@ -477,7 +477,9 @@ impl log::Log for FundingWaitWatcher {
         else {
             return;
         };
-        let Ok(watches) = FUNDING_WAITS.try_lock() else {
+        // Blocking: a skipped repeat never seals its leg, and the next leg's txids join it.
+        // Nothing logs while holding this lock, so it cannot re-enter.
+        let Ok(watches) = FUNDING_WAITS.lock() else {
             return;
         };
         let thread = std::thread::current().id();

@@ -1104,6 +1104,28 @@ pub async fn list_utxos(taker: &TakerInstance) -> Result<Vec<UtxoEntry>, AppErro
 /// sizes the transaction it builds (`spend_coins`), change output included — so a send that ends
 /// with no change pays a little less, never more. Read-only: building the real transaction would
 /// hand out a change address for a send the user may still cancel.
+/// Checked before the wallet lock: coin selection runs under it, over whatever list arrives.
+fn selected_outpoints(outpoints: Option<Vec<Outpoint>>) -> Result<Option<Vec<OutPoint>>, AppError> {
+    let Some(list) = outpoints else {
+        return Ok(None);
+    };
+    if list.len() > 10_000 {
+        return Err(AppError::new(ErrorCode::InvalidInput, "too many selected inputs"));
+    }
+    let parsed = list
+        .into_iter()
+        .map(|o| -> Result<OutPoint, AppError> {
+            let txid = Txid::from_str(&o.txid)
+                .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
+            Ok(OutPoint::new(txid, o.vout))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if parsed.iter().collect::<std::collections::HashSet<_>>().len() != parsed.len() {
+        return Err(AppError::new(ErrorCode::InvalidInput, "selected inputs contain duplicates"));
+    }
+    Ok(Some(parsed))
+}
+
 pub async fn estimate_send_fee(
     taker: &TakerInstance,
     address: String,
@@ -1122,17 +1144,7 @@ pub async fn estimate_send_fee(
         .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?
         .assume_checked()
         .script_pubkey();
-    let outpoints = outpoints
-        .map(|list| {
-            list.into_iter()
-                .map(|o| -> Result<OutPoint, AppError> {
-                    let txid = Txid::from_str(&o.txid)
-                        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
-                    Ok(OutPoint::new(txid, o.vout))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
+    let outpoints = selected_outpoints(outpoints)?;
     let wallet = taker.wallet.clone();
     let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<SendFeeEstimate, AppError> {
@@ -1200,31 +1212,7 @@ pub async fn send_to_address(
         SensitiveOperation::SendTakerFunds,
     )?;
     let wallet = taker.wallet.clone();
-    let outpoints = outpoints
-        .map(|list| {
-            if list.len() > 10_000 {
-                return Err(AppError::new(
-                    ErrorCode::InvalidInput,
-                    "too many selected inputs",
-                ));
-            }
-            list.into_iter()
-                .map(|o| -> Result<OutPoint, AppError> {
-                    let txid = Txid::from_str(&o.txid)
-                        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
-                    Ok(OutPoint::new(txid, o.vout))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    if outpoints.as_ref().is_some_and(|items| {
-        items.iter().collect::<std::collections::HashSet<_>>().len() != items.len()
-    }) {
-        return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "selected inputs contain duplicates",
-        ));
-    }
+    let outpoints = selected_outpoints(outpoints)?;
 
     let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<SendResult, AppError> {

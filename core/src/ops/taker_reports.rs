@@ -188,7 +188,9 @@ pub async fn list_swap_reports(
     let reported: std::collections::HashSet<String> =
         rows.iter().map(|r| r.swap_id.clone()).collect();
     for record in tracker_records(&data_dir) {
-        if reported.contains(&record.swap_id) {
+        // Nothing was funded, so there is no swap to report: a cancelled review or a prepare that
+        // failed, which the next `Taker::init` deletes anyway.
+        if reported.contains(&record.swap_id) || record.phase < SwapPhase::FundsBroadcast {
             continue;
         }
         let status = if record.phase == SwapPhase::Completed {
@@ -384,7 +386,7 @@ pub async fn get_incoming_swap_utxo(
             (w.get_name().to_string(), ordered)
         };
 
-        let backend = AnyBlockchain::from_config(&chain_backend::resolve_from(
+        let backend = AnyBlockchain::from_config(&chain_backend::resolve_bounded(
             &active_backend,
             &wallet_name,
             socks_port,

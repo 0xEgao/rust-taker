@@ -12,9 +12,8 @@ import {
   classifySpendType,
   formatFeeRate,
   formatUnitAmount,
-  satsToUnitString,
-  unitStringToSats,
   type Unit,
+  useUnitAmount,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { refreshWalletCache } from "../../lib/wallet-sync";
@@ -40,12 +39,17 @@ function SendPanel() {
   const [feesFailed, setFeesFailed] = useState(false);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [btcPriceCached, setBtcPriceCached] = useState(false);
+  const {
+    unit,
+    input: amountInput,
+    setInput: setAmountInput,
+    changeUnit,
+    sats: amountSats,
+  } = useUnitAmount(btcPrice);
 
   const [recipient, setRecipient] = useState("");
   const [recipientValidation, setRecipientValidation] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
   const [recipientError, setRecipientError] = useState<string | undefined>();
-  const [unit, setUnit] = useState<Unit>("sats");
-  const [amountInput, setAmountInput] = useState("");
   const [feeKey, setFeeKey] = useState<FeeKey>(2);
   const [customFeeRate, setCustomFeeRate] = useState("");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
@@ -90,16 +94,6 @@ function SendPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function changeUnit(nextUnit: Unit) {
-    const sats = unitStringToSats(amountInput, unit, btcPrice);
-    setAmountInput(satsToUnitString(sats, nextUnit, btcPrice));
-    setUnit(nextUnit);
-  }
-
-  const amountSats = useMemo(
-    () => unitStringToSats(amountInput, unit, btcPrice),
-    [amountInput, unit, btcPrice],
-  );
   const otherUnits = useMemo(() => (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit), [unit]);
 
   // The mempool quote as one whole number: the midpoint of the range it gives, rounded, because
@@ -173,7 +167,7 @@ function SendPanel() {
       ? null
       : sendFee.feeSats > amountSats / 10
         ? `This fee is ${Math.round((sendFee.feeSats / amountSats) * 100)}% of the amount you are sending.`
-        : fees !== null && feeRate > fees.high * 3
+        : fees !== null && fees.high > 0 && feeRate > fees.high * 3
           ? `This rate is ${Math.round(feeRate / fees.high)}× what the mempool is asking right now.`
           : null;
 

@@ -247,7 +247,12 @@ async function runRestore(): Promise<{
   // is not running, which is impossible to diagnose from the screen.
   let response: Response;
   try {
-    response = await fetch(`${API}/session`, { credentials: "same-origin" });
+    // The server checks it against the session, so a token left over from another session
+    // reads as signed out rather than as a session that can change nothing.
+    response = await fetch(`${API}/session`, {
+      credentials: "same-origin",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+    });
   } catch {
     throw {
       code: "SERVER_UNREACHABLE",
@@ -278,9 +283,7 @@ async function runRestore(): Promise<{
     };
   }
   const body = (await response.json()) as { hasOwner: boolean };
-  // A live session this browser holds no token for (signed in before the token was stored, or
-  // storage was cleared) cannot make a single change, so it signs in again for a fresh one.
-  return { authenticated: csrfToken !== null, hasOwner: body.hasOwner };
+  return { authenticated: true, hasOwner: body.hasOwner };
 }
 
 export const host: Host = {

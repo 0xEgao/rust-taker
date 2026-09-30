@@ -259,7 +259,7 @@ function EdgeLabel({ x, y, view }: { x: number; y: number; view: EdgeView }) {
       {badge &&
         (txid ? (
           <a
-            href={explorerTxUrl(txid)}
+            href={explorerTxUrl(txid) ?? undefined}
             onClick={(e) => openInBrowser(e, txid)}
             style={{ pointerEvents: "auto", cursor: "pointer" }}
           >
@@ -535,7 +535,7 @@ function StageBody({ view }: { view: CircuitView }) {
         {!done && !view.failed && <span className="mr-1 animate-pulse">▸</span>}
         {done && view.sweepTxid ? (
           <a
-            href={explorerTxUrl(view.sweepTxid)}
+            href={explorerTxUrl(view.sweepTxid) ?? undefined}
             onClick={(e) => openInBrowser(e, view.sweepTxid!)}
             className="underline decoration-dotted"
             style={{ pointerEvents: "auto" }}
@@ -626,7 +626,7 @@ function EdgeBody({ edge, view }: { edge: EdgeView; view: CircuitView }) {
           {edge.txids.map((txid) => (
             <a
               key={txid}
-              href={explorerTxUrl(txid)}
+              href={explorerTxUrl(txid) ?? undefined}
               onClick={(e) => openInBrowser(e, txid)}
               className="max-w-full break-all text-center font-mono text-[9px] text-primary underline decoration-dotted"
             >

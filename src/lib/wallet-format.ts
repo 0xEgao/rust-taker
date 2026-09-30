@@ -2,6 +2,7 @@
 // classifies UTXOs/transactions exactly like the shipped app did.
 
 import { AlertCircle, CheckCircle2, CircleHelp, XCircle, type LucideIcon } from "lucide-react";
+import { useState } from "react";
 import type { SwapStatus } from "../api/types";
 import { chainName, useConnectionStore } from "../store/connection";
 
@@ -76,20 +77,25 @@ const PUBLIC_EXPLORERS: Record<string, string> = {
 };
 
 /** Read when the link is opened, from the chain this session is connected to: our signet
- *  explorer knows nothing about mainnet, and looking a txid up there hands it to our server. */
-function explorerBase(): string {
+ *  explorer knows nothing about mainnet, and looking a txid up there hands it to our server.
+ *  Null while the chain is unknown (no probe has answered, or the last one failed), for the
+ *  same reason: guessing signet would send a mainnet txid there. */
+function explorerBase(): string | null {
   const chain = chainName(useConnectionStore.getState().status);
-  return (chain && PUBLIC_EXPLORERS[chain]) || PORTAL_SIGNET_EXPLORER;
+  if (chain === "signet") return PORTAL_SIGNET_EXPLORER;
+  return (chain && PUBLIC_EXPLORERS[chain]) || null;
 }
 
-export function explorerTxUrl(txid: string): string {
-  return `${explorerBase()}/tx/${encodeURIComponent(txid)}`;
+export function explorerTxUrl(txid: string): string | null {
+  const base = explorerBase();
+  return base && `${base}/tx/${encodeURIComponent(txid)}`;
 }
 
 /** The address page, which lists every transaction that ever touched a coin — what you want
  *  when the row you clicked is a UTXO rather than the transaction that created it. */
-export function explorerAddressUrl(address: string): string {
-  return `${explorerBase()}/address/${encodeURIComponent(address)}`;
+export function explorerAddressUrl(address: string): string | null {
+  const base = explorerBase();
+  return base && `${base}/address/${encodeURIComponent(address)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +127,24 @@ export function unitStringToSats(input: string, unit: Unit, btcPriceUsd: number 
   if (unit === "btc") return Math.round(n * SATS_PER_BTC);
   if (!btcPriceUsd) return 0;
   return Math.round((n / btcPriceUsd) * SATS_PER_BTC);
+}
+
+/** An amount input with a sats/BTC/USD toggle. A unit change keeps the exact sats behind the
+ *  converted string: USD shows cents, which is hundreds of sats at today's prices, so reading the
+ *  amount back from that string would quietly change it. Any edit to the string drops the pin. */
+export function useUnitAmount(btcPriceUsd: number | null) {
+  const [unit, setUnit] = useState<Unit>("sats");
+  const [input, setInput] = useState("");
+  const [pinned, setPinned] = useState<{ input: string; sats: number } | null>(null);
+  const sats =
+    pinned !== null && pinned.input === input ? pinned.sats : unitStringToSats(input, unit, btcPriceUsd);
+  function changeUnit(next: Unit) {
+    const converted = satsToUnitString(sats, next, btcPriceUsd);
+    setPinned({ input: converted, sats });
+    setInput(converted);
+    setUnit(next);
+  }
+  return { unit, input, setInput, changeUnit, sats };
 }
 
 /** Display string for `sats` expressed in `unit`, e.g. the two non-selected units shown under an amount input. */

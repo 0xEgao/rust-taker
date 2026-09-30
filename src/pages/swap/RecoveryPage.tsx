@@ -350,7 +350,11 @@ export function RecoveryPage() {
               : // Spent, so gone from the wallet's coins, but the crate records it only once
                 // the spend confirms.
                 { label: "The router's claim is confirming", state: "running" },
-        { label: "Swap settled", state: routerSettled ? "running" : "idle" },
+        // Never "passed" here: a settled recovery renders the completed view instead.
+        {
+          label: "Swap settled",
+          state: routerSettled && routerOwed.length === 0 ? "running" : "idle",
+        },
       ]
     : [
         {

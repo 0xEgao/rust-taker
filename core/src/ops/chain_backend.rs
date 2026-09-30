@@ -141,6 +141,21 @@ fn core_rpc_config(dto: &NodeBackendDto, wallet_name: &str) -> CoreRpcConfig {
     }
 }
 
+/// For a one-off read the UI waits on: the backend's defaults would hold a dead Electrum server
+/// for minutes before the caller's fallback could run.
+pub(crate) fn resolve_bounded(
+    config: &ChainBackendConfig,
+    wallet_name: &str,
+    socks_port: Option<u16>,
+) -> Result<BackendConfig, AppError> {
+    let mut backend = resolve_from(config, wallet_name, socks_port)?;
+    if let BackendConfig::Electrum(electrum) = &mut backend {
+        electrum.max_retries = 0;
+        electrum.timeout = Some(PROBE_TIMEOUT_SECS);
+    }
+    Ok(backend)
+}
+
 /// Build the wallet backend the user selected. `wallet_name` names the watch-only
 /// wallet on their node; Electrum has no server-side wallet so it ignores it.
 pub(crate) fn resolve(

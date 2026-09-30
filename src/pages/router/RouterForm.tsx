@@ -134,7 +134,7 @@ export function useRouterForm(): RouterForm {
   const publicNameError = publicName?.trim() ? routerNameError(publicName) : null;
   // Neither the wallet name nor the id has a length cap; the published name does.
   const defaultPublicName = (routerId: string) =>
-    (walletName.trim() || routerId).slice(0, ROUTER_NAME_MAX);
+    [...(walletName.trim() || routerId)].slice(0, ROUTER_NAME_MAX).join("");
 
   return {
     values,

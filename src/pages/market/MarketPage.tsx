@@ -130,7 +130,10 @@ function FidelityBondModal({ router, onClose }: { router: Router; onClose: () =>
           <span className="mb-2 block text-[11px] text-subtle">Bond Txid</span>
           <button
             type="button"
-            onClick={() => void openExternal(explorerTxUrl(bond.bondTxid))}
+            onClick={() => {
+              const url = explorerTxUrl(bond.bondTxid);
+              if (url) void openExternal(url);
+            }}
             className="break-all text-left font-mono text-[13px] text-primary hover:text-primary-hover"
           >
             {bond.bondTxid}:{bond.bondVout}

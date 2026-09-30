@@ -94,6 +94,7 @@
     "allow-set-chain-backend",
     "allow-start-maker",
     "allow-start-swap",
+    "allow-cancel-swap",
     "allow-stop-maker",
     "allow-send-maker-to-address",
       "allow-sync-maker-wallet",

@@ -419,13 +419,17 @@ export function WalletPage() {
             )}
             {filteredTx.map((tx) => {
               const isReceive = tx.amountSats >= 0;
+              const open = () => {
+                const url = explorerTxUrl(tx.txid);
+                if (url) void openExternal(url);
+              };
               return (
                 <div
                   key={`${tx.txid}:${tx.category}:${tx.address ?? ""}:${tx.amountSats}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => void openExternal(explorerTxUrl(tx.txid))}
-                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && openExternal(explorerTxUrl(tx.txid))}
+                  onClick={open}
+                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && open()}
                   className="flex cursor-pointer flex-col gap-1.5 px-3 py-3 text-left outline-none transition-colors duration-200 hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
                 >
                   <span className="flex items-start gap-2.5">
