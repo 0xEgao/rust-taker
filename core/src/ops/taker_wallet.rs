@@ -28,7 +28,7 @@ use crate::state::{AppState, PendingFileSelection, TakerInstance, TakerSlot};
 use crate::types::{
     AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
     InitResult, NewAddress, Outpoint, PathsDto, PriceEstimate, RestoreSelectionView, SendResult,
-    SessionStateDto, TxSummary, UtxoEntry, WalletInfo,
+    SessionStateDto, TxSummary, UtxoEntry, WalletInfo, WalletListing,
 };
 
 /// The price moves far slower than anyone reads it, so one fetch serves every caller for a
@@ -53,8 +53,15 @@ fn valid_usd_price(usd: f64) -> bool {
     usd.is_finite() && usd > 0.0
 }
 
-pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
-    storage::list_wallets(&data_dir)
+pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<WalletListing>, AppError> {
+    let root = resolve_data_dir(&data_dir)?;
+    Ok(storage::list_wallets(&data_dir)?
+        .into_iter()
+        .map(|name| {
+            let network = storage::wallet_network(&storage::wallet_data_dir(&root, &name), &name);
+            WalletListing { name, network }
+        })
+        .collect())
 }
 
 /// The host's real wallet locations. Desktop-only: the web host hands the browser opaque
@@ -245,6 +252,12 @@ async fn open_taker(
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
     });
+    chain_backend::record_network_once(
+        session,
+        key.to_path_buf(),
+        instance.chain_backend.clone(),
+        tor.socks_port,
+    );
     let result = InitResult {
         wallet_name: config.wallet_name,
         data_dir: root.display().to_string(),

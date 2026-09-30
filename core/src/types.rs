@@ -573,6 +573,12 @@ pub struct SwapTrackerDto {
     /// Our own funding has confirmed. Taproot records nothing per maker until that maker's
     /// contract confirms, so without this the first router's wait swallows ours.
     pub outgoing_confirmed: bool,
+    /// "legacy" | "taproot"
+    pub protocol: String,
+    /// What each leg's funding wait polled, in route order, while this process runs the swap:
+    /// the leg's real on-chain txids, before the tracker has them (Taproot) or when it never
+    /// will (Legacy, whose tracker txids are unbroadcast contracts).
+    pub funding_wait_txids: Vec<Vec<String>>,
     /// PaySwap receiver, echoed from the tracker so a remounted page still knows where the
     /// coins are going without the prepared quote.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -843,6 +849,10 @@ pub struct MakerSettingsDto {
     pub time_relative_fee_pct: f64,
     #[serde(default)]
     pub data_dir: Option<String>,
+    /// Filled in only when listing, from the record beside the router's data; never read from
+    /// a caller or written to the registry.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 impl MakerSettingsDto {
@@ -863,6 +873,7 @@ impl MakerSettingsDto {
             amount_relative_fee_pct: c.amount_relative_fee_pct,
             time_relative_fee_pct: c.time_relative_fee_pct,
             data_dir: Some(data_dir.display().to_string()),
+            network: None,
         }
     }
 
@@ -903,6 +914,16 @@ pub enum MakerPhase {
     Failed {
         message: String,
     },
+}
+
+/// A wallet in the picker. `network` is `None` until Portal can tell, and `"test"` when all it
+/// knows is that the wallet is on some test network.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletListing {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 /// Where this host keeps wallet data. The frontend must not derive these itself: the default

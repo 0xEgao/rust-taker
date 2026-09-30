@@ -1,7 +1,15 @@
 import type { ReactNode } from "react";
 
 import { explorerTxUrl, formatNumber } from "../../../lib/wallet-format";
+import { openExternal } from "../../../platform";
 import { EDGE_STAGE_LABEL, type CircuitView } from "./useSwapCircuit";
+
+/** A `target="_blank"` link does nothing inside the desktop webview, so it goes through the
+ *  host like every other explorer link. */
+export function openInBrowser(e: { preventDefault: () => void }, txid: string) {
+  e.preventDefault();
+  void openExternal(explorerTxUrl(txid));
+}
 
 /**
  * Answers "how much longer", as a strip under the circuit. `Stage` is the circuit's own
@@ -81,8 +89,7 @@ export function NowPanel({ view }: { view: CircuitView }) {
         <a
           key={txid}
           href={explorerTxUrl(txid)}
-          target="_blank"
-          rel="noreferrer"
+          onClick={(e) => openInBrowser(e, txid)}
           className="mt-1 block break-all font-mono text-[10px] text-primary underline decoration-dotted"
         >
           {txid}

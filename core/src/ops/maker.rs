@@ -154,11 +154,15 @@ async fn construct_server(
     config: MakerInitConfig,
     data_dir: PathBuf,
 ) -> Result<Arc<MakerServer>, AppError> {
-    let server_config = build_config(session, config, data_dir)?;
+    let socks_port = crate::tor::ensure_tor()
+        .map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?
+        .socks_port;
+    let server_config = build_config(session, config, data_dir.clone())?;
     let server = tokio::task::spawn_blocking(move || MakerServer::init(server_config))
         .await
         .map_err(from_wallet_join_error)?
         .map_err(AppError::from)?;
+    chain_backend::record_network_once(session, data_dir, chain_backend::load(session), socks_port);
     Ok(Arc::new(server))
 }
 

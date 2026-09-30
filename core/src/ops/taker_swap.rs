@@ -203,6 +203,8 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
             .map(Txid::to_string)
             .collect(),
         outgoing_confirmed: false,
+        protocol: protocol_label(r.protocol).to_string(),
+        funding_wait_txids: Vec::new(),
         payment_address: r.payment_address.clone(),
         payment_amount_sats: r.payment_amount_sat,
     }
@@ -395,6 +397,7 @@ pub async fn prepare_swap(
         started_at: None,
         error: None,
         outgoing: Default::default(),
+        funding_waits: Default::default(),
     });
     Ok(dto)
 }
@@ -495,12 +498,19 @@ pub async fn start_swap(
         }
     }
 
+    let funding_waits = instance
+        .active_swap
+        .lock()?
+        .as_ref()
+        .map(|active| Arc::clone(&active.funding_waits))
+        .unwrap_or_default();
     let taker = instance.taker.clone();
     // The thread outlives this request, so it owns handles rather than borrowing them.
     let swap_state = Arc::clone(state);
     let swap_instance = Arc::clone(instance);
     std::thread::spawn(move || {
         let _log = crate::logging::wallet_scope(swap_instance.data_dir.clone());
+        let _waits = crate::logging::watch_funding_waits(funding_waits);
         let result = {
             let mut guard = match taker.lock() {
                 Ok(g) => g,
@@ -594,7 +604,7 @@ pub async fn get_swap_tracker(
     taker: &TakerInstance,
     swap_id: Option<String>,
 ) -> Result<Option<SwapTrackerDto>, AppError> {
-    let (swap_id, outgoing) = {
+    let (swap_id, outgoing, funding_waits) = {
         let active = taker.active_swap.lock()?;
         let active = active.as_ref();
         let id = match swap_id {
@@ -604,8 +614,12 @@ pub async fn get_swap_tracker(
                 None => return Ok(None),
             },
         };
-        let outgoing = active.filter(|a| a.swap_id == id).map(|a| Arc::clone(&a.outgoing));
-        (id, outgoing)
+        let active = active.filter(|a| a.swap_id == id);
+        let outgoing = active.map(|a| Arc::clone(&a.outgoing));
+        let funding_waits = active
+            .and_then(|a| a.funding_waits.lock().ok().map(|waits| waits.legs.clone()))
+            .unwrap_or_default();
+        (id, outgoing, funding_waits)
     };
     let data_dir = taker.data_dir.clone();
     let chain = (taker.chain_backend.clone(), taker.wallet_name.clone(), taker.socks_port);
@@ -616,6 +630,7 @@ pub async fn get_swap_tracker(
             return Ok(None);
         };
         let mut dto = to_tracker_dto(record);
+        dto.funding_wait_txids = funding_waits;
         let Some(outgoing) = outgoing else {
             return Ok(Some(dto));
         };

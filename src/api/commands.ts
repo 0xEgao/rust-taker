@@ -1,6 +1,7 @@
 import { invoke } from "./transport";
 import type {
   SwapPreparation,
+  WalletListing,
   AddressType,
   AddressValidation,
   Balances,
@@ -88,7 +89,7 @@ export function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
 
-export function listWallets(dataDir?: string): Promise<string[]> {
+export function listWallets(dataDir?: string): Promise<WalletListing[]> {
   return invoke("list_wallets", { dataDir });
 }
 

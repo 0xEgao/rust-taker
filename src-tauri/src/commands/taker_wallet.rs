@@ -21,7 +21,9 @@ use tauri_plugin_dialog::DialogExt;
 use crate::native::ensure_main_window;
 
 #[tauri::command]
-pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
+pub fn list_wallets(
+    data_dir: Option<String>,
+) -> Result<Vec<portal_core::types::WalletListing>, AppError> {
     taker_wallet::list_wallets(data_dir)
 }
 

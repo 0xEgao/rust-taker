@@ -307,6 +307,13 @@ export interface OfferBookView {
 // Router operations
 // ---------------------------------------------------------------------------
 
+/** A wallet in the picker. `network` is absent until Portal can tell, and `"test"` when all it
+ *  knows is that the wallet is on some test network. */
+export interface WalletListing {
+  name: string;
+  network?: string;
+}
+
 export interface RouterSettings {
   routerId: string;
   walletName: string;
@@ -325,6 +332,8 @@ export interface RouterSettings {
   amountRelativeFeePct: number;
   timeRelativeFeePct: number;
   dataDir?: string;
+  /** The chain this router's wallet is on, once Portal has seen it start. */
+  network?: string;
 }
 
 export interface RouterInitConfig extends RouterSettings {
@@ -523,6 +532,10 @@ export interface SwapTrackerProgress {
   watchonlyContractTxids: string[];
   /** Our own funding has confirmed — the only signal taproot gives for the first leg. */
   outgoingConfirmed: boolean;
+  protocol: ProtocolVersion;
+  /** Each leg's real on-chain txids, in route order, from the swap's own confirmation waits.
+   *  Filled while this process runs the swap; empty after a restart. */
+  fundingWaitTxids: string[][];
   /** Echoed from the tracker, so a remounted page knows a PaySwap without the prepared quote. */
   paymentAddress?: string;
   paymentAmountSats?: number;

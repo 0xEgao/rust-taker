@@ -40,7 +40,9 @@ static SESSIONS: Mutex<Option<HashMap<String, ChainBackendConfig>>> = Mutex::new
 /// Cached by complete endpoint/route fingerprint, never by process first-use.
 /// The servers the gate offers, newest verified list. Every mainnet entry was probed against
 /// the live chain before landing and agreed on the same tip; a preset that does not answer is
-/// worse than no preset, so `fulcrum.sethforprivacy.com` was dropped for timing out.
+/// worse than no preset, so `fulcrum.sethforprivacy.com` was dropped for timing out. Each also
+/// has to present a CA-signed certificate: the crate validates the domain of every clearnet
+/// server, so a self-signed one such as `electrum.emzy.de` never connects.
 ///
 /// Reference data, deliberately not configuration: nothing here is written to disk and the
 /// choice is not remembered between launches. The signet entry is `DEFAULT_ELECTRUM_URL`
@@ -48,9 +50,8 @@ static SESSIONS: Mutex<Option<HashMap<String, ChainBackendConfig>>> = Mutex::new
 const ELECTRUM_PRESETS: &[(&str, &str, &str)] = &[
     ("Portal signet", crate::types::DEFAULT_ELECTRUM_URL, "signet"),
     ("Blockstream", "ssl://electrum.blockstream.info:50002", "bitcoin"),
-    ("Emzy", "ssl://electrum.emzy.de:50002", "bitcoin"),
-    ("Bitaroo", "ssl://electrum.bitaroo.net:50002", "bitcoin"),
     ("DIY Nodes", "ssl://electrum.diynodes.com:50002", "bitcoin"),
+    ("Grey", "ssl://fulcrum.grey.pw:51002", "bitcoin"),
 ];
 
 pub fn electrum_presets() -> Vec<ElectrumPresetDto> {
@@ -313,6 +314,30 @@ pub fn set_chain_backend(session: &str, config: ChainBackendConfig) -> Result<()
     validate(&config)?;
     store(session, config);
     Ok(())
+}
+
+/// Records the chain a wallet or router has just opened on, unless Portal already has it. Off
+/// the open path: it costs a chain round trip, and nothing waits on the answer.
+pub fn record_network_once(
+    session: &str,
+    dir: std::path::PathBuf,
+    config: ChainBackendConfig,
+    socks_port: u16,
+) {
+    if crate::storage::recorded_network(&dir).is_some() {
+        return;
+    }
+    let session = session.to_string();
+    tokio::spawn(async move {
+        let Ok(BackendStatus { chain: Some(chain), .. }) =
+            check_backend(&session, Some(config), Some(socks_port)).await
+        else {
+            return;
+        };
+        if let Err(e) = crate::storage::record_network(&dir, &chain) {
+            log::warn!("could not record the network of {}: {e:?}", dir.display());
+        }
+    });
 }
 
 pub async fn check_backend(

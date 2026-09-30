@@ -148,6 +148,8 @@ export interface CircuitView {
   miningFeeSats?: number;
   /** Set when this swap pays a third party rather than returning the coins to the wallet. */
   paymentAddress?: string;
+  /** The final sweep, when its confirmation wait logged it: the wait after the last leg's. */
+  sweepTxid?: string;
   paymentAmountSats?: number;
 }
 
@@ -247,7 +249,16 @@ export function useSwapCircuit(
       betweenRouters > 0 && watchonly.length % betweenRouters === 0
         ? watchonly.length / betweenRouters
         : 0;
+    const waited = tracker?.fundingWaitTxids ?? [];
+    // What a leg's funding wait polled is its on-chain transaction, known from the moment the
+    // wait starts; the tracker records a leg only once it confirms. A Legacy leg's tracker
+    // txid is a contract that is broadcast only on failure, so it has no link to offer.
     const txidsFor = (index: number): string[] => {
+      if (waited[index]?.length) return waited[index];
+      if (tracker?.protocol === "legacy") return [];
+      return recordedTxidsFor(index);
+    };
+    const recordedTxidsFor = (index: number): string[] => {
       if (index === 0) return tracker?.outgoingContractTxids ?? [];
       if (index === routerCount) return tracker?.incomingContractTxids ?? [];
       if (perIntermediate === 0) return [];
@@ -353,6 +364,7 @@ export function useSwapCircuit(
       focusIndex,
       liveEdgeIndex: liveEdge === -1 ? null : liveEdge,
       activity,
+      sweepTxid: waited[routerCount + 1]?.[0],
       title,
       // Confirmations are the only stretch with a real unit, and every leg waits for its own
       // block in turn; the protocol chatter between them is seconds, so it adds nothing.

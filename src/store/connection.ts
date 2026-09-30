@@ -47,6 +47,13 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   },
 }));
 
+/** The status now, probing first if nothing has answered yet: a list filtered by chain before
+ *  the first probe lands would show every wallet on every chain. */
+export async function currentStatus(): Promise<BackendStatus | null> {
+  if (!useConnectionStore.getState().status) await useConnectionStore.getState().refresh();
+  return useConnectionStore.getState().status;
+}
+
 /** Starts the probe timer once for the app's lifetime. Safe to call from several places. */
 let timer: ReturnType<typeof setInterval> | null = null;
 export function watchConnection() {
@@ -63,6 +70,16 @@ export function chainName(status: BackendStatus | null): string | null {
   if (chain === "main") return "bitcoin";
   if (chain === "test") return "testnet";
   return chain;
+}
+
+/** Whether a wallet or router recorded on `network` belongs to the chain this session reached.
+ *  `"test"` means Portal only knows it is on some test network. One it cannot place yet stays
+ *  visible: hiding it would make a wallet disappear for no reason the user could see. */
+export function onCurrentChain(network: string | undefined, status: BackendStatus | null): boolean {
+  const chain = chainName(status);
+  if (!network || !chain) return true;
+  if (network === "test") return chain !== "bitcoin" && chain !== "regtest";
+  return network === chain;
 }
 
 function endpointHost(config: ChainBackendConfig): string {

@@ -50,6 +50,44 @@ pub fn wallet_path(data_dir: &Path, wallet_name: &str) -> PathBuf {
 /// Where the per-wallet data dirs live under a root.
 pub const WALLET_DATA_DIR: &str = "takers";
 
+/// A wallet's or router's chain, kept beside it because the wallet file that knows it is
+/// encrypted. Written on the first successful open: the crate refuses a wallet on any other
+/// chain, so that chain is the wallet's.
+const NETWORK_FILE: &str = "network";
+
+pub fn record_network(dir: &Path, chain: &str) -> Result<(), AppError> {
+    crate::security::fs::write_private(&dir.join(NETWORK_FILE), chain.as_bytes())
+}
+
+pub fn recorded_network(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join(NETWORK_FILE)).ok().map(|chain| chain.trim().to_string())
+}
+
+/// The chain of a wallet or router, readable while it is locked. One opened before Portal kept
+/// the record falls back to an address Portal issued from its wallet: the prefix tells mainnet
+/// from the test networks (`"test"`), though not one test network from another.
+pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
+    if let Some(chain) = recorded_network(dir) {
+        return Some(chain);
+    }
+    let issued = fs::read_to_string(
+        dir.join("wallets").join(format!("{wallet_name}_last_address.json")),
+    )
+    .ok()?;
+    let issued: serde_json::Value = serde_json::from_str(&issued).ok()?;
+    let address = ["p2tr", "p2wpkh"].iter().find_map(|key| issued.get(key)?.as_str())?;
+    let network = if address.starts_with("bcrt1") {
+        "regtest"
+    } else if address.starts_with("bc1") {
+        "bitcoin"
+    } else if address.starts_with("tb1") {
+        "test"
+    } else {
+        return None;
+    };
+    Some(network.to_string())
+}
+
 /// Wallets under `<root>/takers`, sorted: each is a directory holding its own
 /// `wallets/<same name>`.
 pub fn list_wallets(data_dir: &Option<String>) -> Result<Vec<String>, AppError> {

@@ -5,6 +5,7 @@ import { Globe, KeyRound, Wallet } from "lucide-react";
 
 import { routerName } from "../../../lib/market-format";
 import { explorerTxUrl, formatNumber } from "../../../lib/wallet-format";
+import { openInBrowser } from "./panels";
 import { buildCircuit, edgeStrands, labelAnchor, type CircuitGeometry } from "./geometry";
 import {
   EDGE_STAGE_LABEL,
@@ -259,8 +260,7 @@ function EdgeLabel({ x, y, view }: { x: number; y: number; view: EdgeView }) {
         (txid ? (
           <a
             href={explorerTxUrl(txid)}
-            target="_blank"
-            rel="noreferrer"
+            onClick={(e) => openInBrowser(e, txid)}
             style={{ pointerEvents: "auto", cursor: "pointer" }}
           >
             <title>Open this contract on mempool</title>
@@ -533,7 +533,18 @@ function StageBody({ view }: { view: CircuitView }) {
         aria-live="polite"
       >
         {!done && !view.failed && <span className="mr-1 animate-pulse">▸</span>}
-        {view.activity}
+        {done && view.sweepTxid ? (
+          <a
+            href={explorerTxUrl(view.sweepTxid)}
+            onClick={(e) => openInBrowser(e, view.sweepTxid!)}
+            className="underline decoration-dotted"
+            style={{ pointerEvents: "auto" }}
+          >
+            {view.activity}
+          </a>
+        ) : (
+          view.activity
+        )}
       </p>
 
       <div className="mt-3 w-full border-t border-line pt-2">
@@ -616,8 +627,7 @@ function EdgeBody({ edge, view }: { edge: EdgeView; view: CircuitView }) {
             <a
               key={txid}
               href={explorerTxUrl(txid)}
-              target="_blank"
-              rel="noreferrer"
+              onClick={(e) => openInBrowser(e, txid)}
               className="max-w-full break-all text-center font-mono text-[9px] text-primary underline decoration-dotted"
             >
               {txid}
