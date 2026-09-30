@@ -21,7 +21,9 @@ use tauri_plugin_dialog::DialogExt;
 use crate::native::ensure_main_window;
 
 #[tauri::command]
-pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
+pub fn list_wallets(
+    data_dir: Option<String>,
+) -> Result<Vec<portal_core::types::WalletListing>, AppError> {
     taker_wallet::list_wallets(data_dir)
 }
 
@@ -90,7 +92,7 @@ pub async fn choose_restore_backup(
 
 #[tauri::command]
 pub async fn restore_wallet(
-    state: tauri::State<'_, Arc<AppState>>, data_dir: Option<String>, wallet_name: String, socks_port: Option<u16>, selection_id: Uuid, password: Option<String>,
+    state: tauri::State<'_, Arc<AppState>>, data_dir: Option<String>, wallet_name: String, socks_port: Option<u16>, selection_id: Uuid, password: String,
 ) -> Result<(), AppError> {
     taker_wallet::restore_wallet(&state, DESKTOP_SESSION, data_dir, wallet_name, socks_port, selection_id, password).await
 }
@@ -182,6 +184,18 @@ pub async fn sync_wallet(state: tauri::State<'_, Arc<AppState>>) -> Result<(), A
 #[tauri::command]
 pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
     taker_wallet::estimate_fees().await
+}
+
+#[tauri::command]
+pub async fn estimate_send_fee(
+    state: tauri::State<'_, Arc<AppState>>,
+    address: String,
+    amount_sats: u64,
+    fee_rate: Option<f64>,
+    outpoints: Option<Vec<Outpoint>>,
+) -> Result<portal_core::types::SendFeeEstimate, AppError> {
+    taker_wallet::estimate_send_fee(&*desktop_taker(&state)?, address, amount_sats, fee_rate, outpoints)
+        .await
 }
 
 #[tauri::command]

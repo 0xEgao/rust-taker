@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
-use openswap::bitcoin::{Address, OutPoint, ScriptBuf, Txid};
+use openswap::bitcoin::{Address, Amount, OutPoint, ScriptBuf, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
@@ -28,7 +28,7 @@ use crate::state::{AppState, PendingFileSelection, TakerInstance, TakerSlot};
 use crate::types::{
     AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
     InitResult, NewAddress, Outpoint, PathsDto, PriceEstimate, RestoreSelectionView, SendResult,
-    SessionStateDto, TxSummary, UtxoEntry, WalletInfo,
+    SendFeeEstimate, SessionStateDto, TxSummary, UtxoEntry, WalletInfo, WalletListing,
 };
 
 /// The price moves far slower than anyone reads it, so one fetch serves every caller for a
@@ -53,8 +53,15 @@ fn valid_usd_price(usd: f64) -> bool {
     usd.is_finite() && usd > 0.0
 }
 
-pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
-    storage::list_wallets(&data_dir)
+pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<WalletListing>, AppError> {
+    let root = resolve_data_dir(&data_dir)?;
+    Ok(storage::list_wallets(&data_dir)?
+        .into_iter()
+        .map(|name| {
+            let network = storage::wallet_network(&storage::wallet_data_dir(&root, &name), &name);
+            WalletListing { name, network }
+        })
+        .collect())
 }
 
 /// The host's real wallet locations. Desktop-only: the web host hands the browser opaque
@@ -207,6 +214,9 @@ async fn open_taker(
         // tool, not something to switch on because an upstream bump made the field required.
         check_blocklist: None,
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
+        ldk_server_url: None,
+        ldk_api_key_path: None,
+        ldk_tls_cert_path: None,
     };
 
     // `Taker::init` runs startup recovery inline, which blocks on a block being mined and can
@@ -242,6 +252,12 @@ async fn open_taker(
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
     });
+    chain_backend::record_network_once(
+        session,
+        key.to_path_buf(),
+        instance.chain_backend.clone(),
+        tor.socks_port,
+    );
     let result = InitResult {
         wallet_name: config.wallet_name,
         data_dir: root.display().to_string(),
@@ -284,7 +300,7 @@ async fn join_taker(
 /// AES-GCM authenticates, so a wrong password cannot decrypt to anything. The encryption check
 /// comes first because without a password the crate reads the file as plaintext, and any CBOR
 /// document — an encrypted one included — parses as "something".
-fn verify_wallet_password(path: &Path, password: Option<String>) -> Result<(), AppError> {
+pub(crate) fn verify_wallet_password(path: &Path, password: Option<String>) -> Result<(), AppError> {
     use openswap::security::{load_sensitive_struct, SecurityError, SerdeCbor};
     let wrong = || AppError::new(ErrorCode::WalletWrongPassword, "incorrect wallet password");
     if password.is_none() {
@@ -298,6 +314,21 @@ fn verify_wallet_password(path: &Path, password: Option<String>) -> Result<(), A
         Ok(_) => Ok(()),
         Err(SecurityError::Decryption | SecurityError::PasswordRequired) => Err(wrong()),
         Err(e) => Err(AppError::new(ErrorCode::WalletLoadFailed, format!("{e:?}"))),
+    }
+}
+
+fn verify_backup_password(path: &Path, password: String) -> Result<(), AppError> {
+    use openswap::security::{load_sensitive_struct, SecurityError, SerdeJson};
+    match load_sensitive_struct::<serde::de::IgnoredAny, SerdeJson>(path, Some(password)) {
+        Ok(_) => Ok(()),
+        Err(SecurityError::Decryption | SecurityError::PasswordRequired) => Err(AppError::new(
+            ErrorCode::WalletWrongPassword,
+            "incorrect backup password",
+        )),
+        Err(e) => Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("this file is not a readable Portal backup: {e:?}"),
+        )),
     }
 }
 
@@ -543,9 +574,14 @@ pub async fn restore_wallet(
     wallet_name: String,
     socks_port: Option<u16>,
     selection_id: Uuid,
-    password: Option<String>,
+    password: String,
 ) -> Result<(), AppError> {
     validate_leaf_name(&wallet_name, "walletName")?;
+    // Portal's backups are always encrypted. Checked before the one-shot file selection is
+    // consumed, like the name clash below.
+    if password.is_empty() {
+        return Err(AppError::new(ErrorCode::InvalidInput, "enter the backup password"));
+    }
     let _operation = SensitiveOperationGuard::acquire(
         &state.sensitive_operation_active,
         SensitiveOperation::RestorePrivateKey,
@@ -567,6 +603,19 @@ pub async fn restore_wallet(
             ErrorCode::InvalidInput,
             format!("a wallet named '{wallet_name}' already exists — pick another name"),
         ));
+    }
+    // The crate only logs a wrong backup password and writes nothing, which reads as a failed
+    // restore. Checked before the selection is consumed, so the same file can be retried.
+    let chosen = state
+        .pending_file_selections
+        .lock()?
+        .get(&selection_id)
+        .map(|selection| selection.path.clone());
+    if let Some(chosen) = chosen {
+        let check = password.clone();
+        tokio::task::spawn_blocking(move || verify_backup_password(&chosen, check))
+            .await
+            .map_err(AppError::internal)??;
     }
     let selection = state
         .pending_file_selections
@@ -600,7 +649,7 @@ pub async fn restore_wallet(
             Some(wallet_name),
             backend,
             backup_path,
-            password,
+            Some(password),
         )
     })
     .await
@@ -1051,6 +1100,85 @@ pub async fn list_utxos(taker: &TakerInstance) -> Result<Vec<UtxoEntry>, AppErro
     .map_err(AppError::internal)?
 }
 
+/// What a send would pay in mining fees, sized from the coins it would spend the way the crate
+/// sizes the transaction it builds (`spend_coins`), change output included — so a send that ends
+/// with no change pays a little less, never more. Read-only: building the real transaction would
+/// hand out a change address for a send the user may still cancel.
+/// Checked before the wallet lock: coin selection runs under it, over whatever list arrives.
+fn selected_outpoints(outpoints: Option<Vec<Outpoint>>) -> Result<Option<Vec<OutPoint>>, AppError> {
+    let Some(list) = outpoints else {
+        return Ok(None);
+    };
+    if list.len() > 10_000 {
+        return Err(AppError::new(ErrorCode::InvalidInput, "too many selected inputs"));
+    }
+    let parsed = list
+        .into_iter()
+        .map(|o| -> Result<OutPoint, AppError> {
+            let txid = Txid::from_str(&o.txid)
+                .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
+            Ok(OutPoint::new(txid, o.vout))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if parsed.iter().collect::<std::collections::HashSet<_>>().len() != parsed.len() {
+        return Err(AppError::new(ErrorCode::InvalidInput, "selected inputs contain duplicates"));
+    }
+    Ok(Some(parsed))
+}
+
+pub async fn estimate_send_fee(
+    taker: &TakerInstance,
+    address: String,
+    amount_sats: u64,
+    fee_rate: Option<f64>,
+    outpoints: Option<Vec<Outpoint>>,
+) -> Result<SendFeeEstimate, AppError> {
+    let fee_rate = fee_rate.unwrap_or(2.0);
+    if !fee_rate.is_finite() || fee_rate <= 0.0 || fee_rate > 10_000.0 {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "fee rate must be finite and between 0 and 10,000 sat/vB",
+        ));
+    }
+    let script = Address::from_str(address.trim())
+        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?
+        .assume_checked()
+        .script_pubkey();
+    let outpoints = selected_outpoints(outpoints)?;
+    let wallet = taker.wallet.clone();
+    let log_dir = taker.data_dir.clone();
+    tokio::task::spawn_blocking(move || -> Result<SendFeeEstimate, AppError> {
+        let _log = crate::logging::wallet_scope(log_dir);
+        let address_type = if script.is_p2wpkh() { AddressType::P2WPKH } else { AddressType::P2TR };
+        let asked = std::time::Instant::now();
+        let guard = wallet.read()?;
+        // The estimate itself is arithmetic; any wait is another holder of the wallet (a sync,
+        // the transaction list fetching inputs, recovery), which is worth seeing in the log.
+        if asked.elapsed() > Duration::from_secs(1) {
+            log::info!("Send fee estimate waited {:?} for the wallet", asked.elapsed());
+        }
+        let coins = guard.coin_select(
+            Amount::from_sat(amount_sats),
+            fee_rate,
+            address_type,
+            outpoints,
+            None,
+        )?;
+        // Version and locktime, the input and output counts, 41 bytes per input, then the payment
+        // and a P2TR change output.
+        let base = 4 + 4 + 1 + 1 + 41 * coins.len() + (8 + 1 + script.len()) + (8 + 1 + 34);
+        let witness: usize = coins.iter().map(|(_, info)| info.estimate_witness_size()).sum();
+        let vsize = (base * 4 + witness + 2).div_ceil(4) as u64;
+        Ok(SendFeeEstimate {
+            fee_sats: (fee_rate * vsize as f64).ceil() as u64,
+            vsize,
+            inputs: coins.len(),
+        })
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
 /// `fee_rate` defaults to 2 sat/vB when omitted.
 pub async fn send_to_address(
     state: &Arc<AppState>,
@@ -1084,31 +1212,7 @@ pub async fn send_to_address(
         SensitiveOperation::SendTakerFunds,
     )?;
     let wallet = taker.wallet.clone();
-    let outpoints = outpoints
-        .map(|list| {
-            if list.len() > 10_000 {
-                return Err(AppError::new(
-                    ErrorCode::InvalidInput,
-                    "too many selected inputs",
-                ));
-            }
-            list.into_iter()
-                .map(|o| -> Result<OutPoint, AppError> {
-                    let txid = Txid::from_str(&o.txid)
-                        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
-                    Ok(OutPoint::new(txid, o.vout))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    if outpoints.as_ref().is_some_and(|items| {
-        items.iter().collect::<std::collections::HashSet<_>>().len() != items.len()
-    }) {
-        return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "selected inputs contain duplicates",
-        ));
-    }
+    let outpoints = selected_outpoints(outpoints)?;
 
     let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<SendResult, AppError> {

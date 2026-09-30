@@ -13,6 +13,7 @@ import { IntroStage } from "../../components/ui/IntroStage";
 import { MIN_WALLET_PASSWORD_LENGTH } from "../../lib/password-policy";
 import { withMinDelay } from "../../lib/timing";
 import { walletIdentity } from "../../lib/wallet-identity";
+import { currentStatus, onCurrentChain } from "../../store/connection";
 import {
   getDefaultDataDir,
   getDefaultWalletsDir,
@@ -78,12 +79,13 @@ const MIN_STEP_MS = 900;
 
 // The crate refuses to create an unencrypted wallet, so this is a floor, not a style rule.
 
-const CAPTIONS: Record<ViewMode, string> = {
-  grid: "Select your wallet",
-  unlock: "Unlock your wallet",
-  create: "Create a new wallet",
-  restore: "Restore an encrypted backup",
-  checking: "Setting things up",
+// Lead, then the word set in the accent.
+const HEADINGS: Record<ViewMode, [string, string]> = {
+  grid: ["Select your", "wallet"],
+  unlock: ["Unlock your", "wallet"],
+  create: ["Create a new", "wallet"],
+  restore: ["Restore an encrypted", "backup"],
+  checking: ["Setting things", "up"],
 };
 
 function onEnter(fn: () => void) {
@@ -135,7 +137,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setWallets(null);
     // An unreadable folder is indistinguishable from an empty one here, and both lead to the
     // same place: the create form.
-    const found = await listWallets(dir).catch(() => []);
+    const status = await currentStatus();
+    const found = (await listWallets(dir).catch(() => []))
+      .filter((wallet) => onCurrentChain(wallet.network, status))
+      .map((wallet) => wallet.name);
     setWallets(found);
     // With nothing to unlock, creating is the only way forward — open the form directly
     // rather than making the user dismiss an empty-state panel first. Back still reaches
@@ -204,13 +209,13 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   }
 
   function submitRestore() {
-    if (!restoreSelection || !restoreName.trim()) return;
+    if (!restoreSelection || !restoreName.trim() || !restorePassword) return;
     runChecks({
       mode: "restore",
       walletName: restoreName.trim(),
       selectionId: restoreSelection.selectionId,
       displayName: restoreSelection.displayName,
-      password: restorePassword || undefined,
+      password: restorePassword,
     });
   }
 
@@ -257,7 +262,9 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       }));
       setFailure({
         message:
-          wrongPassword ? "Incorrect password. Try again." : (err?.message ?? "Something went wrong."),
+          wrongPassword
+            ? `Incorrect ${wallet.mode === "restore" ? "backup " : ""}password. Try again.`
+            : (err?.message ?? "Something went wrong."),
       });
     }
   }
@@ -286,12 +293,14 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     <div className="flex flex-col gap-5 text-left">
       <TextField
         label="Wallet name"
+        autoComplete="username"
         required
         value={createName}
         onChange={(e) => setCreateName(e.target.value)}
       />
       <PasswordField
         label="Password"
+        autoComplete="new-password"
         required
         value={createPassword}
         onChange={(e) => setCreatePassword(e.target.value)}
@@ -303,6 +312,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       />
       <PasswordField
         label="Confirm password"
+        autoComplete="new-password"
         required
         value={createConfirm}
         onChange={(e) => setCreateConfirm(e.target.value)}
@@ -410,9 +420,8 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   return (
     <>
       <IntroStage
-        lead="Welcome to"
-        accent="Portal"
-        caption={CAPTIONS[viewMode]}
+        lead={HEADINGS[viewMode][0]}
+        accent={HEADINGS[viewMode][1]}
         instant={introPlayed}
         onDone={() => {
           introPlayed = true;
@@ -433,7 +442,8 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           <Card className={`border-line-strong ${viewMode === "unlock" || viewMode === "checking" ? "hairline" : ""}`}>
             {viewMode === "grid" && (
               <>
-                <div className="p-8">
+                {/* Extra room on top: the two-row actions footer below weighs the box down. */}
+                <div className="px-8 pb-8 pt-11">
                   {wallets === null ? (
                     <p className="text-center text-[13px] text-muted">Looking for wallets…</p>
                   ) : wallets.length === 0 ? (
@@ -535,24 +545,22 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
                   </div>
                   <TextField
                     label="New wallet name"
+                    autoComplete="off"
                     value={restoreName}
                     onChange={(e) => setRestoreName(e.target.value)}
                   />
                   <PasswordField
                     label="Backup password"
-                    placeholder="Leave empty only for a legacy plaintext backup"
+                    autoComplete="off"
+                    required
                     value={restorePassword}
                     onChange={(e) => setRestorePassword(e.target.value)}
                     onKeyDown={onEnter(submitRestore)}
                   />
-                  <p className="text-[11.5px] leading-5 text-warning">
-                    Portal always creates encrypted backups. An empty password is supported only
-                    when importing an older backup created elsewhere.
-                  </p>
                 </div>
                 <div className="flex gap-3 border-t border-line px-8 py-5">
                   <Button variant="secondary" onClick={() => setViewMode("grid")}>Cancel</Button>
-                  <Button className="flex-1" disabled={!restoreName.trim()} onClick={submitRestore}>
+                  <Button className="flex-1" disabled={!restoreName.trim() || !restorePassword} onClick={submitRestore}>
                     Restore &amp; continue
                   </Button>
                 </div>

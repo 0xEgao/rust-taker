@@ -86,6 +86,21 @@ fn is_unsettled(record: &OperationRecord) -> bool {
     record.state == OperationState::Indeterminate
 }
 
+/// A spend from `wallet_id` whose outcome could not be proven: it may already have moved coins,
+/// so another spend could double it.
+fn blocks_spend(record: &OperationRecord, wallet_id: Option<&str>) -> bool {
+    moves_funds(&record.kind) && is_unsettled(record) && !record.acknowledged
+        && belongs_to(record, wallet_id)
+}
+
+/// A spend from `wallet_id` still being carried out. A browser that lost track of one (a dropped
+/// status poll reads as a failure) must not be able to start a second beside it.
+fn spend_running(record: &OperationRecord, wallet_id: Option<&str>) -> bool {
+    moves_funds(&record.kind)
+        && matches!(record.state, OperationState::Accepted | OperationState::Running)
+        && belongs_to(record, wallet_id)
+}
+
 /// Whether a record has outlived its use. Settled ones go after the retention window; an
 /// unresolved one only once the owner has acknowledged it, since until then it is what keeps
 /// a second spend from the same wallet out. Work still running is never dropped.
@@ -213,6 +228,33 @@ impl Journal {
             return Ok(Admission::Replayed(existing.clone()));
         }
 
+        // Under the same lock as the insert below: checked separately, two spends with different
+        // keys could both pass before either was recorded.
+        if moves_funds(kind) {
+            let wallet = wallet_id.as_deref();
+            let blocking: Vec<&str> = index
+                .values()
+                .filter(|r| blocks_spend(r, wallet))
+                .map(|r| r.operation_id.as_str())
+                .collect();
+            if !blocking.is_empty() {
+                let mut error = AppError::new(
+                    ErrorCode::SwapInProgress,
+                    "An earlier payment's outcome could not be confirmed. Check it before \
+                     spending again.",
+                );
+                error.details = Some(serde_json::json!({ "blocking": blocking }));
+                return Err(error);
+            }
+            if index.values().any(|r| spend_running(r, wallet)) {
+                return Err(AppError::new(
+                    ErrorCode::SwapInProgress,
+                    "A payment from this wallet is still going through. Wait for it to finish \
+                     before spending again.",
+                ));
+            }
+        }
+
         let record = OperationRecord {
             operation_id: operation_id.to_string(),
             kind: kind.to_string(),
@@ -316,12 +358,7 @@ impl Journal {
         let Ok(index) = self.index.lock() else {
             return Vec::new();
         };
-        index
-            .values()
-            .filter(|r| moves_funds(&r.kind) && is_unsettled(r) && !r.acknowledged)
-            .filter(|r| belongs_to(r, wallet_id))
-            .cloned()
-            .collect()
+        index.values().filter(|r| blocks_spend(r, wallet_id)).cloned().collect()
     }
 
     /// Settles a record against evidence the caller gathered.
@@ -426,6 +463,61 @@ mod tests {
         assert!(j.admit(&id, "send", None, 1, &other).is_err());
         // A different operation kind under the same key is equally not a retry.
         assert!(j.admit(&id, "swap", None, 1, &request()).is_err());
+    }
+
+    fn admit_spend(j: &Journal, wallet: Option<&str>) -> Result<Admission, AppError> {
+        j.admit(&key(), "send_to_address", wallet.map(str::to_string), 1, &request())
+    }
+
+    #[test]
+    fn a_spend_still_running_holds_the_next_one_until_it_settles() {
+        let j = Journal::default();
+        let send = key();
+        j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()).unwrap();
+        assert!(admit_spend(&j, Some("w")).is_err());
+        j.mark_running(&send).unwrap();
+        assert!(admit_spend(&j, Some("w")).is_err());
+        assert!(admit_spend(&j, Some("other")).is_ok(), "another wallet's spend does not conflict");
+        j.mark_succeeded(&send, serde_json::json!({ "txid": "abc" })).unwrap();
+        assert!(admit_spend(&j, Some("w")).is_ok());
+    }
+
+    /// Retrying the same key is how a lost response gets its answer, so a running spend must
+    /// replay rather than hold up its own retry.
+    #[test]
+    fn a_retry_of_the_running_spend_replays() {
+        let j = Journal::default();
+        let send = key();
+        j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()).unwrap();
+        j.mark_running(&send).unwrap();
+        assert!(matches!(
+            j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()),
+            Ok(Admission::Replayed(_))
+        ));
+    }
+
+    #[test]
+    fn a_walletless_spend_holds_every_wallet_and_other_work_holds_none() {
+        let walletless = Journal::default();
+        admit_spend(&walletless, None).unwrap();
+        assert!(admit_spend(&walletless, Some("w")).is_err());
+        assert!(admit_spend(&walletless, Some("other")).is_err());
+
+        let non_spend = Journal::default();
+        non_spend.admit(&key(), "init_taker", Some("w".to_string()), 1, &request()).unwrap();
+        assert!(admit_spend(&non_spend, Some("w")).is_ok());
+    }
+
+    #[test]
+    fn an_unresolved_spend_refuses_the_next_one_until_acknowledged() {
+        let j = Journal::default();
+        let send = key();
+        j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()).unwrap();
+        j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "lost")).unwrap();
+        let refused = admit_spend(&j, Some("w")).unwrap_err();
+        assert!(refused.details.is_some(), "names the payment holding things up");
+        j.acknowledge(&send, Some("w")).unwrap();
+        assert!(admit_spend(&j, Some("w")).is_ok());
     }
 
     /// The lockout came from gating on operations that cannot conflict with a spend.
@@ -534,8 +626,9 @@ mod tests {
         let settled = key();
         let unresolved = key();
         let running = key();
+        // Not a spend kind: three spends from one wallet could not all be admitted at once.
         for id in [&settled, &unresolved, &running] {
-            j.admit(id, "send_to_address", None, 1, &request()).unwrap();
+            j.admit(id, "send", None, 1, &request()).unwrap();
         }
         j.mark_succeeded(&settled, serde_json::json!({ "txid": "abc" })).unwrap();
         j.mark_indeterminate(&unresolved, AppError::new(ErrorCode::Io, "lost")).unwrap();

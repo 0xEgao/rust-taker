@@ -420,11 +420,85 @@ impl log::Log for InitPhaseWatcher {
     fn flush(&self) {}
 }
 
+struct FundingWaitWatch {
+    /// The swap's own thread: the crate's funding waits run on it, and several wallets can be
+    /// swapping at once.
+    thread: std::thread::ThreadId,
+    waits: std::sync::Arc<Mutex<crate::state::FundingWaits>>,
+}
+
+static FUNDING_WAITS: Mutex<Vec<FundingWaitWatch>> = Mutex::new(Vec::new());
+
+pub struct FundingWaitGuard {
+    thread: std::thread::ThreadId,
+}
+
+impl Drop for FundingWaitGuard {
+    fn drop(&mut self) {
+        if let Ok(mut watches) = FUNDING_WAITS.lock() {
+            watches.retain(|watch| watch.thread != self.thread);
+        }
+    }
+}
+
+/// Record the txids each funding wait on this thread polls, for as long as the guard lives.
+#[must_use]
+pub fn watch_funding_waits(
+    waits: std::sync::Arc<Mutex<crate::state::FundingWaits>>,
+) -> FundingWaitGuard {
+    let thread = std::thread::current().id();
+    if let Ok(mut watches) = FUNDING_WAITS.lock() {
+        watches.push(FundingWaitWatch { thread, waits });
+    }
+    FundingWaitGuard { thread }
+}
+
+#[derive(Debug)]
+struct FundingWaitWatcher;
+
+impl log::Log for FundingWaitWatcher {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        // The wait logs every unconfirmed txid once per round as "Tx <txid> has N confirmations
+        // (need M)"; its "seen in mempool" line is skipped, since it would make one round read
+        // as two and split a leg's txids.
+        if record.target() != "openswap::wallet::api" {
+            return;
+        }
+        let message = record.args().to_string();
+        let Some(txid) = message
+            .strip_prefix("Tx ")
+            .filter(|rest| rest.contains(" confirmations (need "))
+            .and_then(|rest| rest.split(' ').next())
+            .filter(|txid| txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit()))
+        else {
+            return;
+        };
+        // Blocking: a skipped repeat never seals its leg, and the next leg's txids join it.
+        // Nothing logs while holding this lock, so it cannot re-enter.
+        let Ok(watches) = FUNDING_WAITS.lock() else {
+            return;
+        };
+        let thread = std::thread::current().id();
+        if let Some(watch) = watches.iter().find(|watch| watch.thread == thread) {
+            if let Ok(mut waits) = watch.waits.lock() {
+                waits.observe(txid);
+            }
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 fn build_config(taker_dir: Option<&PathBuf>) -> Config {
     let mut builder = Config::builder()
         .appender(Appender::builder().build("stdout", Box::new(ConsoleAppender::builder().build())))
         .appender(Appender::builder().build("maker_router", Box::new(MakerLogRouter)))
-        .appender(Appender::builder().build("init_phase", Box::new(InitPhaseWatcher)));
+        .appender(Appender::builder().build("init_phase", Box::new(InitPhaseWatcher)))
+        .appender(Appender::builder().build("funding_wait", Box::new(FundingWaitWatcher)));
 
     let root_appender = match taker_dir.and_then(|dir| file_appender(dir)) {
         Some(appender) => {
@@ -463,6 +537,7 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
                 .appender(root_appender)
                 .appender("wallet_router")
                 .appender("init_phase")
+                .appender("funding_wait")
                 .build(log::LevelFilter::Info),
         )
         .expect("logger config references only appenders registered above")

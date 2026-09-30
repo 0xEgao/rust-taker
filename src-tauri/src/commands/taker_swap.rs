@@ -41,6 +41,11 @@ pub async fn start_swap(
 }
 
 #[tauri::command]
+pub fn cancel_swap(state: tauri::State<'_, Arc<AppState>>, swap_id: String) -> Result<(), AppError> {
+    taker_swap::cancel_swap(&*desktop_taker(&state)?, swap_id)
+}
+
+#[tauri::command]
 pub fn get_swap_progress(state: tauri::State<'_, Arc<AppState>>) -> Result<Option<SwapProgressDto>, AppError> {
     taker_swap::get_swap_progress(&*desktop_taker(&state)?)
 }

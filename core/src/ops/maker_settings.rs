@@ -258,6 +258,7 @@ fn load_dashboard_registrations(
                 amount_relative_fee_pct: settings.amount_relative_fee_pct,
                 time_relative_fee_pct: settings.time_relative_fee_pct,
                 data_dir: settings.data_directory,
+                network: None,
             };
             (router_id, dto)
         })
@@ -288,7 +289,17 @@ pub(crate) fn save(settings: &MakerSettingsDto) -> Result<(), AppError> {
 }
 
 pub fn list_makers() -> Result<Vec<MakerSettingsDto>, AppError> {
-    let mut makers: Vec<_> = load_all()?.into_values().collect();
+    let mut makers = load_all()?
+        .into_values()
+        .map(|mut settings| {
+            let dir = match &settings.data_dir {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => crate::storage::maker_data_dir(&settings.router_id)?,
+            };
+            settings.network = crate::storage::wallet_network(&dir, &settings.wallet_name);
+            Ok(settings)
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
     makers.sort_by(|a, b| a.router_id.cmp(&b.router_id));
     Ok(makers)
 }
@@ -458,6 +469,7 @@ mod tests {
             amount_relative_fee_pct: 0.0025,
             time_relative_fee_pct: 0.0001,
             data_dir: Some("/tmp/maker-one".to_string()),
+            network: None,
         }
     }
 

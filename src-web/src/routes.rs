@@ -340,10 +340,17 @@ async fn session(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let caller = authenticate(&state, &headers)?;
+    // A token from another session (a Portal on another port of the same host replaced the
+    // cookie) would read as signed in while every change is refused, so it signs in again.
+    if check_csrf(&caller, &headers).is_err() {
+        return Err(unauthorized(&state));
+    }
     let body = Json(json!({
         "installationId": state.installation_id,
         "runtimeId": state.runtime_id,
-        "csrfToken": caller.csrf,
+        // No `csrfToken`: only a login hands it out. On a shared host (Umbrel) the session
+        // cookie reaches every app, and a token readable with the cookie alone would let any of
+        // them make changes as the owner.
         "capabilities": {
             "nativeFilePicker": false,
             "canQuit": false,
@@ -421,31 +428,12 @@ async fn durable(
         })?
         .to_string();
 
-    // A spend whose effect could not be proven may already have moved coins, so another
-    // spend could double it. Scoped deliberately: only fund-moving work is held, and only by
-    // other fund-moving work. Recovery is never held — it is the remedy for a stuck swap, and
-    // blocking it would strand the funds it exists to reclaim. Reading an existing key is
-    // still allowed, since that is how one gets settled.
-    // Per wallet: a payment stuck on one wallet cannot double-spend another wallet's coins.
+    // Admission holds a spend back only for its own wallet: a payment stuck on one wallet
+    // cannot double-spend another wallet's coins.
     let wallet_id = state
         .runtime
         .wallet_of(&caller.session)
         .map(|dir| dir.display().to_string());
-    if portal_core::operations::moves_funds(name) && state.journal.get(&key).is_none() {
-        let blocking = state.journal.blocking_conflicts(wallet_id.as_deref());
-        if !blocking.is_empty() {
-            let mut error = AppError::new(
-                ErrorCode::SwapInProgress,
-                "An earlier payment's outcome could not be confirmed. Check it before \
-                 spending again.",
-            );
-            error.details = Some(json!({
-                "blocking": blocking.iter().map(|r| &r.operation_id).collect::<Vec<_>>(),
-            }));
-            return Err(ApiError(StatusCode::CONFLICT, error));
-        }
-    }
-
     match state.journal.admit(&key, name, wallet_id, 0, &args)? {
         portal_core::operations::Admission::Replayed(record) => {
             // Not an error: this is the answer the client came back for.

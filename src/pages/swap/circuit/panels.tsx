@@ -1,7 +1,16 @@
 import type { ReactNode } from "react";
 
 import { explorerTxUrl, formatNumber } from "../../../lib/wallet-format";
+import { openExternal } from "../../../platform";
 import { EDGE_STAGE_LABEL, type CircuitView } from "./useSwapCircuit";
+
+/** A `target="_blank"` link does nothing inside the desktop webview, so it goes through the
+ *  host like every other explorer link. */
+export function openInBrowser(e: { preventDefault: () => void }, txid: string) {
+  e.preventDefault();
+  const url = explorerTxUrl(txid);
+  if (url) void openExternal(url);
+}
 
 /**
  * Answers "how much longer", as a strip under the circuit. `Stage` is the circuit's own
@@ -67,7 +76,7 @@ export function NowPanel({ view }: { view: CircuitView }) {
                   edge.contractCount > 1 ? "s" : ""
                 } — the one${edge.contractCount > 1 ? "s" : ""} that pay${
                   edge.contractCount > 1 ? "" : "s"
-                } you`
+                } ${view.paymentAddress ? "the receiver" : "you"}`
               : `Router ${edge.index} → Router ${edge.index + 1}`}
           {edge.contractCount > 1 && ` · ${edge.contractCount} Splits`}
           {" · "}
@@ -80,9 +89,8 @@ export function NowPanel({ view }: { view: CircuitView }) {
       {edge?.txids.map((txid) => (
         <a
           key={txid}
-          href={explorerTxUrl(txid)}
-          target="_blank"
-          rel="noreferrer"
+          href={explorerTxUrl(txid) ?? undefined}
+          onClick={(e) => openInBrowser(e, txid)}
           className="mt-1 block break-all font-mono text-[10px] text-primary underline decoration-dotted"
         >
           {txid}

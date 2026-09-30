@@ -307,6 +307,21 @@ export interface OfferBookView {
 // Router operations
 // ---------------------------------------------------------------------------
 
+/** The mining fee a send would pay, sized from the coins it would spend. An upper bound: it
+ *  assumes a change output. */
+export interface SendFeeEstimate {
+  feeSats: number;
+  vsize: number;
+  inputs: number;
+}
+
+/** A wallet in the picker. `network` is absent until Portal can tell, and `"test"` when all it
+ *  knows is that the wallet is on some test network. */
+export interface WalletListing {
+  name: string;
+  network?: string;
+}
+
 export interface RouterSettings {
   routerId: string;
   walletName: string;
@@ -325,6 +340,8 @@ export interface RouterSettings {
   amountRelativeFeePct: number;
   timeRelativeFeePct: number;
   dataDir?: string;
+  /** The chain this router's wallet is on, once Portal has seen it start. */
+  network?: string;
 }
 
 export interface RouterInitConfig extends RouterSettings {
@@ -523,6 +540,10 @@ export interface SwapTrackerProgress {
   watchonlyContractTxids: string[];
   /** Our own funding has confirmed — the only signal taproot gives for the first leg. */
   outgoingConfirmed: boolean;
+  protocol: ProtocolVersion;
+  /** Each leg's real on-chain txids, in route order, from the swap's own confirmation waits.
+   *  Filled while this process runs the swap; empty after a restart. */
+  fundingWaitTxids: string[][];
   /** Echoed from the tracker, so a remounted page knows a PaySwap without the prepared quote. */
   paymentAddress?: string;
   paymentAmountSats?: number;
@@ -558,6 +579,9 @@ export interface RecoveryContract {
   /** `hashlock` is spendable once confirmed; `timelock` waits out the refund delay. */
   claimPath: "hashlock" | "timelock";
   confirmations: number;
+  /** The first router's payment for a swap this wallet already received — the router's to
+   *  claim, not this wallet's to reclaim. */
+  routerOwed: boolean;
   /** Blocks still to wait. Timelock only. */
   blocksRemaining?: number;
   /** The refund delay in full, so progress through it can be shown. Timelock only. */
@@ -567,6 +591,8 @@ export interface RecoveryContract {
 /** A contract the recovery loop has already claimed back. */
 export interface RecoveredContract {
   contractTxid: string;
+  /** The same resolution means opposite things on the two legs. */
+  leg: "incoming" | "outgoing";
   resolution: ContractResolution;
   spendingTxid?: string;
 }
@@ -598,13 +624,19 @@ export interface RecoveryStatus {
   failedAtPhase?: TrackerPhase;
   routerCount: number;
   sendAmountSats: number;
+  /** The swap's incoming coins were claimed: it went through, and only the router's payment
+   *  is left to settle. */
+  swapReceived: boolean;
   /** Contracts still holding funds. */
   pending: RecoveryContract[];
   /** Contracts already claimed back. */
   resolved: RecoveredContract[];
   /** The longest wait left across every pending timelock contract. */
   blocksRemaining?: number;
+  /** This wallet's own funds still in contracts. */
   lockedSats: number;
+  /** Router payments still in contracts — not this wallet's. */
+  routerOwedSats: number;
   updatedAt?: number;
 }
 

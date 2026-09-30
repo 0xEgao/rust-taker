@@ -7,12 +7,30 @@ import type {
 
 const API = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/v1`;
 
-/** Returned by `GET /session`; required on every mutation. Held in memory only — a token in
- *  `localStorage` would be readable by any injected script. */
-let csrfToken: string | null = null;
+/** Required on every mutation, and issued only by a login. `GET /session` never returns it: on
+ *  Umbrel every app shares one host, so the session cookie reaches them all, and a token
+ *  readable with the cookie alone would let any of them act as the owner. Kept in localStorage,
+ *  which — unlike a cookie — is separated by port, so it survives reloads and new tabs. */
+const CSRF_KEY = "portal.csrf";
+
+function storedCsrfToken(): string | null {
+  try {
+    return localStorage.getItem(CSRF_KEY);
+  } catch {
+    return null;
+  }
+}
+
+let csrfToken: string | null = storedCsrfToken();
 
 export function setCsrfToken(token: string | null) {
   csrfToken = token;
+  try {
+    if (token) localStorage.setItem(CSRF_KEY, token);
+    else localStorage.removeItem(CSRF_KEY);
+  } catch {
+    // Storage refused (private mode): the token still works for this page's lifetime.
+  }
 }
 
 /**
@@ -123,10 +141,33 @@ async function settle(operationId: string): Promise<unknown> {
   const deadline = Date.now() + SETTLE_TIMEOUT_MS;
   let wait = 300;
   for (;;) {
+    // A status check that fails says nothing about the operation, which runs on regardless.
+    // Reporting it as a failure is what invites a second press of Send, so it is retried. Only
+    // a real answer ends the wait: a 404 (the server restarted and forgot it, so its outcome is
+    // unknown) or a refused session.
     const response = await fetch(`${API}/operations/${operationId}`, {
       credentials: "same-origin",
-    });
-    if (!response.ok) throw await toAppError(response);
+    }).catch(() => null);
+    if (response?.status === 404) {
+      throw {
+        code: "OPERATION_UNRESOLVED",
+        message: "Portal lost track of this operation. Check its outcome before retrying.",
+      };
+    }
+    if (response && (response.status === 401 || response.status === 403)) {
+      throw await toAppError(response);
+    }
+    if (!response?.ok) {
+      if (Date.now() > deadline) {
+        throw {
+          code: "OPERATION_PENDING",
+          message: "Still running. It keeps going on the server — reopen Portal to see it.",
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      wait = Math.min(wait * 1.5, 2000);
+      continue;
+    }
     const record = (await response.json()) as {
       state: string;
       result?: unknown;
@@ -206,7 +247,12 @@ async function runRestore(): Promise<{
   // is not running, which is impossible to diagnose from the screen.
   let response: Response;
   try {
-    response = await fetch(`${API}/session`, { credentials: "same-origin" });
+    // The server checks it against the session, so a token left over from another session
+    // reads as signed out rather than as a session that can change nothing.
+    response = await fetch(`${API}/session`, {
+      credentials: "same-origin",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+    });
   } catch {
     throw {
       code: "SERVER_UNREACHABLE",
@@ -224,6 +270,7 @@ async function runRestore(): Promise<{
     const hasOwner =
       (body as { error?: { details?: { hasOwner?: boolean } } } | null)?.error
         ?.details?.hasOwner ?? true;
+    setCsrfToken(null);
     return { authenticated: false, hasOwner };
   }
   // Only a 401 means "log in". A dev proxy with nothing behind it answers 500 rather
@@ -235,11 +282,7 @@ async function runRestore(): Promise<{
       message: "Portal's API is not responding.",
     };
   }
-  const body = (await response.json()) as {
-    csrfToken: string;
-    hasOwner: boolean;
-  };
-  setCsrfToken(body.csrfToken);
+  const body = (await response.json()) as { hasOwner: boolean };
   return { authenticated: true, hasOwner: body.hasOwner };
 }
 

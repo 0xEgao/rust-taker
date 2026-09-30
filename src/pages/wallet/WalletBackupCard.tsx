@@ -102,9 +102,9 @@ export function WalletFooterCard() {
 
       <div className="p-5">
         <p className="text-[12px] leading-5 text-muted">
-          The backup contains wallet data and swap history. Protect it with a
-          strong password and keep that password somewhere safe — the same one
-          is required to restore it.
+          The backup contains your wallet&apos;s keys. Protect it with a strong
+          password and keep that password somewhere safe — the same one is
+          required to restore it.
         </p>
         {!open ? (
           <Button size="sm" className="mt-4" onClick={() => setOpen(true)}>

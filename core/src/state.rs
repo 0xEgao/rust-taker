@@ -193,6 +193,36 @@ pub struct ActiveSwap {
     pub started_at: Option<SystemTime>,
     pub error: Option<String>,
     pub outgoing: Arc<OutgoingConfirmation>,
+    pub funding_waits: Arc<Mutex<FundingWaits>>,
+}
+
+/// The txids each funding wait of the running swap polled, one group per leg in route order:
+/// the swap waits on its legs one at a time, and on every split of a leg at once. Read off the
+/// crate's wait log, because a leg's contract reaches the tracker only after it confirms, and a
+/// Legacy leg's never does: its tracker txid is a contract broadcast only on failure.
+#[derive(Default)]
+pub struct FundingWaits {
+    pub legs: Vec<Vec<String>>,
+    complete: bool,
+}
+
+impl FundingWaits {
+    /// Each round re-checks every txid of the leg, so one coming round again means the leg's
+    /// group is whole, and the next unseen txid is the next leg's. A later wait that re-checks
+    /// an earlier leg (Legacy waits on the previous hop again) repeats known txids only.
+    pub fn observe(&mut self, txid: &str) {
+        if self.legs.iter().flatten().any(|seen| seen == txid) {
+            self.complete = true;
+            return;
+        }
+        match self.legs.last_mut() {
+            Some(leg) if !self.complete => leg.push(txid.to_string()),
+            _ => {
+                self.legs.push(vec![txid.to_string()]);
+                self.complete = false;
+            }
+        }
+    }
 }
 
 /// Whether our taproot funding has confirmed. Finding out is an Electrum round trip, so it runs
@@ -220,4 +250,27 @@ pub enum SwapLifecycle {
     Running,
     Finished,
     Failed,
+}
+
+#[cfg(test)]
+mod funding_waits_tests {
+    use super::FundingWaits;
+
+    #[test]
+    fn groups_each_legs_splits_and_ignores_rewaits_on_earlier_legs() {
+        let mut waits = FundingWaits::default();
+        // Leg 0: two splits polled round after round.
+        for txid in ["a", "b", "a", "b", "a"] {
+            waits.observe(txid);
+        }
+        // Leg 1 starts; Legacy then re-checks leg 0 before moving on.
+        for txid in ["c", "d", "c", "a", "b", "d"] {
+            waits.observe(txid);
+        }
+        // Leg 2: a single split.
+        for txid in ["e", "e"] {
+            waits.observe(txid);
+        }
+        assert_eq!(waits.legs, vec![vec!["a", "b"], vec!["c", "d"], vec!["e"]]);
+    }
 }

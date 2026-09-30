@@ -67,8 +67,8 @@ export function IntroStage({
   children,
 }: {
   lead: string;
-  accent: string;
-  caption: string;
+  accent?: string;
+  caption?: string;
   back?: { to: string; label: string; title: string };
   instant?: boolean;
   onDone?: () => void;
@@ -76,6 +76,7 @@ export function IntroStage({
   children: ReactNode;
 }) {
   const [stage, setStage] = useState(instant ? 4 : 0);
+  const withCaption = caption !== undefined;
   const reduceMotion = useReducedMotion() ?? false;
   // Held in a ref so an inline callback re-created on every render can't restart the sequence.
   // Written in an effect, not during render: a concurrent render React throws away must not
@@ -91,17 +92,22 @@ export function IntroStage({
       onDoneRef.current?.();
       return;
     }
-    const timers = [
-      setTimeout(() => setStage(1), WORDMARK_UP_MS),
-      setTimeout(() => setStage(2), CAPTION_IN_MS),
-      setTimeout(() => setStage(3), CAPTION_UP_MS),
-      setTimeout(() => {
-        setStage(4);
-        onDoneRef.current?.();
-      }, BODY_MS),
-    ];
+    const finish = () => {
+      setStage(4);
+      onDoneRef.current?.();
+    };
+    // With no caption there is nothing to wait out once the heading has docked, and its beats
+    // must not run at all: a later one would step the stage back and hide the body again.
+    const timers = withCaption
+      ? [
+          setTimeout(() => setStage(1), WORDMARK_UP_MS),
+          setTimeout(() => setStage(2), CAPTION_IN_MS),
+          setTimeout(() => setStage(3), CAPTION_UP_MS),
+          setTimeout(finish, BODY_MS),
+        ]
+      : [setTimeout(() => setStage(1), WORDMARK_UP_MS), setTimeout(finish, CAPTION_IN_MS)];
     return () => timers.forEach(clearTimeout);
-  }, [reduceMotion, instant]);
+  }, [reduceMotion, instant, withCaption]);
 
   return (
     <div className={`relative flex flex-col items-center overflow-hidden px-4 pb-16 pt-[14vh] text-center ${className}`}>
@@ -141,11 +147,17 @@ export function IntroStage({
           animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
           transition={{ duration: 0.85, delay: 0.35, ease: RISE }}
         >
-          {lead} <em className="italic text-primary">{accent}</em>
+          {lead}
+          {accent && (
+            <>
+              {" "}
+              <em className="italic text-primary">{accent}</em>
+            </>
+          )}
         </motion.span>
       </motion.h1>
 
-      {stage >= 2 && (
+      {stage >= 2 && withCaption && (
         <motion.p
           initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? "0vh" : CAPTION_FROM, fontSize: reduceMotion ? CAPTION_PX : CAPTION_LEAD_PX }}
           animate={{
@@ -165,7 +177,9 @@ export function IntroStage({
           initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? 0 : 14 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: "easeOut" }}
-          className="relative mt-9 w-full"
+          // Without a caption the body keeps the caption's place too (its margin and line), so
+          // it lands where it would with one.
+          className={`relative w-full ${withCaption ? "mt-9" : "mt-[74px]"}`}
         >
           {children}
         </motion.div>

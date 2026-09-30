@@ -115,8 +115,10 @@ function ServerPicker({
           className={`flex-none text-subtle transition-transform ${open ? "rotate-180" : ""}`}
         />
       </button>
+      {/* In the flow rather than floating: the card clips anything that overflows it, so a
+          floating list lost its last options below the card's edge. */}
       {open && (
-        <div className="absolute left-0 right-0 top-full z-20 mt-1 flex flex-col overflow-hidden rounded-control border border-line-strong bg-surface-raised shadow-[0_16px_32px_-16px_rgba(0,0,0,0.8)]">
+        <div className="mt-2 flex max-h-60 flex-col overflow-y-auto rounded-control border border-line-strong bg-surface-raised shadow-[0_16px_32px_-16px_rgba(0,0,0,0.8)]">
           {presets.map((preset) => (
             <button
               key={preset.url}

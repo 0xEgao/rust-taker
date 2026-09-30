@@ -43,6 +43,7 @@ import { formatTorEndpoint } from "../../lib/market-format";
 import { IntroStage } from "../../components/ui/IntroStage";
 import { RouterIntro } from "./RouterIntro";
 import { useToastStore } from "../../store/toast";
+import { chainName, currentStatus, onCurrentChain, useConnectionStore } from "../../store/connection";
 import { DashboardImport } from "./DashboardImport";
 import { copyText } from "../../lib/clipboard";
 import { formatNumber } from "../../lib/wallet-format";
@@ -339,9 +340,13 @@ export function RouterPage() {
   const [loading, setLoading] = useState(true);
   const [introDone, setIntroDone] = useState(introPlayed);
   const pushToast = useToastStore((state) => state.push);
+  const network = chainName(useConnectionStore((state) => state.status));
 
   const load = useCallback(async () => {
-    const registrations = await listRouters();
+    const status = await currentStatus();
+    const registrations = (await listRouters()).filter((router) =>
+      onCurrentChain(router.network, status),
+    );
     const rows = await Promise.all(
       registrations.map(async (settings): Promise<OwnedRouter> => {
         const [status, balances, reports] = await Promise.allSettled([
@@ -447,7 +452,7 @@ export function RouterPage() {
           <div>
             <div className="mb-3 flex items-center gap-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.18em] text-primary">
               <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_8px_color-mix(in_oklab,var(--color-primary)_70%,transparent)]" />
-              Router Console · Signet
+              Router Console{network && ` · ${network === "bitcoin" ? "mainnet" : network}`}
             </div>
             <h1 className="text-[28px] font-bold leading-none text-foreground">Router fleet</h1>
             <p className="mt-2 text-[12.5px] text-muted">Operate liquidity services, wallets, and earnings from one workspace.</p>

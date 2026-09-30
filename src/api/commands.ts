@@ -1,6 +1,8 @@
 import { invoke } from "./transport";
 import type {
   SwapPreparation,
+  SendFeeEstimate,
+  WalletListing,
   AddressType,
   AddressValidation,
   Balances,
@@ -88,7 +90,7 @@ export function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
 
-export function listWallets(dataDir?: string): Promise<string[]> {
+export function listWallets(dataDir?: string): Promise<WalletListing[]> {
   return invoke("list_wallets", { dataDir });
 }
 
@@ -121,7 +123,7 @@ export function restoreWallet(
   walletName: string,
   socksPort: number | undefined,
   selectionId: string,
-  password?: string,
+  password: string,
   dataDir?: string,
 ): Promise<void> {
   return invoke("restore_wallet", {
@@ -167,6 +169,15 @@ export function getTransactions(
 
 export function listUtxos(): Promise<UtxoEntry[]> {
   return invoke("list_utxos");
+}
+
+export function estimateSendFee(
+  address: string,
+  amountSats: number,
+  feeRate?: number,
+  outpoints?: Outpoint[],
+): Promise<SendFeeEstimate> {
+  return invoke("estimate_send_fee", { address, amountSats, feeRate, outpoints });
 }
 
 export function sendToAddress(
@@ -330,6 +341,10 @@ export function prepareSwap(request: SwapRequest): Promise<SwapSummary> {
 // src-tauri/src/commands/swap.rs); poll getSwapProgress for a snapshot.
 export function startSwap(swapId: string): Promise<void> {
   return invoke("start_swap", { swapId });
+}
+
+export function cancelSwap(swapId: string): Promise<void> {
+  return invoke("cancel_swap", { swapId });
 }
 
 export function getSwapProgress(): Promise<SwapProgress | null> {

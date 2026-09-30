@@ -22,6 +22,7 @@ import {
   getRecoveryStatus,
   getSwapProgress,
   getSwapTracker,
+  cancelSwap,
   prepareSwap,
   startSwap,
 } from "../../api/commands";
@@ -46,6 +47,7 @@ import {
   Disclosure,
   Identifier,
   LogViewer,
+  Notice,
   SatsAmount,
 } from "../../components/ui/display";
 import {
@@ -62,7 +64,7 @@ import {
   estimateRouteRouterFees,
   routerName,
 } from "../../lib/market-format";
-import { classifySpendType, formatDuration, formatNumber, formatUnitAmount, SATS_PER_BTC, satsToUnitString, type Unit, unitStringToSats } from "../../lib/wallet-format";
+import { classifySpendType, formatDuration, formatNumber, formatUnitAmount, SATS_PER_BTC, type Unit, useUnitAmount } from "../../lib/wallet-format";
 import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
@@ -96,6 +98,10 @@ const DEFAULT_TX_COUNT = 2;
 const MAX_TX_COUNT = 10;
 
 const FUNDING_RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
+
+// Routers drop a negotiated swap left idle for 15 minutes (the crate's IDLE_CONNECTION_TIMEOUT);
+// starting one after that fails part-way through, so the review stops offering it first.
+const REVIEW_TTL_MS = 10 * 60_000;
 
 function elapsedLabel(startedAt: number | null): string {
   if (!startedAt) return "0s";
@@ -141,6 +147,13 @@ export function SwapPage() {
   }, [balances]);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [btcPriceCached, setBtcPriceCached] = useState(false);
+  const {
+    unit,
+    input: amountInput,
+    setInput: setAmountInput,
+    changeUnit,
+    sats: amountSats,
+  } = useUnitAmount(btcPrice);
   const [routers, setRouters] = useState<Router[]>([]);
   const [fundingEstimate, setFundingEstimate] =
     useState<SwapFundingEstimate | null>(null);
@@ -152,8 +165,6 @@ export function SwapPage() {
   // Compared against the quote's own rate rather than a literal 2: the protocol's fixed rate
   // lives in the crate, and hardcoding it here would go stale silently.
 
-  const [unit, setUnit] = useState<Unit>("sats");
-  const [amountInput, setAmountInput] = useState("");
   const [utxoFilter, setUtxoFilter] = useState<UtxoFilter>("regular");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [protocol, setProtocol] = useState<ProtocolVersion>("taproot");
@@ -173,6 +184,9 @@ export function SwapPage() {
   const [submitting, setSubmitting] = useState(false);
   const [preparingSince, setPreparingSince] = useState<number | null>(null);
   const [preparation, setPreparation] = useState<SwapPreparation | null>(null);
+  const [review, setReview] = useState<SwapSummary | null>(null);
+  const [reviewExpired, setReviewExpired] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [swapLogs, setSwapLogs] = useState<LogLine[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -338,16 +352,6 @@ export function SwapPage() {
     };
   }, [phase, logsOpen]);
 
-  function changeUnit(nextUnit: Unit) {
-    const sats = unitStringToSats(amountInput, unit, btcPrice);
-    setAmountInput(satsToUnitString(sats, nextUnit, btcPrice));
-    setUnit(nextUnit);
-  }
-
-  const amountSats = useMemo(
-    () => unitStringToSats(amountInput, unit, btcPrice),
-    [amountInput, unit, btcPrice],
-  );
   const otherUnits = useMemo(
     () => (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit),
     [unit],
@@ -621,8 +625,6 @@ export function SwapPage() {
     !submitting &&
     !paymentsHeld;
 
-  // prepareSwap + startSwap is one renderer action. startSwap owns the single native approval
-  // dialog, bound to the authoritative prepared summary; there is no second renderer modal.
   // Only while `submitting`: this is the one window where the taker mutex is held by a call that
   // reports nothing, so the tracker file is the only progress signal there is.
   useEffect(() => {
@@ -674,17 +676,43 @@ export function SwapPage() {
         paymentAddress:
           destination === "address" ? paymentAddress.trim() : undefined,
       };
-      const prepared = await prepareSwap(request);
-      setSummary(prepared);
-      setSwapId(prepared.swapId);
-      await startSwap(prepared.swapId);
-      setStartedAt(Math.floor(Date.now() / 1000));
-      setPhase("running");
+      setReview(await prepareSwap(request));
     } catch (e) {
       const err = isAppError(e) ? e : null;
       pushToast("error", err?.message ?? "Failed to start swap.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  useEffect(() => {
+    setReviewExpired(false);
+    if (!review) return;
+    const id = setTimeout(() => setReviewExpired(true), REVIEW_TTL_MS);
+    return () => clearTimeout(id);
+  }, [review]);
+
+  function cancelReview() {
+    if (review) void cancelSwap(review.swapId).catch(() => {});
+    setReview(null);
+  }
+
+  async function confirmSwap() {
+    if (!review) return;
+    setConfirming(true);
+    try {
+      await startSwap(review.swapId);
+      setSummary(review);
+      setSwapId(review.swapId);
+      setStartedAt(Math.floor(Date.now() / 1000));
+      setPhase("running");
+      setReview(null);
+    } catch (e) {
+      const err = isAppError(e) ? e : null;
+      pushToast("error", err?.message ?? "Failed to start swap.");
+      cancelReview();
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -721,7 +749,7 @@ export function SwapPage() {
         <Card className="flex w-full max-w-md flex-col gap-5 border-line-strong p-7">
           <div>
             <h1 className="font-header text-[19px] font-bold text-foreground">
-              Starting your swap
+              Preparing your swap
             </h1>
             <p className="mt-1 text-[12.5px] leading-5 text-muted">
               No funds have moved yet. Every router has to agree terms over its own Tor circuit
@@ -740,9 +768,156 @@ export function SwapPage() {
                   : "Agreeing terms with the routers",
                 state: negotiated ? "passed" : negotiating ? "running" : "idle",
               },
-              { label: "Funding the route", state: negotiated ? "running" : "idle" },
             ]}
           />
+        </Card>
+      </div>
+    );
+  }
+
+  if (review) {
+    const paying = review.payment !== undefined;
+    const feePct =
+      review.sendAmountSats > 0
+        ? (review.totalEstimatedFeeSats / review.sendAmountSats) * 100
+        : null;
+    // Compared with the offer the form quoted from: the crate re-fetches each router's offer
+    // while negotiating and accepts any new price below 100%.
+    const raised = review.routers.filter((hop) => {
+      const quoted = routers.find((r) => r.address === hop.address)?.offer;
+      return (
+        quoted !== undefined &&
+        (hop.baseFee > quoted.baseFee ||
+          hop.amountRelativeFeePct > quoted.amountRelativeFeePct ||
+          hop.timeRelativeFeePct > quoted.timeRelativeFeePct)
+      );
+    });
+    return (
+      <div className="flex h-full flex-col items-center overflow-y-auto px-8 py-10">
+        <Card className="flex w-full max-w-lg flex-col gap-5 border-line-strong p-7">
+          <div>
+            <h1 className="font-header text-[19px] font-bold text-foreground">
+              Review your swap
+            </h1>
+            <p className="mt-1 text-[12.5px] leading-5 text-muted">
+              These are the terms the routers agreed to. No funds have moved yet.
+            </p>
+          </div>
+
+          {raised.length > 0 && (
+            <Notice tone="warning" icon={<AlertTriangle size={16} strokeWidth={2} />}>
+              {raised.length === 1
+                ? "A router raised its fee"
+                : `${raised.length} routers raised their fees`}{" "}
+              since the quote. Check the fees below before you start.
+            </Notice>
+          )}
+
+          <div className="flex flex-col gap-2">
+            {review.routers.map((hop, i) => (
+              <div
+                key={hop.address}
+                className={`flex flex-col gap-1 rounded-control border px-3.5 py-2.5 ${
+                  raised.includes(hop)
+                    ? "border-warning/50 bg-warning/[0.06]"
+                    : "border-line bg-surface-raised"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                    Router {i + 1}
+                  </span>
+                  <SatsAmount
+                    sats={hop.estimatedFeeSats}
+                    className={`text-[12px] font-semibold ${raised.includes(hop) ? "text-warning" : "text-foreground"}`}
+                  />
+                </div>
+                <Identifier value={hop.address} className="text-[11px] text-muted" />
+                <span className="font-mono text-[10.5px] text-subtle">
+                  base {formatNumber(hop.baseFee)} sats · {hop.amountRelativeFeePct}% ·
+                  time {hop.timeRelativeFeePct}%
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-3 text-[12px]">
+            <div className="flex items-center justify-between">
+              <span className="text-subtle">Swap amount</span>
+              <SatsAmount sats={review.sendAmountSats} className="font-semibold text-foreground" />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-subtle">Router fees</span>
+              <SatsAmount sats={review.routerFeeSats} className="font-semibold text-foreground" />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-subtle">Total mining fees</span>
+              <SatsAmount sats={review.miningFeeSats} className="font-semibold text-foreground" />
+            </div>
+            <div className="flex items-center justify-between border-t border-line pt-1.5">
+              <span className="text-subtle">Max total fees</span>
+              <SatsAmount sats={review.totalEstimatedFeeSats} className="font-bold text-primary" />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-subtle">% Fees</span>
+              <strong className="font-numeric tabular-nums font-semibold text-foreground">
+                {feePct === null ? "—" : `${feePct.toFixed(2)}%`}
+              </strong>
+            </div>
+          </div>
+
+          {paying ? (
+            <AmountTile label="Receiver gets exactly">
+              <SatsAmount sats={review.payment!.amountSats} className="text-success" />
+            </AmountTile>
+          ) : (
+            <AmountTile label="You receive at least">
+              <SatsAmount sats={review.estimatedReceiveAmountSats} className="text-success" />
+            </AmountTile>
+          )}
+
+          {reviewExpired ? (
+            <>
+              <Notice tone="warning" icon={<AlertTriangle size={16} strokeWidth={2} />}>
+                These terms are too old to start. Get a fresh quote from the routers.
+              </Notice>
+              <div className="flex gap-3">
+                <Button size="md" variant="secondary" className="flex-1" onClick={cancelReview}>
+                  Cancel
+                </Button>
+                <Button
+                  size="md"
+                  className="flex-1"
+                  onClick={() => {
+                    cancelReview();
+                    void handleStartSwap();
+                  }}
+                >
+                  <RefreshCw size={14} strokeWidth={2} /> Get a fresh quote
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="flex gap-3">
+              <Button
+                size="md"
+                variant="secondary"
+                className="flex-1"
+                disabled={confirming}
+                onClick={cancelReview}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="md"
+                className="flex-1"
+                loading={confirming}
+                onClick={() => void confirmSwap()}
+              >
+                Start swap
+              </Button>
+            </div>
+          )}
         </Card>
       </div>
     );
@@ -788,6 +963,21 @@ export function SwapPage() {
               {phase === "failed" && "Swap Failed"}
             </h1>
           </div>
+
+          {phase === "running" && (
+            <Notice
+              tone="warning"
+              icon={<AlertTriangle size={20} strokeWidth={2} />}
+              className="mt-5"
+            >
+              <p className="text-[14px] font-bold text-warning">
+                Do not stop the app during the swap.
+              </p>
+              <p className="mt-1 text-muted">
+                If it stops or crashes, start it again as soon as you can.
+              </p>
+            </Notice>
+          )}
 
           <Card className="mt-5 flex flex-col gap-4 border-line-strong p-6">
             {routeKnown ? (
@@ -962,7 +1152,7 @@ export function SwapPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setUnit("sats");
+                  changeUnit("sats");
                   setAmountInput(String(liquidity?.maxSwappable ?? 0));
                 }}
                 className="flex items-center gap-1 font-semibold text-primary hover:text-primary-hover"
