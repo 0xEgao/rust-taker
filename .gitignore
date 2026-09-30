@@ -31,4 +31,9 @@ CLAUDE.md
 # Container bootstrap secrets — never commit these.
 umbrel/*.secret
 
+# Working notes and audits — local only, like .claude/. Keep the public developer guide.
+docs/*
+!docs/DEVELOPMENT.md
+
+umbrel-upload/
 *.tar
