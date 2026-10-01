@@ -34,8 +34,8 @@ umbrel/*.secret
 # Working notes and audits — local only, like .claude/. Keep the public developer guide.
 docs/*
 !docs/DEVELOPMENT.md
+!docs/guide.md
+!docs/images/
 
 umbrel-upload/
 *.tar
-
-/screenshots/

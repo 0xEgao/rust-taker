@@ -1488,7 +1488,6 @@ export function RouterWorkspacePage() {
               <Button
                 onClick={() => void stop()}
                 loading={actionLoading}
-                disabled={transitioning}
               >
                 <Square size={13} />
                 Stop router
