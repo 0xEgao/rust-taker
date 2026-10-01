@@ -12,7 +12,7 @@
     "sync": "scripts/sync.sh",
     "sync:dev": "scripts/sync.sh --dev",
     "web:dev": "scripts/web-dev.sh",
-    "web:build": "tsc --noEmit && vite build --mode web && PORTAL_EMBED_WEB=dist/web cargo build --locked --release -p portal-web",
+    "web:build": "tsc --noEmit && vite build --mode web && PORTAL_EMBED_WEB=dist/web cargo build --release -p portal-web",
     "web:start": "vite build --mode web && cargo run --release -p portal-web -- --assets-dir dist/web"
   },
   "dependencies": {

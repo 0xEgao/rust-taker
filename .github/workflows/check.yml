@@ -64,7 +64,7 @@ jobs:
         run: npx vite build
 
       - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test --locked --workspace
+        run: cargo test --workspace

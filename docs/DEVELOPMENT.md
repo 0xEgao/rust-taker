@@ -75,7 +75,7 @@ Work also has a longer lifetime than a page. Desktop hides the window on close w
 
 ## Tools and dependencies
 
-The UI uses React, TypeScript, React Router, and Zustand for in-memory view state; Vite and Tailwind CSS handle builds and styling. Tauri owns desktop integration, while Axum and Tokio serve browser requests. Portal's Rust core adapts the OpenSwap protocol crate and manages Tor through [core/src/tor.rs](../core/src/tor.rs). Consult [package.json](../package.json), the workspace [Cargo.toml](../Cargo.toml), and [Cargo.lock](../Cargo.lock) for current versions and the pinned OpenSwap revision.
+The UI uses React, TypeScript, React Router, and Zustand for in-memory view state; Vite and Tailwind CSS handle builds and styling. Tauri owns desktop integration, while Axum and Tokio serve browser requests. Portal's Rust core adapts the OpenSwap protocol crate and manages Tor through [core/src/tor.rs](../core/src/tor.rs). Consult [package.json](../package.json) and the workspace [Cargo.toml](../Cargo.toml) for current versions.
 
 ## Build shape
 

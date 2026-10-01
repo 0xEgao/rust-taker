@@ -794,7 +794,9 @@ export function SwapPage() {
     });
     return (
       <div className="flex h-full flex-col items-center overflow-y-auto px-8 py-10">
-        <Card className="flex w-full max-w-lg flex-col gap-5 border-line-strong p-7">
+        {/* shrink-0: in this flex column the card would shrink to the viewport, and its
+            overflow-hidden then clips the bottom instead of letting the page scroll. */}
+        <Card className="flex w-full max-w-lg shrink-0 flex-col gap-5 border-line-strong p-7">
           <div>
             <h1 className="font-header text-[19px] font-bold text-foreground">
               Review your swap

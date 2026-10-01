@@ -152,7 +152,7 @@ jobs:
         env:
           PORTAL_EMBED_WEB: dist/web
         run: |
-          cargo build --locked --release -p portal-web
+          cargo build --release -p portal-web
           mkdir out && cp target/release/portal-web out/portal-server
 
       - name: Build portal-web (universal)
@@ -160,8 +160,8 @@ jobs:
         env:
           PORTAL_EMBED_WEB: dist/web
         run: |
-          cargo build --locked --release -p portal-web --target aarch64-apple-darwin
-          cargo build --locked --release -p portal-web --target x86_64-apple-darwin
+          cargo build --release -p portal-web --target aarch64-apple-darwin
+          cargo build --release -p portal-web --target x86_64-apple-darwin
           mkdir out
           lipo -create -output out/portal-server \
             target/aarch64-apple-darwin/release/portal-web \
