@@ -2,7 +2,7 @@ import { ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { subscribe } from "../../api/transport";
-import { getRouterBalances, getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter } from "../../api/commands";
+import { getRouterBalances, getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
 import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
@@ -70,6 +70,8 @@ export function RouterSetupPage() {
   const [needsPassword, setNeedsPassword] = useState(false);
   const [walletPassword, setWalletPassword] = useState("");
   const [startingWithPassword, setStartingWithPassword] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
   // Which step to mark failed — the stage at the time, since `stage` becomes "error".
   const failedAt = useRef(0);
 
@@ -133,6 +135,21 @@ export function RouterSetupPage() {
       void unlisten.then((off) => off());
     };
   }, [id, applyPhase, fail]);
+
+  // The bond wait has no end of its own: an unfunded router would otherwise run until the app
+  // quits, and a router that is not stopped cannot be removed.
+  async function stop() {
+    setStopping(true);
+    setStopError(null);
+    try {
+      await stopRouter(id);
+      navigate(`/router/${encodeURIComponent(id)}`);
+    } catch (e) {
+      setStopError((e as { message?: string })?.message ?? "Could not stop the router.");
+    } finally {
+      setStopping(false);
+    }
+  }
 
   async function startEncryptedRouter() {
     if (!walletPassword) return;
@@ -288,6 +305,15 @@ export function RouterSetupPage() {
                 Fidelity funds are time-locked. Once bonded they cannot be spent until the timelock
                 expires.
               </p>
+            </div>
+          )}
+
+          {!needsPassword && (stage === "starting" || stage === "funding" || stage === "bonding") && (
+            <div className="flex items-center justify-between gap-4 border-t border-line px-8 py-4 text-left">
+              <p className="text-[11.5px] text-danger">{stopError}</p>
+              <Button variant="secondary" size="sm" loading={stopping} onClick={() => void stop()}>
+                Stop router
+              </Button>
             </div>
           )}
 

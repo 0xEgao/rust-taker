@@ -125,9 +125,6 @@ function RouterCard({
   const { settings, status, balances } = router;
   const phase = status?.phase.phase ?? "notConfigured";
   const running = isRunning(router);
-  const transitioning = ["initializing", "starting", "stopping"].includes(
-    phase,
-  );
   const torAddress = status?.torAddress;
   // Registrations from before names existed carry none until their config.toml gains one.
   const displayName = settings.name || settings.routerId;
@@ -277,7 +274,8 @@ function RouterCard({
             size="sm"
             onClick={() => void toggleRouter()}
             loading={actionLoading}
-            disabled={transitioning}
+            // A router waiting for its bond deposit is `starting`; Stop has to work there too.
+            disabled={phase === "initializing" || phase === "stopping"}
           >
             {running ? <Square size={12} /> : <Play size={12} />}
             {running ? "Stop" : "Start"}
