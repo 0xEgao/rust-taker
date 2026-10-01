@@ -102,6 +102,8 @@ export interface InitResult {
 /** Whether a wallet is open. Never an error — "nothing open" is the ordinary answer. */
 export interface SessionState {
   initialized: boolean;
+  /** The connection gate was cleared this session, with or without a wallet open. */
+  connected: boolean;
   walletName: string | null;
   dataDir: string | null;
 }

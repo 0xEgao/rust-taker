@@ -81,8 +81,10 @@ function RestoreRuntime() {
     void getSessionState()
       .then((state) => {
         setUnreachable(false);
+        // Before the wallet check: a router session has no wallet, and losing the gate on a
+        // reload would send it back to /connect from whatever router page it was on.
+        if (state.connected) setConnected();
         if (!state.initialized) return setNotInitialized();
-        setConnected();
         setInitialized({ walletName: state.walletName ?? "", dataDir: state.dataDir ?? "" });
       })
       // The server answers this one even with no wallet open, so a rejection is the transport

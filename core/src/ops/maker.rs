@@ -120,6 +120,9 @@ pub fn router_defaults() -> crate::types::RouterDefaultsDto {
     }
 }
 
+/// The way `makerd` builds it: the crate reads the router's `config.toml`, applying its own checks
+/// (such as the fidelity bond minimum), and only what a file cannot hold is filled in here — the
+/// session's chain route, the wallet password, and Portal's own Tor.
 fn build_config(
     chain: &crate::types::ChainBackendConfig,
     config: MakerInitConfig,
@@ -127,26 +130,15 @@ fn build_config(
 ) -> Result<MakerServerConfig, AppError> {
     let tor = crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
     let backend = chain_backend::resolve_from(chain, &config.wallet_name, Some(tor.socks_port))?;
-    Ok(MakerServerConfig {
-        data_dir,
-        name: config.name,
-        network_port: config.network_port,
-        rpc_port: config.rpc_port,
-        base_fee: config.base_fee,
-        amount_relative_fee_pct: config.amount_relative_fee_pct,
-        time_relative_fee_pct: config.time_relative_fee_pct,
-        required_confirms: config.required_confirms,
-        fidelity_amount: config.fidelity_amount,
-        fidelity_timelock: config.fidelity_timelock,
-        fidelity_feerate: config.fidelity_feerate,
-        backend,
-        wallet_name: config.wallet_name,
-        control_port: tor.control_port,
-        socks_port: tor.socks_port,
-        tor_auth_password: tor.control_password,
-        password: config.wallet_password,
-        ..MakerServerConfig::default()
-    })
+    let mut server = MakerServerConfig::new(Some(&data_dir.join("config.toml")))?;
+    server.data_dir = data_dir;
+    server.backend = backend;
+    server.wallet_name = config.wallet_name;
+    server.password = config.wallet_password;
+    server.control_port = tor.control_port;
+    server.socks_port = tor.socks_port;
+    server.tor_auth_password = tor.control_password;
+    Ok(server)
 }
 
 async fn construct_server(
@@ -344,19 +336,32 @@ pub async fn init_maker(
     emit_phase(state, &router_id, MakerPhase::Initializing);
 
     crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
+    // Written before the server is built, which reads it back through the crate. A file this
+    // attempt created goes with a failed attempt: left behind, the rejected values would be what
+    // the corrected retry reads.
+    let config_file = data_dir.join("config.toml");
+    let fresh_config = !config_file.exists();
+    let abort = |error: &AppError| -> Result<(), AppError> {
+        if fresh_config {
+            let _ = std::fs::remove_file(&config_file);
+        }
+        abort_failed_creation(state, &router_id, created, error)
+    };
+    if let Err(error) = maker_settings::write_runtime_config(&settings) {
+        abort(&error)?;
+        return Err(error);
+    }
     let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
-            abort_failed_creation(state, &router_id, created, &error)?;
+            abort(&error)?;
             return Err(error);
         }
     };
-    if let Err(error) = maker_settings::write_runtime_config(&settings)
-        .and_then(|_| maker_settings::save(&settings))
-    {
+    if let Err(error) = maker_settings::save(&settings) {
         server.watch_service.shutdown();
         drop(server);
-        abort_failed_creation(state, &router_id, created, &error)?;
+        abort(&error)?;
         return Err(error);
     }
     // `MakerServer::init` is the crate's only wallet create/load API and starts
@@ -574,6 +579,11 @@ pub async fn start_maker(
         return Err(error);
     }
     let data_dir = resolve_maker_data_dir(&config)?;
+    // A router imported from Maker Dashboard may have no file yet, and the crate would fill one
+    // with its own defaults — ports and fees other than the ones registered.
+    if !data_dir.join("config.toml").exists() {
+        maker_settings::write_runtime_config(&settings)?;
+    }
     crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
     let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,

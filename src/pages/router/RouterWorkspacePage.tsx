@@ -64,6 +64,7 @@ import {
 } from "../../components/ui/display";
 import {
   Button,
+  LinkButton,
   PasswordField,
   TextField,
   SegmentedToggle,
@@ -391,10 +392,9 @@ function RouterSendPanel({
   const [btcPriceCached, setBtcPriceCached] = useState(false);
 
   const [fees, setFees] = useState<FeeEstimate | null>(null);
-  const feeTouched = useRef(false);
 
   // Best-effort, as on the wallet's Send: without a price only the USD option is unavailable,
-  // and without a mempool quote only the hint and the default.
+  // and without a mempool quote only the hint.
   useEffect(() => {
     void getBtcPrice()
       .then((p) => {
@@ -408,10 +408,6 @@ function RouterSendPanel({
   }, []);
   // The wallet's Send rounds the quote the same way: the midpoint, in whole sats/vB.
   const mempoolRate = fees === null ? null : Math.round((fees.low + fees.high) / 2);
-  // The default until the user edits the rate, as on the wallet's Send.
-  useEffect(() => {
-    if (mempoolRate !== null && !feeTouched.current) setFeeRate(String(mempoolRate));
-  }, [mempoolRate]);
 
   const spendable = utxos
     .filter((u) => u.spendable && u.solvable)
@@ -500,11 +496,14 @@ function RouterSendPanel({
           label="Fee rate (s/vB)"
           inputMode="decimal"
           value={feeRate}
-          onChange={(e) => {
-            feeTouched.current = true;
-            setFeeRate(e.target.value);
-          }}
-          hint={mempoolRate !== null ? `Mempool right now: ${mempoolRate} s/vB.` : undefined}
+          onChange={(e) => setFeeRate(e.target.value)}
+          hint={
+            mempoolRate === null
+              ? undefined
+              : Number(feeRate) < mempoolRate
+                ? `The mempool is asking about ${mempoolRate} s/vB — this rate will be slow to confirm.`
+                : `Mempool right now: ${mempoolRate} s/vB.`
+          }
         />
         <Button className="w-full" disabled={blocked} loading={sending} onClick={() => setConfirming(true)}>
           Send
@@ -1484,6 +1483,11 @@ export function RouterWorkspacePage() {
             </div>
           </div>
           <div className="flex gap-2">
+            {phase === "starting" && (
+              <LinkButton to={`/router/${encodeURIComponent(id)}/setup`} variant="secondary">
+                Continue setup
+              </LinkButton>
+            )}
             {running ? (
               <Button
                 onClick={() => void stop()}

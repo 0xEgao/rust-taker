@@ -1,10 +1,10 @@
-import { ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { subscribe } from "../../api/transport";
-import { getRouterBalances, getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
+import { getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
-import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
+import { Card, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
@@ -19,28 +19,37 @@ import { copyText } from "../../lib/clipboard";
 type Stage = "starting" | "funding" | "bonding" | "live" | "error";
 
 const LOG_POLL_MS = 1500;
-const BALANCE_POLL_MS = 8000;
 
-// The crate only surfaces the bond address and its minimum in this one log line.
-const DEPOSIT_RE = /Send at least ([\d.]+) BTC to (\S+)/;
+// The crate's own request, the only place it names the bond address. It recomputes the missing
+// amount (what it needs minus what has arrived) on every retry, so the newest line is the answer;
+// whatever follows the address is its explanation, shown as written.
+const DEPOSIT_RE = /Send at least ([\d.]+) BTC to (\S+)(.*)$/;
 
-function readDeposit(lines: LogLine[]): { address: string; sats: number } | null {
+function readDeposit(lines: LogLine[]): { address: string; sats: number; reason: string } | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const match = lines[i].line.match(DEPOSIT_RE);
-    if (match) return { address: match[2], sats: Math.round(Number(match[1]) * 1e8) };
+    if (match) {
+      return { address: match[2], sats: Math.round(Number(match[1]) * 1e8), reason: match[3].trim() };
+    }
   }
   return null;
 }
 
-/** Spending starts the moment coins land, well before the bond exists. */
-const FUNDED_MARKERS = [
-  "Transaction seen in mempool",
-  "Coinselection",
-  "Successfully created fidelity bond",
-];
+/** The crate's own bond lines: broadcast, then confirmed. */
+const BOND_MARKERS = ["Fidelity bond broadcast", "Successfully created fidelity bond"];
 
-function looksFunded(lines: LogLine[]) {
-  return lines.some((l) => FUNDED_MARKERS.some((marker) => l.line.includes(marker)));
+/**
+ * Which setup step the crate's newest step line says it is on. The newest, not any line in the
+ * window: a partial deposit leaves the crate asking for the rest, and only it knows whether what
+ * arrived is enough — a balance above zero, or an older run's bond line, is not.
+ */
+function setupStep(lines: LogLine[]): "funding" | "bonding" | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].line;
+    if (BOND_MARKERS.some((marker) => line.includes(marker))) return "bonding";
+    if (DEPOSIT_RE.test(line)) return "funding";
+  }
+  return null;
 }
 
 const STEP_LABELS = ["Starting router", "Awaiting deposit", "Creating fidelity bond", "Router Ready"];
@@ -64,7 +73,7 @@ export function RouterSetupPage() {
   const [name, setName] = useState(id);
   const [stage, setStage] = useState<Stage>("starting");
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [deposit, setDeposit] = useState<{ address: string; sats: number } | null>(null);
+  const [deposit, setDeposit] = useState<{ address: string; sats: number; reason: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
@@ -182,29 +191,16 @@ export function RouterSetupPage() {
       setLogs(lines);
       const found = readDeposit(lines);
       if (found) setDeposit(found);
+      const step = setupStep(lines);
       setStage((current) => {
         if (current !== "starting" && current !== "funding") return current;
-        if (looksFunded(lines)) return "bonding";
-        return found ? "funding" : current;
+        return step ?? current;
       });
     };
     void tick();
     const timer = setInterval(() => void tick(), LOG_POLL_MS);
     return () => clearInterval(timer);
   }, [id, stage, applyPhase]);
-
-  // Fallback for a deposit whose log markers never appear — a balance is proof enough.
-  useEffect(() => {
-    if (stage !== "funding") return;
-    const timer = setInterval(() => {
-      void getRouterBalances(id)
-        .then((b) => {
-          if (b.regular > 0 || b.spendable > 0) setStage("bonding");
-        })
-        .catch(() => {});
-    }, BALANCE_POLL_MS);
-    return () => clearInterval(timer);
-  }, [id, stage]);
 
   function copyAddress() {
     if (!deposit) return;
@@ -267,14 +263,7 @@ export function RouterSetupPage() {
             <div className="border-t border-line px-8 py-6 text-left">
               <div className="flex items-baseline justify-between gap-4">
                 <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Deposit address</span>
-                <span className="flex items-center gap-3">
-                  {deposit && (
-                    <span className="text-[12px] text-muted">
-                      Send at least <SatsAmount sats={deposit.sats} className="font-numeric text-foreground" />
-                    </span>
-                  )}
-                  <FaucetButton />
-                </span>
+                <FaucetButton />
               </div>
               {deposit ? (
                 <button
@@ -296,10 +285,19 @@ export function RouterSetupPage() {
                   Waiting for the router to report its bond address…
                 </p>
               )}
-              <p className="mt-3 text-[11.5px] text-subtle">
-                The router watches this address and bonds the funds itself. Leave this open — it
-                keeps running if you navigate away.
-              </p>
+              {deposit && (
+                <Notice
+                  tone="warning"
+                  icon={<AlertTriangle size={20} strokeWidth={2} />}
+                  className="mt-4"
+                >
+                  <p className="text-[14px] font-bold text-warning">
+                    Send at least <SatsAmount sats={deposit.sats} className="font-numeric" /> to
+                    this address.
+                  </p>
+                  {deposit.reason && <p className="mt-1 text-muted">{deposit.reason}</p>}
+                </Notice>
+              )}
               <p className="mt-3 flex items-start gap-1.5 text-[11.5px] leading-5 text-warning">
                 <ShieldCheck size={14} strokeWidth={2} className="mt-0.5 shrink-0" />
                 Fidelity funds are time-locked. Once bonded they cannot be spent until the timelock
