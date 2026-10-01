@@ -816,7 +816,10 @@ export function SwapPage() {
           )}
 
           <div className="flex flex-col gap-2">
-            {review.routers.map((hop, i) => (
+            {review.routers.map((hop, i) => {
+              // The negotiated summary carries no name; the offerbook entry the quote came from does.
+              const name = routers.find((r) => r.address === hop.address)?.offer?.name;
+              return (
               <div
                 key={hop.address}
                 className={`flex flex-col gap-1 rounded-control border px-3.5 py-2.5 ${
@@ -834,13 +837,17 @@ export function SwapPage() {
                     className={`text-[12px] font-semibold ${raised.includes(hop) ? "text-warning" : "text-foreground"}`}
                   />
                 </div>
+                {name && (
+                  <span className="truncate text-[13px] font-semibold text-foreground">{name}</span>
+                )}
                 <Identifier value={hop.address} className="text-[11px] text-muted" />
                 <span className="font-mono text-[10.5px] text-subtle">
                   base {formatNumber(hop.baseFee)} sats · {hop.amountRelativeFeePct}% ·
                   time {hop.timeRelativeFeePct}%
                 </span>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-3 text-[12px]">
