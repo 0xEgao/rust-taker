@@ -2,13 +2,14 @@ import { AlertTriangle, ArrowRight, Check, Copy, ShieldCheck } from "lucide-reac
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { subscribe } from "../../api/transport";
-import { getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
+import { confirmRouterRecoveryPhraseSaved, getRouterLogs, getRouterRecoveryPhrase, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
 import { Card, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
 import { FaucetButton } from "../../components/app/FaucetButton";
+import { RecoveryPhraseScreen } from "../../components/app/RecoveryPhrase";
 import { copyText } from "../../lib/clipboard";
 
 /**
@@ -79,6 +80,9 @@ export function RouterSetupPage() {
   const [needsPassword, setNeedsPassword] = useState(false);
   const [walletPassword, setWalletPassword] = useState("");
   const [startingWithPassword, setStartingWithPassword] = useState(false);
+  // `undefined` while asking. A new router's phrase comes before anything starts: the router can
+  // be funded the moment it runs, and its words must be saved before there is anything to lose.
+  const [phrase, setPhrase] = useState<string | null | undefined>(undefined);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
   // Which step to mark failed — the stage at the time, since `stage` becomes "error".
@@ -118,6 +122,17 @@ export function RouterSetupPage() {
   );
 
   useEffect(() => {
+    let live = true;
+    void getRouterRecoveryPhrase(id)
+      .then((words) => live && setPhrase(words))
+      .catch(() => live && setPhrase(null));
+    return () => {
+      live = false;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    if (phrase !== null) return;
     let cancelled = false;
     const unlisten = subscribe<{ routerId: string; phase: RouterPhase }>("maker://phase-changed", (event) => {
       if (event.routerId === id) applyPhase(event.phase);
@@ -143,7 +158,7 @@ export function RouterSetupPage() {
       cancelled = true;
       void unlisten.then((off) => off());
     };
-  }, [id, applyPhase, fail]);
+  }, [id, applyPhase, fail, phrase]);
 
   // The bond wait has no end of its own: an unfunded router would otherwise run until the app
   // quits, and a router that is not stopped cannot be removed.
@@ -221,6 +236,19 @@ export function RouterSetupPage() {
           : stage === "bonding"
             ? "Creating the fidelity bond"
             : `Starting ${name}`;
+
+  if (phrase === undefined) return null;
+  if (phrase)
+    return (
+      <RecoveryPhraseScreen
+        words={phrase}
+        subject="router"
+        onSaved={async () => {
+          await confirmRouterRecoveryPhraseSaved(id);
+          setPhrase(null);
+        }}
+      />
+    );
 
   return (
     <IntroStage lead="Portal" accent="Router" caption={caption} className="min-h-full">

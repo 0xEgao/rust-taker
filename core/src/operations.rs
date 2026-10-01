@@ -650,6 +650,17 @@ mod tests {
     /// The digest is short and unsalted, so a password reaching it would be a guessing oracle.
     /// Stripping also means a corrected password still matches its original key rather than
     /// reading as a different request.
+    /// A recovery phrase reaches the journal only as a request field — top level for a wallet
+    /// restore, inside `config` for a router — and must be gone in both.
+    #[test]
+    fn recovery_phrases_never_reach_the_journal() {
+        let wallet = serde_json::json!({ "walletName": "w", "mnemonic": "abandon abandon" });
+        let router = serde_json::json!({ "config": { "routerId": "r", "mnemonic": "abandon abandon" } });
+        for request in [wallet, router] {
+            assert!(!without_secrets(&request).to_string().contains("abandon"));
+        }
+    }
+
     #[test]
     fn secrets_never_reach_the_fingerprint() {
         let a = serde_json::json!({ "walletName": "w", "walletPassword": "hunter2" });

@@ -236,6 +236,12 @@ async fn open_taker(
     .map_err(from_wallet_join_error)
     .and_then(|init| init.map_err(AppError::from))
     .inspect_err(|_| crate::logging::unregister_wallet(key))?;
+    // `Some` only for a wallet `Taker::init` just created, and only on this one call.
+    let new_phrase = taker
+        .get_wallet()
+        .write()
+        .map_err(|_| AppError::internal("wallet lock poisoned"))?
+        .take_new_mnemonic();
 
     let instance = Arc::new(TakerInstance {
         wallet_name: config.wallet_name.clone(),
@@ -251,6 +257,10 @@ async fn open_taker(
         is_offerbook_syncing: AtomicBool::new(false),
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
+        pending_phrase: Mutex::new(new_phrase.map(|words| crate::state::PendingPhrase {
+            words,
+            session: session.to_string(),
+        })),
     });
     chain_backend::record_network_once(
         session,
@@ -265,6 +275,25 @@ async fn open_taker(
         note: None,
     };
     Ok((instance, result))
+}
+
+/// The new wallet's recovery phrase, for the session that created it, until it confirms it saved
+/// it. Not cleared by reading, so a reload before confirming shows it again.
+pub fn get_recovery_phrase(taker: &TakerInstance, session: &str) -> Result<Option<String>, AppError> {
+    Ok(taker
+        .pending_phrase
+        .lock()?
+        .as_ref()
+        .filter(|pending| pending.session == session)
+        .map(|pending| pending.words.words()))
+}
+
+pub fn confirm_recovery_phrase_saved(taker: &TakerInstance, session: &str) -> Result<(), AppError> {
+    let mut pending = taker.pending_phrase.lock()?;
+    if pending.as_ref().is_some_and(|p| p.session == session) {
+        *pending = None;
+    }
+    Ok(())
 }
 
 /// Adds a session to a wallet another session already has open.
@@ -665,6 +694,82 @@ pub async fn restore_wallet(
         ));
     }
     Ok(())
+}
+
+/// Collapses case and spacing so a phrase pasted from anywhere parses; the words themselves and
+/// their checksum are the crate's to judge.
+pub(crate) fn normalize_phrase(phrase: &str) -> String {
+    phrase.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>().join(" ")
+}
+
+/// `restore_from_mnemonic`'s own error for a wrong word, count or checksum, worded for the user.
+pub(crate) fn phrase_error(error: openswap::wallet::WalletError) -> AppError {
+    match error {
+        openswap::wallet::WalletError::BIP39(_) => AppError::new(
+            ErrorCode::InvalidInput,
+            "That is not a valid recovery phrase. Check every word and their order.",
+        ),
+        other => AppError::from(other),
+    }
+}
+
+/// Restores a wallet from its BIP39 phrase before `init_taker`, encrypted with a new password.
+/// Unlike the backup restore, the crate call here returns its errors.
+pub async fn restore_wallet_from_mnemonic(
+    state: &Arc<AppState>,
+    session: &str,
+    data_dir: Option<String>,
+    wallet_name: String,
+    socks_port: Option<u16>,
+    mnemonic: String,
+    password: String,
+) -> Result<(), AppError> {
+    validate_leaf_name(&wallet_name, "walletName")?;
+    crate::security::input::validate_password(&password, "wallet password")?;
+    let phrase = normalize_phrase(&mnemonic);
+    if phrase.is_empty() {
+        return Err(AppError::new(ErrorCode::InvalidInput, "enter the recovery phrase"));
+    }
+    let _operation = SensitiveOperationGuard::acquire(
+        &state.sensitive_operation_active,
+        SensitiveOperation::RestorePrivateKey,
+    )?;
+    let root = resolve_data_dir(&data_dir)?;
+    if data_dir.is_some() {
+        crate::security::fs::require_private_dir(&root)?;
+    } else {
+        crate::security::fs::ensure_private_dir(&root)?;
+    }
+    crate::security::fs::ensure_private_dir(&root.join(storage::WALLET_DATA_DIR))?;
+    let dir = storage::wallet_data_dir(&root, &wallet_name);
+    let restored_path = wallet_path(&dir, &wallet_name);
+    if restored_path.exists() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("a wallet named '{wallet_name}' already exists — pick another name"),
+        ));
+    }
+    crate::security::fs::ensure_private_dir(&dir)?;
+    crate::security::fs::ensure_private_dir(&dir.join("wallets"))?;
+    let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
+    let material = openswap::security::KeyMaterial::new_from_password(Some(password))
+        .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "enter a wallet password"))?;
+
+    let (log_dir, path) = (dir.clone(), restored_path.clone());
+    let restored = tokio::task::spawn_blocking(move || {
+        let _log = crate::logging::wallet_scope(log_dir);
+        openswap::wallet::Wallet::restore_from_mnemonic(&phrase, &path, &backend, None, material)
+            .map(drop)
+    })
+    .await
+    .map_err(from_wallet_join_error)?
+    .map_err(phrase_error);
+    // The crate writes the file before its scan; a failed restore would otherwise leave a name
+    // that refuses the retry, and the phrase can always recreate it.
+    if restored.is_err() && restored_path.exists() {
+        let _ = std::fs::remove_file(&restored_path);
+    }
+    restored
 }
 
 /// Backs up to encrypted JSON (xpriv, not a seed phrase). Rust owns the save dialog.
@@ -1452,5 +1557,18 @@ mod first_seen_tests {
         assert_eq!(later.get("b"), Some(&600));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod phrase_tests {
+    use super::normalize_phrase;
+
+    /// Pasted phrases arrive with capitals, line breaks and double spaces; the checksum does not
+    /// care, so neither may the parse.
+    #[test]
+    fn a_pasted_phrase_is_normalized() {
+        assert_eq!(normalize_phrase("  Abandon\n ABANDON   about \t"), "abandon abandon about");
+        assert_eq!(normalize_phrase(" \n "), "");
     }
 }

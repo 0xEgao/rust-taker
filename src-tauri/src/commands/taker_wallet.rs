@@ -98,6 +98,27 @@ pub async fn restore_wallet(
 }
 
 #[tauri::command]
+pub async fn restore_wallet_from_mnemonic(
+    state: tauri::State<'_, Arc<AppState>>, data_dir: Option<String>, wallet_name: String, socks_port: Option<u16>, mnemonic: String, password: String,
+) -> Result<(), AppError> {
+    taker_wallet::restore_wallet_from_mnemonic(&state, DESKTOP_SESSION, data_dir, wallet_name, socks_port, mnemonic, password).await
+}
+
+#[tauri::command]
+pub fn get_recovery_phrase(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<String>, AppError> {
+    ensure_main_window(&window)?;
+    taker_wallet::get_recovery_phrase(&*desktop_taker(&state)?, DESKTOP_SESSION)
+}
+
+#[tauri::command]
+pub fn confirm_recovery_phrase_saved(state: tauri::State<'_, Arc<AppState>>) -> Result<(), AppError> {
+    taker_wallet::confirm_recovery_phrase_saved(&*desktop_taker(&state)?, DESKTOP_SESSION)
+}
+
+#[tauri::command]
 pub async fn backup_wallet(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, Arc<AppState>>,

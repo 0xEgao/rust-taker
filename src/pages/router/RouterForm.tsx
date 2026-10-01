@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { checkRouterPorts, checkTor, getRouterDefaults, getSuggestedRouterPorts } from "../../api/commands";
 import type { RouterInitConfig, RouterPortCheck } from "../../api/types";
 import { Disclosure } from "../../components/ui/display";
-import { SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
+import { SummaryGroup, SummaryRow, TextAreaField, TextField } from "../../components/ui/inputs";
 import { ROUTER_ID_PATTERN, ROUTER_NAME_MAX, routerNameError, timelockDays } from "./router-defaults";
 import { formatNumber } from "../../lib/wallet-format";
 
@@ -199,6 +199,61 @@ function sats(value: string) {
   if (value.trim() === "") return "…";
   const n = Number(value);
   return Number.isFinite(n) ? formatNumber(n) : value;
+}
+
+/** Word counts BIP39 allows; the backend's parse judges the words and their checksum. */
+export function phraseWordCount(phrase: string): number {
+  return phrase.trim() ? phrase.trim().split(/\s+/).length : 0;
+}
+
+export function phraseIsComplete(phrase: string): boolean {
+  return [12, 15, 18, 21, 24].includes(phraseWordCount(phrase));
+}
+
+/** `null` while unticked: a new router gets a fresh wallet. Ticked, its wallet is restored from
+ *  the phrase instead. */
+export function RestorePhraseField({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (next: string | null) => void;
+}) {
+  const count = value === null ? 0 : phraseWordCount(value);
+  return (
+    <div className="flex flex-col gap-3">
+      <label className="flex cursor-pointer items-center gap-2.5 text-[12.5px] text-foreground">
+        <input
+          type="checkbox"
+          className="accent-primary"
+          checked={value !== null}
+          onChange={(e) => onChange(e.target.checked ? "" : null)}
+        />
+        Restore from a recovery phrase
+      </label>
+      {value !== null && (
+        <>
+          <TextAreaField
+            label="Recovery phrase"
+            required
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder="The router's 12 or 24 words, separated by spaces"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            hint={count > 0 ? `${count} words` : undefined}
+          />
+          <p className="flex items-start gap-1.5 text-[11.5px] leading-5 text-warning">
+            <AlertTriangle size={14} strokeWidth={2} className="mt-0.5 shrink-0" />
+            Restores the router's regular coins. Its fidelity bond is not restored: the router will
+            need a new bond, and the old one is not redeemed automatically.
+          </p>
+        </>
+      )}
+    </div>
+  );
 }
 
 /** Sits under the router ID rather than in Advanced: it is the one value strangers see. */

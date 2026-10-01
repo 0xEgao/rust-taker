@@ -8,7 +8,7 @@ use std::time::{Instant, SystemTime};
 use openswap::maker::MakerServer;
 use openswap::taker::offers::OfferSyncClient;
 use openswap::taker::Taker;
-use openswap::wallet::Wallet;
+use openswap::wallet::{SecretMnemonic, Wallet};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -46,6 +46,14 @@ pub struct MakerRuntime {
     pub chain_backend: ChainBackendConfig,
 }
 
+/// A new wallet's recovery phrase, held from creation until its creator says it is written down.
+/// The crate hands it out exactly once, so losing it here — a reload, a dropped response — would
+/// lose it for good. Memory only, and only the creating session may read it.
+pub struct PendingPhrase {
+    pub words: SecretMnemonic,
+    pub session: SessionId,
+}
+
 /// One persisted maker registration plus its optional process-local runtime.
 /// Runtime objects are reconstructed after an app restart and after every
 /// explicit stop; only settings and wallet files survive those boundaries.
@@ -55,6 +63,7 @@ pub struct MakerHandle {
     pub phase: MakerPhase,
     /// Prevents an old server/watcher thread from updating a newer lifecycle.
     pub generation: u64,
+    pub pending_phrase: Option<PendingPhrase>,
 }
 
 /// Identifies one client of the runtime: a browser session on the web, the window on desktop.
@@ -98,6 +107,7 @@ pub struct TakerInstance {
     /// Held for the Taker's whole life, including its release, so another process on the same
     /// files cannot open this wallet while it is still being written.
     pub(crate) dir_lock: Mutex<Option<crate::storage::WalletDirLock>>,
+    pub pending_phrase: Mutex<Option<PendingPhrase>>,
 }
 
 impl TakerInstance {

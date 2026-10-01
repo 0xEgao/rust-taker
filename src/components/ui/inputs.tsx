@@ -6,6 +6,7 @@ import {
   useState,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
+  type TextareaHTMLAttributes,
   type ReactNode,
 } from "react";
 
@@ -300,6 +301,12 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   hint?: string;
 }
 
+interface TextAreaFieldProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
+  label: string;
+  error?: string;
+  hint?: string;
+}
+
 function FieldLabel({
   htmlFor,
   label,
@@ -318,6 +325,38 @@ function FieldLabel({
         </span>
       )}
     </label>
+  );
+}
+
+export function TextAreaField({
+  label,
+  error,
+  hint,
+  id,
+  required,
+  className = "",
+  ...props
+}: TextAreaFieldProps) {
+  const inputId = id ?? useId();
+  return (
+    <div className="flex flex-col gap-1.5">
+      <FieldLabel htmlFor={inputId} label={label} required={required} />
+      <textarea
+        id={inputId}
+        required={required}
+        className={`min-h-24 resize-none rounded-control border bg-surface-raised px-3 py-2.5 font-mono text-[13px] leading-6 text-foreground outline-none transition-colors duration-200 placeholder:text-subtle ${
+          error
+            ? "border-danger bg-danger/5"
+            : "border-line focus:border-primary focus:shadow-ring"
+        } ${className}`}
+        {...props}
+      />
+      {error ? (
+        <span className="text-[11.5px] text-danger">{error}</span>
+      ) : hint ? (
+        <span className="text-[11.5px] text-subtle">{hint}</span>
+      ) : null}
+    </div>
   );
 }
 

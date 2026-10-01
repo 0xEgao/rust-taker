@@ -119,6 +119,9 @@ pub fn run() {
             taker_wallet::get_wallet_info,
             taker_wallet::choose_restore_backup,
             taker_wallet::restore_wallet,
+            taker_wallet::restore_wallet_from_mnemonic,
+            taker_wallet::get_recovery_phrase,
+            taker_wallet::confirm_recovery_phrase_saved,
             taker_wallet::backup_wallet,
             // taker wallet operations
             taker_wallet::get_balances,
@@ -156,6 +159,8 @@ pub fn run() {
             logs::get_logs,
             // maker lifecycle
             maker::init_maker,
+            maker::get_router_recovery_phrase,
+            maker::confirm_router_recovery_phrase_saved,
             maker::update_maker_settings,
             maker::start_maker,
             maker::stop_maker,

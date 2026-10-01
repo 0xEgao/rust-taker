@@ -7,7 +7,7 @@ import { Button, PasswordField, TextField } from "../../components/ui/inputs";
 import { validateNewPassword } from "../../lib/password-policy";
 import { withMinDelay } from "../../lib/timing";
 import { ROUTER_ID_PATTERN } from "./router-defaults";
-import { AdvancedFields, FidelityFields, PublicNameField, useRouterForm } from "./RouterForm";
+import { AdvancedFields, FidelityFields, phraseIsComplete, PublicNameField, RestorePhraseField, useRouterForm } from "./RouterForm";
 import { DashboardImport } from "./DashboardImport";
 
 // Each step usually resolves far quicker than it can be read.
@@ -34,6 +34,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [restorePhrase, setRestorePhrase] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>("name");
   const [steps, setSteps] = useState<Steps>(IDLE);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +42,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
   const trimmed = name.trim();
   const malformed = trimmed.length > 0 && !ROUTER_ID_PATTERN.test(trimmed);
   const passwordError = validateNewPassword(password, passwordConfirm);
+  const phraseIncomplete = restorePhrase !== null && !phraseIsComplete(restorePhrase);
 
   // Same reason as AddRouterPage: the button alone cannot say why it will not press.
   const blockedReason = !trimmed
@@ -50,11 +52,15 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
       : form.publicNameError
         ? "Fix the public name to continue."
         : (passwordError ??
-        (form.blocked ? "Resolve the warning under Advanced settings to continue." : null));
+        (phraseIncomplete
+          ? "Enter the full recovery phrase to continue."
+          : form.blocked
+            ? "Resolve the warning under Advanced settings to continue."
+            : null));
 
   async function create() {
     const config = !trimmed || malformed || passwordError ? null : form.config(trimmed, password);
-    if (!config) return;
+    if (!config || phraseIncomplete) return;
     setStage("creating");
     setError(null);
     setSteps({ ...IDLE, tor: "running" });
@@ -77,9 +83,13 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
 
       // Tor's live ports win over whatever the form last saw: init_maker overrides them from
       // Portal's own Tor anyway, and a restart moves them.
-      await withMinDelay(initRouter({ ...config, ...torPorts }), MIN_STEP_MS);
+      await withMinDelay(
+        initRouter({ ...config, ...torPorts, ...(restorePhrase === null ? {} : { mnemonic: restorePhrase }) }),
+        MIN_STEP_MS,
+      );
       setSteps((s) => ({ ...s, create: "passed" }));
       setPassword("");
+      setRestorePhrase(null);
       setPasswordConfirm("");
       // Created but not yet bonded: setup starts it and walks the deposit.
       navigate(`/router/${encodeURIComponent(trimmed)}/setup`);
@@ -133,6 +143,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                   Portal encrypts every router wallet it creates. This password cannot be recovered
                   if it is lost.
                 </p>
+                <RestorePhraseField value={restorePhrase} onChange={setRestorePhrase} />
               </div>
               <div className="mt-5 flex flex-col gap-4 border-t border-line pt-5">
                 <FidelityFields form={form} />
@@ -142,7 +153,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
             <div className="border-t border-line px-8 py-5">
               <Button
                 className="w-full"
-                disabled={!trimmed || malformed || Boolean(form.publicNameError) || Boolean(passwordError) || form.blocked}
+                disabled={!trimmed || malformed || Boolean(form.publicNameError) || Boolean(passwordError) || phraseIncomplete || form.blocked}
                 onClick={() => void create()}
               >
                 Create router

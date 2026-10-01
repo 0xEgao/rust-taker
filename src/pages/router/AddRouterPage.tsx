@@ -6,7 +6,7 @@ import { Card } from "../../components/ui/display";
 import { Button, LinkButton, PasswordField, TextField } from "../../components/ui/inputs";
 import { validateNewPassword } from "../../lib/password-policy";
 import { useToastStore } from "../../store/toast";
-import { AdvancedFields, FidelityFields, PublicNameField, useRouterForm } from "./RouterForm";
+import { AdvancedFields, FidelityFields, phraseIsComplete, PublicNameField, RestorePhraseField, useRouterForm } from "./RouterForm";
 import { ROUTER_ID_PATTERN } from "./router-defaults";
 
 /** Adding a router to a fleet that already has one. Same form as the first-run page, with the
@@ -19,6 +19,7 @@ export function AddRouterPage() {
   const [routerId, setRouterId] = useState("");
   const [walletPassword, setWalletPassword] = useState("");
   const [walletPasswordConfirm, setWalletPasswordConfirm] = useState("");
+  const [restorePhrase, setRestorePhrase] = useState<string | null>(null);
   const [chain, setChain] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -39,6 +40,7 @@ export function AddRouterPage() {
         : form.config(trimmedId, walletPassword),
     [trimmedId, malformedId, walletPassword, walletPasswordError, form],
   );
+  const phraseIncomplete = restorePhrase !== null && !phraseIsComplete(restorePhrase);
 
   // A disabled Create button with no explanation is the whole reason an empty password reads as
   // the form being broken. Names the first thing standing in the way, in form order.
@@ -50,6 +52,8 @@ export function AddRouterPage() {
         ? "Fix the public name to continue."
         : walletPasswordError
         ? walletPasswordError
+        : phraseIncomplete
+        ? "Enter the full recovery phrase to continue."
         : form.blocked
           ? "Resolve the warning under Advanced settings to continue."
           : !config
@@ -57,12 +61,13 @@ export function AddRouterPage() {
             : null;
 
   async function createRouter() {
-    if (!config) return;
+    if (!config || phraseIncomplete) return;
     setCreating(true);
     try {
-      await initRouter(config);
+      await initRouter(restorePhrase === null ? config : { ...config, mnemonic: restorePhrase });
       setWalletPassword("");
       setWalletPasswordConfirm("");
+      setRestorePhrase(null);
       pushToast("success", `${config.routerId} was created and registered.`);
       navigate(`/router/${encodeURIComponent(config.routerId)}/setup`);
     } catch (error) {
@@ -128,6 +133,7 @@ export function AddRouterPage() {
                 Portal encrypts every router wallet it creates. Losing this password can make its
                 funds unrecoverable.
               </p>
+              <RestorePhraseField value={restorePhrase} onChange={setRestorePhrase} />
             </div>
             <div className="mt-5 flex flex-col gap-4 border-t border-line pt-5">
               <FidelityFields form={form} />
@@ -147,7 +153,7 @@ export function AddRouterPage() {
         <div className="mt-4 flex items-center justify-end gap-3">
           {blockedReason && <p className="text-[11.5px] text-subtle">{blockedReason}</p>}
           <LinkButton to="/router" variant="secondary">Cancel</LinkButton>
-          <Button onClick={() => void createRouter()} loading={creating} disabled={!config || form.blocked}>
+          <Button onClick={() => void createRouter()} loading={creating} disabled={!config || phraseIncomplete || form.blocked}>
             Create router
           </Button>
         </div>

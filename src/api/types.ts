@@ -348,6 +348,8 @@ export interface RouterSettings {
 
 export interface RouterInitConfig extends RouterSettings {
   walletPassword: string;
+  /** Restore the router's wallet from this recovery phrase instead of creating a new one. */
+  mnemonic?: string;
 }
 
 export interface SuggestedRouterPorts {

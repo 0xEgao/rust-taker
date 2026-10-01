@@ -17,6 +17,24 @@ pub fn get_router_defaults() -> RouterDefaultsDto {
 }
 
 #[tauri::command]
+pub fn get_router_recovery_phrase(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<Option<String>, AppError> {
+    crate::native::ensure_main_window(&window)?;
+    maker::get_router_recovery_phrase(&state, DESKTOP_SESSION, &router_id)
+}
+
+#[tauri::command]
+pub fn confirm_router_recovery_phrase_saved(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<(), AppError> {
+    maker::confirm_router_recovery_phrase_saved(&state, DESKTOP_SESSION, &router_id)
+}
+
+#[tauri::command]
 pub async fn init_maker(
     state: tauri::State<'_, Arc<AppState>>,
     config: MakerInitConfig,

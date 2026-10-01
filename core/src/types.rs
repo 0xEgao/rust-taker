@@ -823,6 +823,10 @@ pub struct MakerInitConfig {
     pub time_relative_fee_pct: f64,
     #[serde(default)]
     pub data_dir: Option<String>,
+    /// Restore the router's wallet from this phrase instead of creating a new one. Never copied
+    /// into the persisted settings, and named so the web journal scrubs it from requests.
+    #[serde(default)]
+    pub mnemonic: Option<String>,
 }
 
 /// Persisted registration settings. Wallet and Tor control passwords are
@@ -898,6 +902,7 @@ impl MakerSettingsDto {
             amount_relative_fee_pct: self.amount_relative_fee_pct,
             time_relative_fee_pct: self.time_relative_fee_pct,
             data_dir: self.data_dir,
+            mnemonic: None,
         }
     }
 }

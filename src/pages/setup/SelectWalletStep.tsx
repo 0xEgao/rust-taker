@@ -1,13 +1,13 @@
 import { subscribe } from "../../api/transport";
 import { capabilities, pickDirectory, pickFile, selectBackup } from "../../platform";
-import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
+import { FolderOpen, FolderPlus, KeyRound, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { initWallet, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { initWallet, listWallets, restoreWallet, restoreWalletFromMnemonic, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
-import { Button, PasswordField, TextField } from "../../components/ui/inputs";
+import { Button, PasswordField, TextAreaField, TextField } from "../../components/ui/inputs";
 import { Checklist } from "../../components/ui/Checklist";
 import { IntroStage } from "../../components/ui/IntroStage";
 import { MIN_WALLET_PASSWORD_LENGTH } from "../../lib/password-policy";
@@ -26,7 +26,7 @@ interface SelectWalletStepProps {
   onSuccess: (result: InitResult, restored: boolean) => void;
 }
 
-type ViewMode = "grid" | "unlock" | "create" | "restore" | "checking";
+type ViewMode = "grid" | "unlock" | "create" | "restore" | "restore-phrase" | "checking";
 interface CheckFailure {
   message: string;
 }
@@ -85,6 +85,7 @@ const HEADINGS: Record<ViewMode, [string, string]> = {
   unlock: ["Unlock your", "wallet"],
   create: ["Create a new", "wallet"],
   restore: ["Restore an encrypted", "backup"],
+  "restore-phrase": ["Restore from a", "recovery phrase"],
   checking: ["Setting things", "up"],
 };
 
@@ -109,6 +110,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   const [restoreSelection, setRestoreSelection] = useState<RestoreSelection | null>(null);
   const [restoreName, setRestoreName] = useState(randomWalletName());
   const [restorePassword, setRestorePassword] = useState("");
+  const [phraseName, setPhraseName] = useState(randomWalletName());
+  const [phraseWords, setPhraseWords] = useState("");
+  const [phrasePassword, setPhrasePassword] = useState("");
+  const [phraseConfirm, setPhraseConfirm] = useState("");
 
   const [progress, setProgress] = useState<InitProgress>(IDLE_PROGRESS);
   const [failure, setFailure] = useState<CheckFailure | null>(null);
@@ -208,6 +213,32 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     runChecks({ mode: "load", walletName: selectedWallet, password: unlockPassword });
   }
 
+  // Counted, not checked: the backend's BIP39 parse judges the words and their checksum.
+  const phraseCount = phraseWords.trim() ? phraseWords.trim().split(/\s+/).length : 0;
+  const canRestorePhrase =
+    phraseName.trim().length > 0 &&
+    [12, 15, 18, 21, 24].includes(phraseCount) &&
+    phrasePassword.length >= MIN_WALLET_PASSWORD_LENGTH &&
+    phrasePassword === phraseConfirm;
+
+  function beginPhraseRestore() {
+    setPhraseName(randomWalletName());
+    setPhraseWords("");
+    setPhrasePassword("");
+    setPhraseConfirm("");
+    setViewMode("restore-phrase");
+  }
+
+  function submitPhraseRestore() {
+    if (!canRestorePhrase) return;
+    runChecks({
+      mode: "restore-phrase",
+      walletName: phraseName.trim(),
+      mnemonic: phraseWords,
+      password: phrasePassword,
+    });
+  }
+
   function submitRestore() {
     if (!restoreSelection || !restoreName.trim() || !restorePassword) return;
     runChecks({
@@ -225,13 +256,16 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     setViewMode("checking");
     // A restore runs its own sync before `init_taker` arms the phase watcher, so it starts
     // behind the first reported phase rather than on it.
-    setProgress({ phase: wallet.mode === "restore" ? -1 : 0, note: null, failed: false });
+    const restoresFirst = wallet.mode === "restore" || wallet.mode === "restore-phrase";
+    setProgress({ phase: restoresFirst ? -1 : 0, note: null, failed: false });
 
     try {
       const result = await withMinDelay(
         (async () => {
           if (wallet.mode === "restore") {
             await restoreWallet(wallet.walletName, undefined, wallet.selectionId, wallet.password, dataDir);
+          } else if (wallet.mode === "restore-phrase") {
+            await restoreWalletFromMnemonic(wallet.walletName, wallet.mnemonic, wallet.password, dataDir);
           }
           return initWallet({
             walletName: wallet.walletName,
@@ -249,7 +283,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
       void syncOfferbook().catch(() => {});
       // restore_wallet completes its own sync_and_save before init_taker, so a
       // successful restore already satisfies the mandatory first scan.
-      onSuccess(result, wallet.mode === "restore");
+      onSuccess(result, restoresFirst);
     } catch (e) {
       const err = isAppError(e) ? e : null;
       // `init_taker` is what checks the password, so a wrong one failed at the unlock step
@@ -282,7 +316,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     // current view is already the one that can correct it.
     if (!pendingWallet) return;
     setViewMode(
-      pendingWallet.mode === "create" ? "create" : pendingWallet.mode === "restore" ? "restore" : "unlock",
+      pendingWallet.mode === "load" ? "unlock" : pendingWallet.mode,
     );
   }
 
@@ -348,6 +382,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
         <RotateCcw size={13} strokeWidth={1.8} />
         Restore backup
       </Button>
+      <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={beginPhraseRestore}>
+        <KeyRound size={13} strokeWidth={1.8} />
+        Restore from seed phrase
+      </Button>
     </div>
   );
 
@@ -366,8 +404,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   // A restore syncs the wallet before `init_taker` starts, so it gets a row of its own ahead
   // of the phases the backend reports.
-  const restoring = pendingWallet?.mode === "restore";
-  const checklistSteps = restoring ? ["Restoring from backup", ...INIT_STEPS] : INIT_STEPS;
+  const restoring = pendingWallet?.mode === "restore" || pendingWallet?.mode === "restore-phrase";
+  const checklistSteps = restoring
+    ? [pendingWallet?.mode === "restore" ? "Restoring from backup" : "Restoring from phrase", ...INIT_STEPS]
+    : INIT_STEPS;
   const active = restoring ? progress.phase + 1 : progress.phase;
   const checklist = (
     <>
@@ -561,6 +601,58 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
                 <div className="flex gap-3 border-t border-line px-8 py-5">
                   <Button variant="secondary" onClick={() => setViewMode("grid")}>Cancel</Button>
                   <Button className="flex-1" disabled={!restoreName.trim() || !restorePassword} onClick={submitRestore}>
+                    Restore &amp; continue
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {viewMode === "restore-phrase" && (
+              <>
+                <div className="flex flex-col gap-5 p-8 text-left">
+                  <TextField
+                    label="New wallet name"
+                    autoComplete="off"
+                    value={phraseName}
+                    onChange={(e) => setPhraseName(e.target.value)}
+                  />
+                  <TextAreaField
+                    label="Recovery phrase"
+                    required
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="Your 12 or 24 words, separated by spaces"
+                    value={phraseWords}
+                    onChange={(e) => setPhraseWords(e.target.value)}
+                    hint={phraseCount > 0 ? `${phraseCount} words` : undefined}
+                  />
+                  <PasswordField
+                    label="New wallet password"
+                    autoComplete="new-password"
+                    required
+                    value={phrasePassword}
+                    onChange={(e) => setPhrasePassword(e.target.value)}
+                  />
+                  <PasswordField
+                    label="Confirm password"
+                    autoComplete="new-password"
+                    required
+                    value={phraseConfirm}
+                    onChange={(e) => setPhraseConfirm(e.target.value)}
+                    error={phraseConfirm && phraseConfirm !== phrasePassword ? "Passwords don't match." : undefined}
+                    onKeyDown={onEnter(submitPhraseRestore)}
+                  />
+                  <p className="text-[11.5px] leading-5 text-subtle">
+                    Restores Native SegWit and Taproot coins on the first account, with no passphrase.
+                    Swap history and swap labels do not come back: swapped coins return as regular
+                    coins. Do not use the same phrase in another wallet at the same time.
+                  </p>
+                </div>
+                <div className="flex gap-3 border-t border-line px-8 py-5">
+                  <Button variant="secondary" onClick={() => setViewMode("grid")}>Cancel</Button>
+                  <Button className="flex-1" disabled={!canRestorePhrase} onClick={submitPhraseRestore}>
                     Restore &amp; continue
                   </Button>
                 </div>
