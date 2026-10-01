@@ -223,7 +223,7 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
 /// rather than being restated here, since `prepare_swap` builds it the same way.
 /// Blocks a swap's own transactions are priced to confirm within. The last hop's refund lock is
 /// only 20 blocks past its contract, so they have to clear well inside that.
-const SWAP_CONF_TARGET: u16 = 2;
+const SWAP_FEE_PRIORITY: openswap::wallet::FeePriority = openswap::wallet::FeePriority::Urgent;
 /// Ceiling on an estimate: it comes from the chain server, and a wrong or hostile one must not be
 /// able to spend a swap's coins on mining fees.
 const MAX_SWAP_FEERATE: u64 = 250;
@@ -252,7 +252,7 @@ async fn swap_feerate(taker: &TakerInstance) -> Result<u64, AppError> {
             crate::ops::chain_backend::resolve_bounded(&config, &wallet_name, Some(socks_port)).ok()?;
         AnyBlockchain::from_config(&backend)
             .ok()?
-            .estimate_feerate(SWAP_CONF_TARGET)
+            .estimate_feerate(SWAP_FEE_PRIORITY)
             .ok()
     })
     .await

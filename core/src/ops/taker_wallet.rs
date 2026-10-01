@@ -487,14 +487,17 @@ pub fn shutdown_all(state: &Arc<AppState>) {
 
 /// Infallible by design: every branch is a valid answer, so a fresh start never looks broken.
 pub fn get_session_state(state: &Arc<AppState>, session: &str) -> SessionStateDto {
+    // An open wallet proves the gate too: nothing initializes without a backend that answered.
     match state.taker_for(session) {
         Ok(taker) => SessionStateDto {
             initialized: true,
+            connected: true,
             wallet_name: Some(taker.wallet_name.clone()),
             data_dir: Some(taker.root.display().to_string()),
         },
         Err(_) => SessionStateDto {
             initialized: false,
+            connected: chain_backend::passed_gate(session),
             wallet_name: None,
             data_dir: None,
         },

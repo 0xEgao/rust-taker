@@ -280,11 +280,13 @@ function RouterCard({
             {running ? <Square size={12} /> : <Play size={12} />}
             {running ? "Stop" : "Start"}
           </Button>
+          {/* `starting` is the whole unfinished setup — deposit, bond, liquidity — and its page is
+              otherwise only reachable through the URL once left. */}
           <LinkButton
-            to={`/router/${encodeURIComponent(settings.routerId)}`}
+            to={`/router/${encodeURIComponent(settings.routerId)}${phase === "starting" ? "/setup" : ""}`}
             size="sm"
           >
-            Manage
+            {phase === "starting" ? "Continue setup" : "Manage"}
           </LinkButton>
         </div>
       </div>

@@ -290,38 +290,21 @@ export function LogViewer({
   lines,
   emptyMessage = "No log lines yet.",
   className = "min-h-0 flex-1",
-  newestFirst = false,
 }: {
   lines: LogLine[];
   emptyMessage?: string;
   className?: string;
-  /** Newest line at the top, following upward instead of down. */
-  newestFirst?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Not "first render": `lines` is usually still empty then (fetch is async), which would
-  // consume the flag before there's anything to scroll to.
-  const hasSnapped = useRef(false);
 
+  // Newest first in every log, so the current line is where the eye lands. Follow the top only
+  // while the reader is already there, so scrolling back through history isn't yanked away.
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || lines.length === 0) return;
-    if (!hasSnapped.current) {
-      hasSnapped.current = true;
-      el.scrollTop = newestFirst ? 0 : el.scrollHeight;
-      return;
-    }
-    // Only follow when the reader is already at the growing edge, so scrolling back through
-    // history isn't yanked away on the next poll.
-    if (newestFirst) {
-      if (el.scrollTop < 80) el.scrollTop = 0;
-      return;
-    }
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 80) el.scrollTop = el.scrollHeight;
-  }, [lines, newestFirst]);
+    if (el && el.scrollTop < 80) el.scrollTop = 0;
+  }, [lines]);
 
-  const ordered = newestFirst ? [...lines].reverse() : lines;
+  const ordered = [...lines].reverse();
 
   return (
     <div ref={scrollRef} className={`overflow-y-auto px-4.5 py-3 ${className}`}>
@@ -334,8 +317,15 @@ export function LogViewer({
           {ordered.map((l, i) => (
             <div
               key={`${l.line}:${ordered.slice(0, i).filter((row) => row.line === l.line).length}`}
-              className={`rounded-sm px-1 py-0.5 whitespace-pre-wrap break-all font-mono text-[11px] transition-colors hover:bg-[var(--color-hover)] ${LOG_LEVEL_TONE[logLevel(l.line)]}`}
+              className={`rounded-sm border-l-2 px-1 py-0.5 whitespace-pre-wrap break-all font-mono text-[11px] transition-colors hover:bg-[var(--color-hover)] ${LOG_LEVEL_TONE[logLevel(l.line)]} ${
+                i === 0 ? "border-primary bg-primary/[0.06]" : "border-transparent"
+              }`}
             >
+              {i === 0 && (
+                <span className="mr-2 rounded-pill border border-primary/40 px-1.5 py-px align-middle font-mono text-[8.5px] uppercase tracking-[0.14em] text-primary">
+                  Latest
+                </span>
+              )}
               {l.line}
             </div>
           ))}

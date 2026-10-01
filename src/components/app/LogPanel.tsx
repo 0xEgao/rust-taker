@@ -134,7 +134,6 @@ export function LogPanel({
       ) : (
         <LogViewer
           lines={filtered}
-          newestFirst
           emptyMessage={
             lines.length === 0
               ? "No log lines yet."

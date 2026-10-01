@@ -2,7 +2,7 @@ import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } f
 import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { estimateFees, estimateSendFee, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, FeeEstimate, Outpoint, SendFeeEstimate, TxSummary, UtxoEntry } from "../../api/types";
@@ -108,23 +108,6 @@ function SendPanel() {
     [feeKey, customFeeRate],
   );
 
-  // The mempool quote is the default — as a preset when it is one, as Custom otherwise — until
-  // the user picks a rate themselves.
-  const feeTouched = useRef(false);
-  useEffect(() => {
-    if (mempoolRate === null || feeTouched.current) return;
-    const preset = FEE_PRESETS.find((rate) => rate === mempoolRate);
-    if (preset !== undefined) {
-      setFeeKey(preset);
-    } else {
-      setFeeKey("custom");
-      setCustomFeeRate(String(mempoolRate));
-    }
-  }, [mempoolRate]);
-  function chooseFee(key: FeeKey) {
-    feeTouched.current = true;
-    setFeeKey(key);
-  }
 
   const spendableUtxos = useMemo(() => utxos.filter((u) => u.spendable && u.solvable), [utxos]);
   const selectedTotal = useMemo(() => {
@@ -343,14 +326,14 @@ function SendPanel() {
           {FEE_PRESETS.map((rate) => (
             <PresetTile
               key={rate}
-              onClick={() => chooseFee(rate)}
+              onClick={() => setFeeKey(rate)}
               selected={feeKey === rate}
               label={`${rate} s/vB`}
               size="sm"
             />
           ))}
           <PresetTile
-            onClick={() => chooseFee("custom")}
+            onClick={() => setFeeKey("custom")}
             selected={feeKey === "custom"}
             label="Custom"
             size="sm"
@@ -379,10 +362,7 @@ function SendPanel() {
             inputMode="decimal"
             placeholder="e.g. 8"
             value={customFeeRate}
-            onChange={(e) => {
-              feeTouched.current = true;
-              setCustomFeeRate(e.target.value);
-            }}
+            onChange={(e) => setCustomFeeRate(e.target.value)}
           />
         )}
       </div>

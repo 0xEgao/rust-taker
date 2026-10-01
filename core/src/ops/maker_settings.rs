@@ -165,8 +165,13 @@ fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError>
 /// `makers.json` remains the multi-maker registry for identity and wallet location only.
 pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), AppError> {
     let config_path = maker_data_dir(settings)?.join("config.toml");
+    // A file the crate now rejects (a bond under its minimum, say) is rewritten from scratch:
+    // refusing would leave Settings unable to fix the very value that broke it.
     let mut config = if config_path.exists() {
-        read_runtime_config(&config_path)?
+        read_runtime_config(&config_path).unwrap_or_else(|error| {
+            log::warn!("rewriting {} the crate could not read: {}", config_path.display(), error.message);
+            MakerServerConfig::default()
+        })
     } else {
         MakerServerConfig::default()
     };
@@ -268,8 +273,12 @@ fn load_dashboard_registrations(
 pub(crate) fn load_all() -> Result<HashMap<String, MakerSettingsDto>, AppError> {
     let _guard = SETTINGS_IO.lock()?;
     let mut stored = load_file(&settings_path()?)?;
+    // One router's file failing the crate's checks must not take every router's settings with
+    // it; that router keeps its registered values, and its start reports the crate's error.
     for settings in stored.makers.values_mut() {
-        apply_runtime_config(settings)?;
+        if let Err(error) = apply_runtime_config(settings) {
+            log::warn!("router {}: config.toml not applied: {}", settings.router_id, error.message);
+        }
     }
     Ok(stored.makers)
 }
@@ -502,6 +511,40 @@ mod tests {
         assert_eq!(registry_copy.base_fee, 777);
         assert_eq!(registry_copy.fidelity_feerate, 3.5);
         assert_eq!(registry_copy.name, "satoshi's lounge");
+
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// The crate refuses a `config.toml` whose bond is under its minimum. Starting from it fails
+    /// with that error, and Settings can still save the corrected amount over it.
+    #[test]
+    fn a_rejected_config_can_be_corrected_from_settings() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let data_dir = std::env::temp_dir().join(format!(
+            "portal-maker-small-bond-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let config_path = data_dir.join("config.toml");
+
+        let mut saved = settings();
+        saved.data_dir = Some(data_dir.to_string_lossy().into_owned());
+        saved.fidelity_amount = 1_000;
+        write_runtime_config(&saved).unwrap();
+        let rejected = MakerServerConfig::new(Some(&config_path));
+        assert!(rejected.is_err(), "the crate refuses a bond under its minimum");
+
+        let mut registry_copy = settings();
+        registry_copy.data_dir = saved.data_dir.clone();
+        assert!(apply_runtime_config(&mut registry_copy).is_err());
+
+        saved.fidelity_amount = 10_000;
+        write_runtime_config(&saved).unwrap();
+        let fixed = MakerServerConfig::new(Some(&config_path)).unwrap();
+        assert_eq!(fixed.fidelity_amount, 10_000);
 
         std::fs::remove_dir_all(data_dir).unwrap();
     }

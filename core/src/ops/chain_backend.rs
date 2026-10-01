@@ -37,6 +37,20 @@ const LEGACY_FILE_NAME: &str = "backend.json";
 /// passing the gate with a different backend never repoints another's.
 static SESSIONS: Mutex<Option<HashMap<String, ChainBackendConfig>>> = Mutex::new(None);
 
+/// Sessions that adopted a backend at the connection gate. Separate from `SESSIONS`, which `load`
+/// seeds with defaults on any read: having a config there does not mean the gate was passed.
+static PASSED_GATE: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+/// Whether this session has been through the connection gate. Asked after a reload, so a page
+/// that needs no wallet (a router's) is not sent back to the gate it already cleared.
+pub fn passed_gate(session: &str) -> bool {
+    PASSED_GATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|passed| passed.contains(session))
+}
+
 /// Cached by complete endpoint/route fingerprint, never by process first-use.
 /// The servers the gate offers, newest verified list. Every mainnet entry was probed against
 /// the live chain before landing and agreed on the same tip; a preset that does not answer is
@@ -102,6 +116,9 @@ fn store(session: &str, config: ChainBackendConfig) {
 pub fn forget_session(session: &str) {
     if let Some(sessions) = SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         sessions.remove(session);
+    }
+    if let Some(passed) = PASSED_GATE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        passed.remove(session);
     }
 }
 
@@ -219,11 +236,6 @@ fn validate(config: &ChainBackendConfig) -> Result<(), AppError> {
             if node.port == 0 || node.zmq_port == 0 {
                 return Err(invalid("node RPC and ZMQ ports must be set"));
             }
-            if !matches!(node.host.as_str(), "127.0.0.1" | "localhost" | "::1") {
-                return Err(invalid(
-                    "Remote Bitcoin Core RPC/ZMQ is plaintext. Use a trusted tunnel and configure its local 127.0.0.1 or ::1 endpoint.",
-                ));
-            }
         }
         None if config.kind == ChainBackendKind::CoreRpc => {
             return Err(invalid("cannot select a node before one is added"));
@@ -328,6 +340,11 @@ pub fn set_chain_backend(session: &str, config: ChainBackendConfig) -> Result<()
     let config = merge_preserved_password(session, config);
     validate(&config)?;
     store(session, config);
+    PASSED_GATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(session.to_string());
     Ok(())
 }
 
@@ -534,6 +551,20 @@ fn electrum_network(config: &ChainBackendConfig, socks_port: Option<u16>) -> Opt
 mod tests {
     use super::*;
 
+    /// A reload asks this to decide whether to send the session back to the gate; a router
+    /// session has no wallet to prove it otherwise.
+    #[test]
+    fn the_gate_is_remembered_until_the_session_ends() {
+        let session = format!("gate-test-{}", std::process::id());
+        assert!(!passed_gate(&session));
+        load(&session);
+        assert!(!passed_gate(&session), "reading the seeded default is not passing the gate");
+        set_chain_backend(&session, ChainBackendConfig::default()).unwrap();
+        assert!(passed_gate(&session));
+        forget_session(&session);
+        assert!(!passed_gate(&session));
+    }
+
     fn node(host: &str, port: u16, username: &str, password: &str) -> ChainBackendConfig {
         ChainBackendConfig {
             kind: ChainBackendKind::CoreRpc,
@@ -548,13 +579,15 @@ mod tests {
         }
     }
 
-    /// Probing reaches the network with a credential attached, so it has to be held to the
-    /// same loopback rule as adopting a backend. Without this a caller names any host and
-    /// the saved RPC password is posted to it in the clear.
+    /// A node elsewhere on the network — an Umbrel's, a LAN box — is the operator's to choose.
+    /// What must not happen is a saved password following a host it was not given for, which
+    /// `a_saved_password_never_follows_a_changed_destination` covers.
     #[test]
-    fn probing_is_held_to_the_same_host_rule_as_adopting() {
+    fn any_node_host_is_accepted() {
         assert!(validate(&node("127.0.0.1", 8332, "u", "p")).is_ok());
-        assert!(validate(&node("attacker.example", 80, "u", "p")).is_err());
+        assert!(validate(&node("10.21.21.8", 8332, "umbrel", "p")).is_ok());
+        assert!(validate(&node("node.local", 8332, "u", "p")).is_ok());
+        assert!(validate(&node(" ", 8332, "u", "p")).is_err());
     }
 
     /// The blank password means "reuse what I already gave you", and that answer is only

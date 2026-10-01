@@ -1056,7 +1056,7 @@ export function SwapPage() {
 
             <Disclosure label="Swap Log" onOpenChange={setLogsOpen}>
               <div className="rounded-control border border-line bg-surface-raised">
-                <LogViewer lines={swapLogs} className="max-h-64" newestFirst />
+                <LogViewer lines={swapLogs} className="max-h-64" />
               </div>
             </Disclosure>
           </Card>

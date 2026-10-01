@@ -571,7 +571,7 @@ export function RecoveryPage() {
 
         <Disclosure label="Logs" onOpenChange={setLogsOpen}>
           <div className="pt-2">
-            <LogViewer lines={logs} className="max-h-64" newestFirst />
+            <LogViewer lines={logs} className="max-h-64" />
           </div>
         </Disclosure>
       </div>

@@ -188,6 +188,9 @@ pub struct InitResult {
 #[serde(rename_all = "camelCase")]
 pub struct SessionStateDto {
     pub initialized: bool,
+    /// The connection gate was cleared, whether or not a wallet is open — a router session has
+    /// none, and a reload must not send it back to the gate.
+    pub connected: bool,
     pub wallet_name: Option<String>,
     pub data_dir: Option<String>,
 }

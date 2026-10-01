@@ -86,8 +86,8 @@ ones you used before. On signet, **Faucet** gets you free test coins.
 **To send**:
 
 1. Paste the recipient's address and enter the amount. You can type it in sats, BTC or USD.
-2. Pick a fee rate. Portal starts from what the mempool is asking right now, and **Custom** lets
-   you set your own.
+2. Pick a fee rate. It starts at 2 sat/vB, and Portal shows what the mempool is asking right now.
+   Pick a higher preset, or **Custom**, to confirm faster.
 3. Optionally, open **Manual UTXO picker** to choose exactly which coins to spend.
 4. Press **Send**. Portal shows the network fee and the total, and warns you if the fee looks too
    high. Check them, then broadcast.
