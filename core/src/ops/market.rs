@@ -135,11 +135,13 @@ pub async fn poll_maker(
     state: &TakerInstance,
     address: String,
 ) -> Result<MakerDto, AppError> {
-    let taker = state.taker.clone();
+    // Through the offer-sync client, as `Taker::poll_maker` itself does, but without the taker
+    // mutex: a running swap holds that for hours, and Refresh polls every router at once.
+    let address = openswap::taker::offers::MakerAddress::try_from(address)
+        .map_err(|e| AppError::new(ErrorCode::InvalidInput, format!("Invalid router address: {e}")))?;
+    let client = state.offer_sync.clone();
     tokio::task::spawn_blocking(move || -> Result<MakerDto, AppError> {
-        let guard = try_lock_taker(&taker)?;
-        let taker = guard.as_ref().ok_or_else(AppError::not_initialized)?;
-        Ok(to_maker_dto(taker.poll_maker(address)?))
+        Ok(to_maker_dto(client.poll_maker(address)?))
     })
     .await
     .map_err(AppError::internal)?

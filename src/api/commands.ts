@@ -42,6 +42,7 @@ import type {
   TorStatus,
   TxSummary,
   UtxoEntry,
+  WalletAddress,
   RouterDefaults,
   SessionState,
   WalletInfo,
@@ -135,30 +136,6 @@ export function restoreWallet(
   });
 }
 
-export function restoreWalletFromMnemonic(
-  walletName: string,
-  mnemonic: string,
-  password: string,
-  dataDir?: string,
-): Promise<void> {
-  return invoke("restore_wallet_from_mnemonic", {
-    dataDir,
-    walletName,
-    socksPort: undefined,
-    mnemonic,
-    password,
-  });
-}
-
-/** A new wallet's recovery phrase, until `confirmRecoveryPhraseSaved`; null for any other wallet. */
-export function getRecoveryPhrase(): Promise<string | null> {
-  return invoke("get_recovery_phrase");
-}
-
-export function confirmRecoveryPhraseSaved(): Promise<void> {
-  return invoke("confirm_recovery_phrase_saved");
-}
-
 // ---------------------------------------------------------------------------
 // Wallet operations
 // ---------------------------------------------------------------------------
@@ -170,10 +147,11 @@ export function getBalances(): Promise<Balances> {
 export async function estimateSwapFunding(
   amountSats: number,
   protocol: ProtocolVersion,
-  outpoints?: Outpoint[],
-  txCount?: number,
+  outpoints: Outpoint[] | undefined,
+  txCount: number,
+  feeRate: number,
 ): Promise<SwapFundingEstimate> {
-  return invoke("estimate_swap_funding", { amountSats, protocol, outpoints, txCount });
+  return invoke("estimate_swap_funding", { amountSats, protocol, outpoints, txCount, feeRate });
 }
 
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {
@@ -189,6 +167,10 @@ export function getTransactions(
   skip?: number,
 ): Promise<TxSummary[]> {
   return invoke("get_transactions", { count, skip });
+}
+
+export function listAddresses(): Promise<WalletAddress[]> {
+  return invoke("list_addresses");
 }
 
 export function listUtxos(): Promise<UtxoEntry[]> {
@@ -217,6 +199,7 @@ export function syncWallet(): Promise<void> {
   return invoke("sync_wallet");
 }
 
+/** The mempool's fee quote for `network` (as `chainName` names it); rejects for one it has none for. */
 export function estimateFees(): Promise<FeeEstimate> {
   return invoke("estimate_fees");
 }
@@ -269,15 +252,6 @@ export function initRouter(config: RouterInitConfig): Promise<RouterStatus> {
   return invoke("init_maker", { config });
 }
 
-/** A new router's recovery phrase, only for the browser that created it, until confirmed. */
-export function getRouterRecoveryPhrase(routerId: string): Promise<string | null> {
-  return invoke("get_router_recovery_phrase", { routerId });
-}
-
-export function confirmRouterRecoveryPhraseSaved(routerId: string): Promise<void> {
-  return invoke("confirm_router_recovery_phrase_saved", { routerId });
-}
-
 export function updateRouterSettings(routerId: string, settings: RouterSettings): Promise<RouterSettings> {
   return invoke("update_maker_settings", { routerId, settings });
 }
@@ -298,6 +272,12 @@ export function getSavedRouterSettings(routerId: string): Promise<RouterSettings
   return invoke("get_saved_maker_settings", { routerId });
 }
 
+/** The crate's own verdict on router settings before they are saved: null when accepted,
+ *  otherwise its message (a bond under its minimum, say). */
+export function checkRouterConfig(settings: RouterSettings): Promise<string | null> {
+  return invoke("check_router_config", { settings });
+}
+
 export function clearRouterSettings(routerId: string): Promise<void> {
   return invoke("clear_maker_settings", { routerId });
 }
@@ -313,6 +293,10 @@ export function checkRouterPorts(networkPort: number, rpcPort: number): Promise<
 
 export function getRouterBalances(routerId: string): Promise<Balances> {
   return invoke("get_maker_balances", { routerId });
+}
+
+export function listRouterAddresses(routerId: string): Promise<WalletAddress[]> {
+  return invoke("list_maker_addresses", { routerId });
 }
 
 export function listRouterUtxos(routerId: string): Promise<UtxoEntry[]> {
@@ -356,6 +340,11 @@ export function getRouterSwapReport(routerId: string, swapId: string): Promise<R
 
 export function verifyRouterDeniability(routerId: string, swapId: string): Promise<boolean> {
   return invoke("verify_maker_deniability", { routerId, swapId });
+}
+
+/** A wallet's log while it is being restored, before it can be opened. */
+export function getRestoreLogs(walletName: string, dataDir?: string, lines?: number): Promise<LogLine[]> {
+  return invoke("get_restore_logs", { dataDir, walletName, lines });
 }
 
 export function getRouterLogs(routerId: string, lines?: number): Promise<LogLine[]> {

@@ -101,6 +101,13 @@ pub fn shutdown() {
     while Instant::now() < deadline && control_responds_as_tor(tor.control_port) {
         std::thread::sleep(Duration::from_millis(100));
     }
+    // This process's directory goes with it once Tor has let go of it; the startup sweep only
+    // reaches directories whose process is gone, and is left for the ones killed outright.
+    if !control_responds_as_tor(tor.control_port) {
+        if let Ok(dir) = tor_dir() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
     if let Ok(mut slot) = RUNTIME.lock() {
         *slot = None;
     }

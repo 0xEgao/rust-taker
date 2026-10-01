@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/app/AppShell";
 import { QuitShutdown } from "./components/app/QuitShutdown";
-import { RecoveryPhraseScreen } from "./components/app/RecoveryPhrase";
 import { ConnectPage } from "./pages/connect/ConnectPage";
 import { LoginPage } from "./pages/auth/LoginPage";
 import { LaunchPage } from "./pages/launch/LaunchPage";
@@ -21,7 +20,7 @@ import { SwapPage } from "./pages/swap/SwapPage";
 import { SwapReportPage } from "./pages/swap/SwapReportPage";
 import { SwapReportsPage } from "./pages/swap/SwapReportsPage";
 import { WalletPage } from "./pages/wallet/WalletPage";
-import { confirmRecoveryPhraseSaved, getRecoveryPhrase, getSessionState } from "./api/commands";
+import { getSessionState } from "./api/commands";
 import { refreshWalletCache } from "./lib/wallet-sync";
 import { watchUnresolved } from "./store/unresolved";
 import { useSessionStore } from "./store/session";
@@ -37,19 +36,6 @@ import { REFRESH_INTERVAL_MS } from "./store/wallet-cache";
  */
 function RequireWallet() {
   const initialized = useSessionStore((s) => s.initialized);
-  // `undefined` while asking. Asked here, not after `init_taker`, so a reload or a lost response
-  // before the user confirmed still lands on the phrase instead of losing it.
-  const [phrase, setPhrase] = useState<string | null | undefined>(undefined);
-  useEffect(() => {
-    if (!initialized) return;
-    let live = true;
-    void getRecoveryPhrase()
-      .then((words) => live && setPhrase(words))
-      .catch(() => live && setPhrase(null));
-    return () => {
-      live = false;
-    };
-  }, [initialized]);
 
   // Scoped here rather than in AppShell because this is the only subtree where a wallet is
   // guaranteed to exist — a router-only session would otherwise sync a wallet that isn't
@@ -71,18 +57,6 @@ function RequireWallet() {
   // role was wanted, and the picker offers its own way back to the role choice. The role
   // picker stays the entry point the connection gate hands off to.
   if (!initialized) return <Navigate to="/setup" replace />;
-  if (phrase === undefined) return null;
-  if (phrase)
-    return (
-      <RecoveryPhraseScreen
-        words={phrase}
-        subject="wallet"
-        onSaved={async () => {
-          await confirmRecoveryPhraseSaved();
-          setPhrase(null);
-        }}
-      />
-    );
   return <Outlet />;
 }
 

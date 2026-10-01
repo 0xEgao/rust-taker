@@ -9,10 +9,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use std::str::FromStr;
-use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
-use openswap::bitcoin::{Address, Amount, OutPoint, Txid};
+use openswap::bitcoin::{Address, Amount, OutPoint, ScriptBuf, Txid, WitnessProgram, WitnessVersion};
 use openswap::protocol::ProtocolVersion;
 use openswap::taker::swap_tracker::{
     ContractResolution, ExchangeProgress, LegacyExchangeProgress, MakerProgress,
@@ -213,6 +212,22 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
     }
 }
 
+/// The crate rejects a rate under the relay floor only at prepare time, after maker discovery;
+/// the ceiling stops a mistyped rate from spending a swap's coins on mining fees.
+fn validate_feerate(rate: u64) -> Result<u64, AppError> {
+    if rate < MIN_RELAY_FEE_RATE as u64 || rate as f64 > crate::ops::taker_wallet::MAX_FEE_RATE {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "feeRate must be between {} and {} sat/vB; anything higher is almost certainly a typo",
+                MIN_RELAY_FEE_RATE as u64,
+                crate::ops::taker_wallet::MAX_FEE_RATE
+            ),
+        ));
+    }
+    Ok(rate)
+}
+
 /// Quote every on-chain cost the taker bears directly: our own funding transactions, the
 /// per-hop mining fee each maker deducts from the routed amount, and the sweep that claims
 /// the incoming contracts at the end.
@@ -221,57 +236,13 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
 /// full `max_input_budget` on every one of `tx_count` splits — so the settled cost can only
 /// come in under it. The fee rate, split count and input budget all come from `SwapParams`
 /// rather than being restated here, since `prepare_swap` builds it the same way.
-/// Blocks a swap's own transactions are priced to confirm within. The last hop's refund lock is
-/// only 20 blocks past its contract, so they have to clear well inside that.
-const SWAP_FEE_PRIORITY: openswap::wallet::FeePriority = openswap::wallet::FeePriority::Urgent;
-/// Ceiling on an estimate: it comes from the chain server, and a wrong or hostile one must not be
-/// able to spend a swap's coins on mining fees.
-const MAX_SWAP_FEERATE: u64 = 250;
-/// The Swap page re-quotes on every edit; one estimate serves them for this long.
-const SWAP_FEERATE_TTL: Duration = Duration::from_secs(60);
-static SWAP_FEERATE: Mutex<Option<(String, Instant, u64)>> = Mutex::new(None);
-
-/// What a swap pays per vbyte. Left unset, the crate prices every swap transaction at the 1 sat/vB
-/// relay floor. Taken from the wallet's own chain server, so it is right for the network — a
-/// public fee API quotes mainnet even on signet — and from mempool.space only when the server has
-/// no estimate.
-async fn swap_feerate(taker: &TakerInstance) -> Result<u64, AppError> {
-    let fingerprint =
-        crate::ops::chain_backend::fingerprint(&taker.chain_backend, Some(taker.socks_port));
-    if let Some((_, _, rate)) = SWAP_FEERATE
-        .lock()?
-        .as_ref()
-        .filter(|(cached, at, _)| *cached == fingerprint && at.elapsed() < SWAP_FEERATE_TTL)
-    {
-        return Ok(*rate);
-    }
-    let (config, wallet_name, socks_port) =
-        (taker.chain_backend.clone(), taker.wallet_name.clone(), taker.socks_port);
-    let from_server = tokio::task::spawn_blocking(move || {
-        let backend =
-            crate::ops::chain_backend::resolve_bounded(&config, &wallet_name, Some(socks_port)).ok()?;
-        AnyBlockchain::from_config(&backend)
-            .ok()?
-            .estimate_feerate(SWAP_FEE_PRIORITY)
-            .ok()
-    })
-    .await
-    .map_err(AppError::internal)?;
-    let estimate = match from_server {
-        Some(rate) => rate,
-        None => crate::ops::taker_wallet::estimate_fees().await?.high,
-    };
-    let rate = (estimate.ceil() as u64).clamp(MIN_RELAY_FEE_RATE as u64, MAX_SWAP_FEERATE);
-    *SWAP_FEERATE.lock()? = Some((fingerprint, Instant::now(), rate));
-    Ok(rate)
-}
-
 pub async fn estimate_swap_funding(
     taker: &TakerInstance,
     amount_sats: u64,
     protocol: ProtocolVersionDto,
     outpoints: Option<Vec<crate::types::Outpoint>>,
     tx_count: Option<u32>,
+    fee_rate: u64,
 ) -> Result<SwapFundingEstimateDto, AppError> {
     let wallet = taker.wallet.clone();
     let protocol = match protocol {
@@ -280,7 +251,7 @@ pub async fn estimate_swap_funding(
     };
     // Only the fee defaults are read off this; the hop count never reaches a quote.
     let mut params = SwapParams::new(protocol, Amount::from_sat(amount_sats), 2)
-        .with_feerate(swap_feerate(taker).await?);
+        .with_feerate(validate_feerate(fee_rate)?);
     if let Some(count) = tx_count {
         params = params.with_tx_count(validate_tx_count(count)?);
     }
@@ -354,6 +325,13 @@ pub async fn estimate_swap_funding(
             incoming_utxo_count: params.tx_count as usize,
             route_mining_fee_per_router_sats,
             sweep_fee_sats: params.tx_count as u64 * sweep_per_contract_sats,
+            // The wallet sweeps every incoming contract to a fresh P2TR address; only the
+            // script type matters to the dust limit, so any 32-byte program prices it.
+            receive_dust_sats: ScriptBuf::new_witness_program(
+                &WitnessProgram::new(WitnessVersion::V1, &[0; 32]).map_err(AppError::internal)?,
+            )
+            .minimal_non_dust()
+            .to_sat(),
         })
     })
     .await
@@ -383,10 +361,10 @@ pub async fn prepare_swap(
             return Err(AppError::swap_in_progress());
         }
     }
-    if request.router_count < 2 {
+    if request.router_count == 0 {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "routerCount must be at least 2 for route privacy",
+            "routerCount must be at least 1",
         ));
     }
 
@@ -399,7 +377,7 @@ pub async fn prepare_swap(
         Amount::from_sat(request.amount_sats),
         request.router_count,
     )
-    .with_feerate(swap_feerate(instance).await?);
+    .with_feerate(validate_feerate(request.fee_rate)?);
     if let Some(outpoints) = request.outpoints {
         let converted = outpoints
             .into_iter()

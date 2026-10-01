@@ -31,6 +31,11 @@ pub fn import_dashboard_makers(router_ids: Vec<String>) -> Result<Vec<MakerSetti
 }
 
 #[tauri::command]
+pub fn check_router_config(settings: MakerSettingsDto) -> Result<Option<String>, AppError> {
+    maker_settings::check_router_config(settings)
+}
+
+#[tauri::command]
 pub fn clear_maker_settings(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<(), AppError> {
     maker_settings::clear_maker_settings(&state, router_id)
 }

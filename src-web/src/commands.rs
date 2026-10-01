@@ -69,42 +69,16 @@ pub fn lookup(name: &str) -> Option<&'static Operation> {
 }
 
 pub static OPERATIONS: &[Operation] = &[
-    // Mutating, though they only read: a read skips CSRF, and on Umbrel the session cookie
-    // reaches every app on the host. The phrase must need the login-only token.
-    op("get_recovery_phrase", true, |ctx, args| {
-        let _ = (&ctx, &args);
-        Box::pin(async move {
-            encode(&ops::taker_wallet::get_recovery_phrase(&*ctx.taker()?, &ctx.session)?)
-        })
-    }),
-    op("confirm_recovery_phrase_saved", true, |ctx, args| {
-        let _ = (&ctx, &args);
-        Box::pin(async move {
-            encode(&ops::taker_wallet::confirm_recovery_phrase_saved(&*ctx.taker()?, &ctx.session)?)
-        })
-    }),
-    op("get_router_recovery_phrase", true, |ctx, args| {
+    op("check_router_config", false, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
-            router_id: String,
+            settings: MakerSettingsDto,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::get_router_recovery_phrase(&ctx.rt, &ctx.session, &body.router_id)?)
-        })
-    }),
-    op("confirm_router_recovery_phrase_saved", true, |ctx, args| {
-        let _ = (&ctx, &args);
-        Box::pin(async move {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct Args {
-            router_id: String,
-            }
-            let body: Args = parse(args)?;
-            encode(&ops::maker::confirm_router_recovery_phrase_saved(&ctx.rt, &ctx.session, &body.router_id)?)
+            encode(&ops::maker_settings::check_router_config(body.settings)?)
         })
     }),
     op("check_backend", true, |ctx, args| {
@@ -136,7 +110,7 @@ pub static OPERATIONS: &[Operation] = &[
     op("estimate_fees", true, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_wallet::estimate_fees().await?)
+            encode(&ops::chain_backend::estimate_fees(&ctx.session).await?)
         })
     }),
     op("estimate_send_fee", false, |ctx, args| {
@@ -164,9 +138,10 @@ pub static OPERATIONS: &[Operation] = &[
             protocol: ProtocolVersionDto,
             outpoints: Option<Vec<Outpoint>>,
             tx_count: Option<u32>,
+            fee_rate: u64,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::estimate_swap_funding(&*ctx.taker()?, body.amount_sats, body.protocol, body.outpoints, body.tx_count).await?)
+            encode(&ops::taker_swap::estimate_swap_funding(&*ctx.taker()?, body.amount_sats, body.protocol, body.outpoints, body.tx_count, body.fee_rate).await?)
         })
     }),
     op("get_balances", false, |ctx, args| {
@@ -201,6 +176,22 @@ pub static OPERATIONS: &[Operation] = &[
             }
             let body: Args = parse(args)?;
             encode(&ops::taker_reports::get_incoming_swap_utxo(&*ctx.taker()?, body.swap_id).await?)
+        })
+    }),
+    op("get_restore_logs", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+            /// Accepted and discarded: the web host only ever reads its own data root.
+            #[allow(dead_code)]
+            data_dir: Option<String>,
+            wallet_name: String,
+            lines: Option<usize>,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::logs::get_restore_logs(None, body.wallet_name, body.lines).await?)
         })
     }),
     op("get_logs", false, |ctx, args| {
@@ -434,6 +425,18 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::maker_reports::list_maker_swap_reports(&ctx.rt, body.router_id).await?)
         })
     }),
+    op("list_maker_addresses", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+            router_id: String,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::maker_wallet::list_maker_addresses(&ctx.rt, body.router_id).await?)
+        })
+    }),
     op("list_maker_utxos", false, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {
@@ -466,6 +469,12 @@ pub static OPERATIONS: &[Operation] = &[
         let _ = (&ctx, &args);
         Box::pin(async move {
             encode(&ops::taker_reports::list_swap_reports(&*ctx.taker()?).await?)
+        })
+    }),
+    op("list_addresses", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            encode(&ops::taker_wallet::list_addresses(&*ctx.taker()?).await?)
         })
     }),
     op("list_utxos", false, |ctx, args| {
@@ -728,25 +737,6 @@ pub static DURABLE: &[Operation] = &[
             encode(&ops::taker_wallet::restore_wallet(&ctx.rt, &ctx.session, None, body.wallet_name, body.socks_port, body.selection_id, body.password).await?)
         })
     }),
-    op("restore_wallet_from_mnemonic", true, |ctx, args| {
-        let _ = (&ctx, &args);
-        Box::pin(async move {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct Args {
-            /// Accepted and discarded, as for `restore_wallet`: the restore always lands in the
-            /// server-resolved root.
-            #[allow(dead_code)]
-            data_dir: Option<String>,
-            wallet_name: String,
-            socks_port: Option<u16>,
-            mnemonic: String,
-            password: String,
-            }
-            let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::restore_wallet_from_mnemonic(&ctx.rt, &ctx.session, None, body.wallet_name, body.socks_port, body.mnemonic, body.password).await?)
-        })
-    }),
     op("send_maker_to_address", true, |ctx, args| {
         Box::pin(async move {
             #[derive(serde::Deserialize)]
@@ -866,7 +856,10 @@ mod tests {
             .filter(|o| o["web"].as_bool().unwrap())
             .filter(|o| matches!(o["executionClass"].as_str(), Some("read" | "probe" | "transient")))
             // Served by the specialized backup endpoint, not by a command route.
-            .filter(|o| o["webAdaptation"] != "specialized" || o["name"] != "backup_wallet")
+            .filter(|o| {
+                o["webAdaptation"] != "specialized"
+                    || !matches!(o["name"].as_str(), Some("backup_wallet" | "backup_maker_wallet"))
+            })
             .map(|o| o["name"].as_str().unwrap())
             .collect();
 

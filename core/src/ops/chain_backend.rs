@@ -18,12 +18,16 @@ use openswap::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::ListUnspentResult
 use openswap::bitcoind::bitcoincore_rpc::jsonrpc::{self, simple_http};
 use openswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
 use openswap::utill::get_taker_dir;
-use openswap::wallet::{BackendConfig, Blockchain, CoreRpcConfig, Electrum, ElectrumConfig};
+use openswap::utill::MIN_RELAY_FEE_RATE;
+use openswap::wallet::{
+    AnyBlockchain, BackendConfig, Blockchain, CoreRpcConfig, Electrum, ElectrumConfig, FeePriority,
+    WalletError,
+};
 
 use crate::error::{AppError, ErrorCode};
 use crate::types::{
     BackendStatus, ChainBackendConfig, ChainBackendKind, ChainBackendView, ElectrumBackendDto,
-    ElectrumPresetDto, NodeBackendDto, NodeBackendViewDto,
+    ElectrumPresetDto, FeeEstimate, NodeBackendDto, NodeBackendViewDto,
 };
 
 /// One bounded attempt is enough for a probe. The backend's own defaults (a 120s proxied
@@ -280,16 +284,9 @@ pub(crate) async fn preflight_active(
     let config = taker.chain_backend.clone();
     let socks_port = Some(taker.socks_port);
     let route_fingerprint = fingerprint(&config, socks_port);
-    let status = tokio::task::spawn_blocking(move || match config.kind {
-        ChainBackendKind::Electrum => probe_electrum(&config.electrum, socks_port),
-        ChainBackendKind::CoreRpc => config
-            .node
-            .as_ref()
-            .map(probe_core_rpc)
-            .unwrap_or_else(|| unreachable("no Bitcoin node is configured".to_string())),
-    })
-    .await
-    .map_err(AppError::internal)?;
+    let status = tokio::task::spawn_blocking(move || probe(&config, socks_port))
+        .await
+        .map_err(AppError::internal)?;
     if !status.reachable {
         return Err(AppError::new(
             ErrorCode::RpcUnreachable,
@@ -386,15 +383,103 @@ pub async fn check_backend(
     // otherwise receive the saved RPC password, and the reachability of arbitrary addresses
     // would make this a scanner for whatever the server can see.
     validate(&config)?;
-    tokio::task::spawn_blocking(move || match config.kind {
+    tokio::task::spawn_blocking(move || probe(&config, socks_port))
+        .await
+        .map_err(AppError::internal)
+}
+
+/// One bounded attempt. Also what stands between a caller and the crate's sync, which retries
+/// an unreachable backend until it answers or the wallet's owner shuts down.
+pub(crate) fn probe(config: &ChainBackendConfig, socks_port: Option<u16>) -> BackendStatus {
+    match config.kind {
         ChainBackendKind::Electrum => probe_electrum(&config.electrum, socks_port),
         ChainBackendKind::CoreRpc => match &config.node {
             Some(node) => probe_core_rpc(node),
             None => unreachable("no Bitcoin node is configured".to_string()),
         },
+    }
+}
+
+/// Mainnet rates through the crate's estimator, on every chain: a test network's fee market is
+/// empty, so its own estimate would tell nobody what the same transaction costs for real. The
+/// session's server is asked when it is itself on mainnet, a mainnet preset otherwise.
+pub async fn estimate_fees(session: &str) -> Result<FeeEstimate, AppError> {
+    let config = load(session);
+    let route = fingerprint(&config, None);
+    if let Some((_, _, fees)) = FEE_ESTIMATES
+        .lock()?
+        .as_ref()
+        .filter(|(cached, at, _)| *cached == route && at.elapsed() < FEE_ESTIMATE_TTL)
+    {
+        return Ok(fees.clone());
+    }
+    let fees = estimate_fees_uncached(config).await?;
+    *FEE_ESTIMATES.lock()? = Some((route, std::time::Instant::now(), fees.clone()));
+    Ok(fees)
+}
+
+/// Every fee picker asks on mount, and a non-mainnet session's answer comes from a remote
+/// mainnet server; one answer serves them all for this long.
+const FEE_ESTIMATE_TTL: Duration = Duration::from_secs(60);
+static FEE_ESTIMATES: Mutex<Option<(String, std::time::Instant, FeeEstimate)>> = Mutex::new(None);
+
+async fn estimate_fees_uncached(config: ChainBackendConfig) -> Result<FeeEstimate, AppError> {
+    tokio::task::spawn_blocking(move || -> Result<FeeEstimate, AppError> {
+        let own = resolve_bounded(&config, "", None)
+            .ok()
+            .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
+            .filter(|chain| {
+                chain
+                    .get_blockchain_info()
+                    .is_ok_and(|info| info.chain == Network::Bitcoin)
+            });
+        if let Some(chain) = own {
+            return fee_tiers(&chain);
+        }
+        let mut failure = None;
+        for (_, url, _) in ELECTRUM_PRESETS.iter().filter(|(_, _, network)| *network == "bitcoin") {
+            let mut electrum = electrum_config(
+                &ElectrumBackendDto { url: (*url).to_string(), use_tor: false },
+                None,
+            );
+            electrum.max_retries = 0;
+            electrum.timeout = Some(PROBE_TIMEOUT_SECS);
+            match AnyBlockchain::from_config(&BackendConfig::Electrum(electrum))
+                .map_err(AppError::from)
+                .and_then(|chain| fee_tiers(&chain))
+            {
+                Ok(fees) => return Ok(fees),
+                Err(e) => failure = Some(e),
+            }
+        }
+        Err(failure.unwrap_or_else(|| AppError::internal("no mainnet Electrum preset")))
     })
     .await
-    .map_err(AppError::internal)
+    .map_err(AppError::internal)?
+}
+
+fn fee_tiers(chain: &AnyBlockchain) -> Result<FeeEstimate, AppError> {
+    let mut rates = [None; 3];
+    for (slot, priority) in rates
+        .iter_mut()
+        .zip([FeePriority::Urgent, FeePriority::Medium, FeePriority::Low])
+    {
+        match chain.estimate_feerate(priority) {
+            // The relay floor, as the crate's own recovery rates apply it: a lower rate would
+            // not relay.
+            Ok(rate) => *slot = Some(rate.max(MIN_RELAY_FEE_RATE)),
+            Err(e @ WalletError::ElectrumUnreachable { .. }) => return Err(e.into()),
+            Err(e) => log::debug!("no {priority:?} fee estimate: {e:?}"),
+        }
+    }
+    if rates.iter().all(Option::is_none) {
+        return Err(AppError::new(
+            ErrorCode::RpcUnreachable,
+            "the chain server returned no fee estimate",
+        ));
+    }
+    let [fast, medium, slow] = rates;
+    Ok(FeeEstimate { fast, medium, slow })
 }
 
 fn unreachable(error: String) -> BackendStatus {

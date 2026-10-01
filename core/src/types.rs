@@ -69,6 +69,9 @@ pub struct ChainBackendView {
 #[serde(rename_all = "camelCase")]
 pub struct RouterDefaultsDto {
     pub fidelity_amount: u64,
+    /// The crate's minimum bond amount, when its config check could be asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_fidelity_amount: Option<u64>,
     pub fidelity_timelock: u32,
     pub fidelity_feerate: f64,
     pub required_confirms: u32,
@@ -273,6 +276,20 @@ pub struct TxSummary {
     pub derivation_path: Option<String>,
 }
 
+/// One of the wallet's own HD addresses: handed out for receiving, or holding a coin now.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletAddressDto {
+    pub address: String,
+    /// `p2tr` or `p2wpkh`.
+    pub address_type: String,
+    pub change: bool,
+    pub derivation_path: String,
+    pub balance_sats: u64,
+    /// Some of the balance has no confirmation yet.
+    pub unconfirmed: bool,
+}
+
 /// One UTXO plus its openswap-specific spend-type classification.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -330,12 +347,13 @@ pub struct FidelityBondDto {
     pub is_locked: bool,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeeEstimate {
-    pub high: f64,
-    pub mid: f64,
-    pub low: f64,
+    /// `None` where the chain server has no estimate for that target.
+    pub fast: Option<f64>,
+    pub medium: Option<f64>,
+    pub slow: Option<f64>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -421,6 +439,8 @@ pub struct SwapRequest {
     /// Funding transactions per hop. `None` keeps the crate's own default.
     #[serde(default)]
     pub tx_count: Option<u32>,
+    /// Sat/vB for every transaction in the swap; the crate takes whole rates only.
+    pub fee_rate: u64,
     /// PaySwap receiver. When set, `amount_sats` is what the receiver gets, not what leaves
     /// the wallet — the crate solves the gross route amount backward from it.
     #[serde(default)]
@@ -450,6 +470,8 @@ pub struct SwapFundingEstimateDto {
     pub route_mining_fee_per_router_sats: u64,
     /// Fee to claim the incoming contracts at the end; not a full swap fee total.
     pub sweep_fee_sats: u64,
+    /// The dust limit of the P2TR output each incoming contract is swept to.
+    pub receive_dust_sats: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -823,10 +845,10 @@ pub struct MakerInitConfig {
     pub time_relative_fee_pct: f64,
     #[serde(default)]
     pub data_dir: Option<String>,
-    /// Restore the router's wallet from this phrase instead of creating a new one. Never copied
-    /// into the persisted settings, and named so the web journal scrubs it from requests.
+    /// A backup file the host registered: the router's wallet is restored from it, encrypted
+    /// with `wallet_password`, instead of created. Never part of the persisted settings.
     #[serde(default)]
-    pub mnemonic: Option<String>,
+    pub restore_selection: Option<uuid::Uuid>,
 }
 
 /// Persisted registration settings. Wallet and Tor control passwords are
@@ -902,7 +924,7 @@ impl MakerSettingsDto {
             amount_relative_fee_pct: self.amount_relative_fee_pct,
             time_relative_fee_pct: self.time_relative_fee_pct,
             data_dir: self.data_dir,
-            mnemonic: None,
+            restore_selection: None,
         }
     }
 }
@@ -978,6 +1000,10 @@ pub struct MakerStatusDto {
     pub network_port: u16,
     /// None means the wallet file could not be inspected without opening it.
     pub wallet_encrypted: Option<bool>,
+    /// Whether the running wallet holds an unspent fidelity bond, i.e. setup is behind it. None
+    /// while stopped, or while a sync holds the wallet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_bond: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize)]

@@ -175,6 +175,12 @@ pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), Ap
     } else {
         MakerServerConfig::default()
     };
+    apply_settings(&mut config, settings);
+    config.write_to_file(&config_path)?;
+    Ok(())
+}
+
+fn apply_settings(config: &mut MakerServerConfig, settings: &MakerSettingsDto) {
     config.name = settings.name.clone();
     config.network_port = settings.network_port;
     config.rpc_port = settings.rpc_port;
@@ -187,8 +193,54 @@ pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), Ap
     config.base_fee = settings.base_fee;
     config.amount_relative_fee_pct = settings.amount_relative_fee_pct;
     config.time_relative_fee_pct = settings.time_relative_fee_pct;
-    config.write_to_file(&config_path)?;
-    Ok(())
+}
+
+/// What the crate's own config check says about these values, before anything is created. It
+/// only runs while reading a `config.toml` (`MakerServerConfig::new`), and its limits, such as
+/// the bond minimum, are not public; so the values go through a throwaway file. `None` means
+/// the crate accepts them.
+pub fn check_router_config(settings: MakerSettingsDto) -> Result<Option<String>, AppError> {
+    let mut config = MakerServerConfig::default();
+    apply_settings(&mut config, &settings);
+    crate_verdict(&config)
+}
+
+fn crate_verdict(config: &MakerServerConfig) -> Result<Option<String>, AppError> {
+    let path = std::env::temp_dir().join(format!("portal-router-check-{}.toml", uuid::Uuid::new_v4()));
+    config.write_to_file(&path)?;
+    let verdict = MakerServerConfig::new(Some(&path)).err().map(|e| match e {
+        openswap::wallet::WalletError::Fidelity(e) => e.to_string(),
+        other => other.to_string(),
+    });
+    let _ = std::fs::remove_file(&path);
+    Ok(verdict)
+}
+
+/// The smallest bond amount the crate's config check accepts, so the form can say it up front.
+/// The crate keeps that constant private and its error type unreachable from here, so the value
+/// is found by asking the check itself rather than restated. Fixed for a build, hence cached.
+pub(crate) fn min_fidelity_amount() -> Option<u64> {
+    static MIN: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        let accepts = |amount: u64| {
+            let config = MakerServerConfig { fidelity_amount: amount, ..Default::default() };
+            matches!(crate_verdict(&config), Ok(None))
+        };
+        // The crate's own default must pass; everything below it is searched.
+        let (mut low, mut high) = (0, MakerServerConfig::default().fidelity_amount);
+        if !accepts(high) {
+            return None;
+        }
+        while high - low > 1 {
+            let mid = low + (high - low) / 2;
+            if accepts(mid) {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+        Some(high)
+    })
 }
 
 fn dashboard_settings_path() -> Option<PathBuf> {

@@ -36,6 +36,8 @@ export interface ChainBackendConfig {
  *  how the app ended up running ten times core's figures without anyone noticing. */
 export interface RouterDefaults {
   fidelityAmount: number;
+  /** The crate's minimum bond amount, read from its own config check. */
+  minFidelityAmount?: number;
   fidelityTimelock: number;
   /** sats/vB for the bond transaction; the crate's relay minimum is also the floor. */
   fidelityFeerate: number;
@@ -229,6 +231,17 @@ export interface TxSummary {
   derivationPath?: string;
 }
 
+/** One of the wallet's own HD addresses: handed out for receiving, or holding a coin now. */
+export interface WalletAddress {
+  address: string;
+  addressType: AddressType;
+  change: boolean;
+  derivationPath: string;
+  balanceSats: number;
+  /** Some of the balance has no confirmation yet. */
+  unconfirmed: boolean;
+}
+
 export interface UtxoEntry {
   txid: string;
   vout: number;
@@ -257,10 +270,11 @@ export interface SendResult {
   txid: string;
 }
 
+/** Sats/vB per tier; null where the chain server has no estimate for it. */
 export interface FeeEstimate {
-  high: number;
-  mid: number;
-  low: number;
+  fast: number | null;
+  medium: number | null;
+  slow: number | null;
 }
 
 export interface PriceEstimate {
@@ -348,8 +362,9 @@ export interface RouterSettings {
 
 export interface RouterInitConfig extends RouterSettings {
   walletPassword: string;
-  /** Restore the router's wallet from this recovery phrase instead of creating a new one. */
-  mnemonic?: string;
+  /** Restore the router's wallet from this registered backup file, with `walletPassword` being
+   *  the backup's password. */
+  restoreSelection?: string;
 }
 
 export interface SuggestedRouterPorts {
@@ -380,6 +395,8 @@ export interface RouterStatus {
   networkPort: number;
   /** Undefined when the wallet file could not be inspected. */
   walletEncrypted?: boolean;
+  /** Whether the running router already holds an unspent bond. Undefined while stopped or busy. */
+  hasBond?: boolean;
 }
 
 export interface FidelityBond {
@@ -427,6 +444,8 @@ export interface SwapRequest {
   preferredRouters?: string[];
   /** Funding transactions per hop, 1..=10. Omitted keeps the backend default. */
   txCount?: number;
+  /** Sats/vB for every transaction in the swap; whole numbers only. */
+  feeRate: number;
   /** Pay a third party instead of the wallet: `amountSats` is then what the receiver gets. */
   paymentAddress?: string;
 }
@@ -445,6 +464,8 @@ export interface SwapFundingEstimate {
   routeMiningFeePerRouterSats: number;
   /** Claiming the incoming contracts at the end of the swap; depends on the protocol. */
   sweepFeeSats: number;
+  /** Dust limit of each swept incoming coin. */
+  receiveDustSats: number;
 }
 
 export interface RouterFeeInfo {

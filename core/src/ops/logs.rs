@@ -27,6 +27,30 @@ pub async fn get_logs(
     .map_err(AppError::internal)?
 }
 
+/// A wallet's log by name, for following its restore: the restore writes it before the wallet
+/// is open, so there is no open wallet to ask. Empty until the restore has logged anything.
+pub async fn get_restore_logs(
+    data_dir: Option<String>,
+    wallet_name: String,
+    lines: Option<usize>,
+) -> Result<Vec<LogLine>, AppError> {
+    crate::security::input::validate_leaf_name(&wallet_name, "walletName")?;
+    let root = crate::storage::resolve_data_dir(&data_dir)?;
+    let path = crate::storage::wallet_data_dir(&root, &wallet_name).join("debug.log");
+    let want = lines.unwrap_or(100).min(1000);
+    tokio::task::spawn_blocking(move || -> Result<Vec<LogLine>, AppError> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(crate::logging::tail_lines(&path, want)?
+            .into_iter()
+            .map(|line| LogLine { line })
+            .collect())
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
 pub async fn get_maker_logs(
     state: &Arc<AppState>,
     router_id: String,

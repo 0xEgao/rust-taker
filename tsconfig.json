@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": { "@host": ["./src/api/desktop.ts"] },
     "target": "ES2020",
     "useDefineForClassFields": true,

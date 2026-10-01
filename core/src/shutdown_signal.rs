@@ -23,9 +23,8 @@ static TRIPPED: AtomicBool = AtomicBool::new(false);
 
 /// Whether a host has taken responsibility for acting on the flag. Claiming these signals
 /// without something waiting on [`wait`] would be worse than leaving them alone: the process
-/// would stop dying on SIGTERM and nothing would replace that. The desktop host quits through
-/// its own window lifecycle and never opts in, so signals there behave as the platform
-/// intends and Tor's exit does not end the app.
+/// would stop dying on SIGTERM and nothing would replace that. Both hosts opt in — the desktop
+/// one too, since Tor takes the signal whether or not it does.
 static ADOPTED: AtomicBool = AtomicBool::new(false);
 
 /// Poll interval for [`wait`]. Invisible against a teardown measured in seconds.

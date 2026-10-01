@@ -7,7 +7,7 @@ import {
   Square,
   Play,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
@@ -17,7 +17,9 @@ import {
   listRouters,
   startRouter,
   stopRouter,
+  syncRouterWallet,
 } from "../../api/commands";
+import { useHeaderActionsStore } from "../../store/header-actions";
 import {
   isAppError,
   type Balances,
@@ -125,6 +127,7 @@ function RouterCard({
   const { settings, status, balances } = router;
   const phase = status?.phase.phase ?? "notConfigured";
   const running = isRunning(router);
+  const inSetup = phase === "starting" && status?.hasBond === false;
   const torAddress = status?.torAddress;
   // Registrations from before names existed carry none until their config.toml gains one.
   const displayName = settings.name || settings.routerId;
@@ -280,13 +283,13 @@ function RouterCard({
             {running ? <Square size={12} /> : <Play size={12} />}
             {running ? "Stop" : "Start"}
           </Button>
-          {/* `starting` is the whole unfinished setup — deposit, bond, liquidity — and its page is
-              otherwise only reachable through the URL once left. */}
+          {/* Every start passes through `starting`; only one with no bond yet is still in setup,
+              whose page is otherwise only reachable through the URL once left. */}
           <LinkButton
-            to={`/router/${encodeURIComponent(settings.routerId)}${phase === "starting" ? "/setup" : ""}`}
+            to={`/router/${encodeURIComponent(settings.routerId)}${inSetup ? "/setup" : ""}`}
             size="sm"
           >
-            {phase === "starting" ? "Continue setup" : "Manage"}
+            {inSetup ? "Continue setup" : "Manage"}
           </LinkButton>
         </div>
       </div>
@@ -390,6 +393,30 @@ export function RouterPage() {
     void refresh();
   }, [refresh]);
 
+  // The header's refresh, as on a router's own page: sync every running router's wallet, then
+  // re-read the fleet. Its own guard, for the same reason that page gives.
+  const syncing = useRef(false);
+  const syncAll = useCallback(async () => {
+    if (syncing.current) return;
+    syncing.current = true;
+    useHeaderActionsStore.getState().setRefreshing(true);
+    try {
+      const ids = routers.filter((r) => r.status?.phase.phase === "running").map((r) => r.settings.routerId);
+      const results = await Promise.allSettled(ids.map((id) => syncRouterWallet(id)));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) pushToast("error", `${failed} router${failed === 1 ? "" : "s"} could not sync.`);
+      await refresh();
+    } finally {
+      syncing.current = false;
+      useHeaderActionsStore.getState().setRefreshing(false);
+    }
+  }, [routers, refresh, pushToast]);
+  useEffect(() => {
+    useHeaderActionsStore.getState().setRefreshing(syncing.current);
+    useHeaderActionsStore.getState().register(() => void syncAll());
+    return () => useHeaderActionsStore.getState().register(null);
+  }, [syncAll]);
+
   const stats = useMemo(() => {
     const running = routers.filter(isRunning).length;
     return {
@@ -405,13 +432,24 @@ export function RouterPage() {
       ),
     };
   }, [routers]);
+  // Running routers first, then by the name on the card, so a card stays put between polls.
   const visibleRouters = useMemo(
     () =>
-      routers.filter(
-        (router) =>
-          filter === "all" ||
-          (filter === "running" ? isRunning(router) : !isRunning(router)),
-      ),
+      routers
+        .filter(
+          (router) =>
+            filter === "all" ||
+            (filter === "running" ? isRunning(router) : !isRunning(router)),
+        )
+        .sort(
+          (a, b) =>
+            Number(isRunning(b)) - Number(isRunning(a)) ||
+            (a.settings.name || a.settings.routerId).localeCompare(
+              b.settings.name || b.settings.routerId,
+              undefined,
+              { sensitivity: "base" },
+            ),
+        ),
     [filter, routers],
   );
 

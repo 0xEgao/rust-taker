@@ -1,13 +1,22 @@
 import { ArrowLeft, Server } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { checkBackend, initRouter } from "../../api/commands";
+import { checkBackend, getRouterLogs, initRouter } from "../../api/commands";
 import { Card } from "../../components/ui/display";
-import { Button, LinkButton, PasswordField, TextField } from "../../components/ui/inputs";
-import { validateNewPassword } from "../../lib/password-policy";
+import { Button, LinkButton, TextField } from "../../components/ui/inputs";
 import { useToastStore } from "../../store/toast";
-import { AdvancedFields, FidelityFields, phraseIsComplete, PublicNameField, RestorePhraseField, useRouterForm } from "./RouterForm";
+import {
+  AdvancedFields,
+  BondFeeRateField,
+  FidelityFields,
+  PublicNameField,
+  RouterPasswordFields,
+  RouterRestoreChoice,
+  useRouterForm,
+  useRouterWallet,
+} from "./RouterForm";
 import { ROUTER_ID_PATTERN } from "./router-defaults";
+import { RestoreProgress } from "../../components/app/RestoreProgress";
 
 /** Adding a router to a fleet that already has one. Same form as the first-run page, with the
  *  dashboard's chrome around it instead of the intro's. */
@@ -17,15 +26,14 @@ export function AddRouterPage() {
   const form = useRouterForm();
 
   const [routerId, setRouterId] = useState("");
-  const [walletPassword, setWalletPassword] = useState("");
-  const [walletPasswordConfirm, setWalletPasswordConfirm] = useState("");
-  const [restorePhrase, setRestorePhrase] = useState<string | null>(null);
+  const wallet = useRouterWallet();
   const [chain, setChain] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const trimmedId = routerId.trim();
+  const restoreLog = useCallback(() => getRouterLogs(trimmedId, 200), [trimmedId]);
   const malformedId = trimmedId.length > 0 && !ROUTER_ID_PATTERN.test(trimmedId);
-  const walletPasswordError = validateNewPassword(walletPassword, walletPasswordConfirm);
+  const walletPasswordError = wallet.error;
 
   useEffect(() => {
     void checkBackend()
@@ -37,10 +45,9 @@ export function AddRouterPage() {
     () =>
       !trimmedId || malformedId || walletPasswordError
         ? null
-        : form.config(trimmedId, walletPassword),
-    [trimmedId, malformedId, walletPassword, walletPasswordError, form],
+        : wallet.fields(form.config(trimmedId, wallet.password)),
+    [trimmedId, malformedId, walletPasswordError, form, wallet],
   );
-  const phraseIncomplete = restorePhrase !== null && !phraseIsComplete(restorePhrase);
 
   // A disabled Create button with no explanation is the whole reason an empty password reads as
   // the form being broken. Names the first thing standing in the way, in form order.
@@ -52,22 +59,18 @@ export function AddRouterPage() {
         ? "Fix the public name to continue."
         : walletPasswordError
         ? walletPasswordError
-        : phraseIncomplete
-        ? "Enter the full recovery phrase to continue."
         : form.blocked
-          ? "Resolve the warning under Advanced settings to continue."
+          ? form.configError ? "Fix the fidelity bond values to continue." : "Resolve the warning under Advanced settings to continue."
           : !config
             ? "Check the values above to continue."
             : null;
 
   async function createRouter() {
-    if (!config || phraseIncomplete) return;
+    if (!config) return;
     setCreating(true);
     try {
-      await initRouter(restorePhrase === null ? config : { ...config, mnemonic: restorePhrase });
-      setWalletPassword("");
-      setWalletPasswordConfirm("");
-      setRestorePhrase(null);
+      await initRouter(config);
+      wallet.clear();
       pushToast("success", `${config.routerId} was created and registered.`);
       navigate(`/router/${encodeURIComponent(config.routerId)}/setup`);
     } catch (error) {
@@ -103,8 +106,21 @@ export function AddRouterPage() {
           </div>
         </header>
 
+        {creating && config?.restoreSelection && (
+          <Card className="mb-4 border-line-strong p-5">
+            <h2 className="mb-4 font-header text-[14px] font-bold text-foreground">Restoring {config.routerId}</h2>
+            <RestoreProgress
+              load={restoreLog}
+              finalStep="Registering the router"
+              note={"This can take several minutes. You can leave this page and come back: the restore keeps running, and the router appears in your router list, ready to start, when it is done."}
+            />
+          </Card>
+        )}
         <Card className="border-line-strong">
           <div className="p-5">
+            <div className="mb-4 border-b border-line pb-4">
+              <RouterRestoreChoice wallet={wallet} />
+            </div>
             <TextField
               label="Router ID"
               placeholder="router-02"
@@ -120,23 +136,11 @@ export function AddRouterPage() {
               <PublicNameField form={form} routerId={trimmedId} />
             </div>
             <div className="mt-4 flex flex-col gap-3 border-t border-line pt-4">
-              <PasswordField label="Wallet password" autoComplete="new-password" required value={walletPassword} onChange={(e) => setWalletPassword(e.target.value)} />
-              <PasswordField
-                label="Confirm wallet password"
-                autoComplete="new-password"
-                required
-                value={walletPasswordConfirm}
-                onChange={(e) => setWalletPasswordConfirm(e.target.value)}
-                error={walletPassword || walletPasswordConfirm ? walletPasswordError : undefined}
-              />
-              <p className="text-[11.5px] leading-5 text-subtle">
-                Portal encrypts every router wallet it creates. Losing this password can make its
-                funds unrecoverable.
-              </p>
-              <RestorePhraseField value={restorePhrase} onChange={setRestorePhrase} />
+              <RouterPasswordFields wallet={wallet} />
             </div>
             <div className="mt-5 flex flex-col gap-4 border-t border-line pt-5">
               <FidelityFields form={form} />
+              <BondFeeRateField form={form} />
               <AdvancedFields form={form} routerId={trimmedId} />
             </div>
           </div>
@@ -153,7 +157,7 @@ export function AddRouterPage() {
         <div className="mt-4 flex items-center justify-end gap-3">
           {blockedReason && <p className="text-[11.5px] text-subtle">{blockedReason}</p>}
           <LinkButton to="/router" variant="secondary">Cancel</LinkButton>
-          <Button onClick={() => void createRouter()} loading={creating} disabled={!config || phraseIncomplete || form.blocked}>
+          <Button onClick={() => void createRouter()} loading={creating} disabled={!config || form.blocked}>
             Create router
           </Button>
         </div>

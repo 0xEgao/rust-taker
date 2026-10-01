@@ -364,13 +364,14 @@ export const host: Host = {
   },
   // Two steps because the server only hands a backup over once: producing it returns an id,
   // and the download consumes and deletes it, so a retry means producing a fresh one.
-  createBackup: async (password) => {
-    const created = await post("/backups", { password });
+  createBackup: async (password, routerId, walletPassword) => {
+    const created = await post("/backups", { password, routerId, walletPassword });
     if (!created.ok) throw await toAppError(created);
     const { artifactId } = (await created.json()) as { artifactId: string };
     const download = await post(`/backups/${artifactId}/download`, {});
     if (!download.ok) throw await toAppError(download);
-    const name = `portal-wallet-backup-${Math.floor(Date.now() / 1000)}.json`;
+    const stem = routerId === undefined ? "portal-wallet-backup" : `portal-router-${routerId}-backup`;
+    const name = `${stem}-${Math.floor(Date.now() / 1000)}.json`;
     const url = URL.createObjectURL(await download.blob());
     const link = document.createElement("a");
     link.href = url;

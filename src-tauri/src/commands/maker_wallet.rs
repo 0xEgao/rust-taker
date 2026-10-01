@@ -21,6 +21,11 @@ pub async fn list_maker_utxos(state: tauri::State<'_, Arc<AppState>>, router_id:
 }
 
 #[tauri::command]
+pub async fn list_maker_addresses(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<Vec<WalletAddressDto>, AppError> {
+    maker_wallet::list_maker_addresses(&state, router_id).await
+}
+
+#[tauri::command]
 pub async fn get_maker_transactions(
     state: tauri::State<'_, Arc<AppState>>, router_id: String, count: Option<usize>, skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
@@ -47,6 +52,18 @@ pub async fn send_maker_to_address(
     crate::native::ensure_main_window(&window)?;
     maker_wallet::send_maker_to_address(&state, router_id, address, amount_sats, fee_rate, outpoints)
         .await
+}
+
+#[tauri::command]
+pub async fn backup_maker_wallet(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+    password: String,
+    wallet_password: Option<String>,
+) -> Result<String, AppError> {
+    let wallet = portal_core::ops::maker::router_wallet(&state, portal_core::state::DESKTOP_SESSION, &router_id, wallet_password).await?;
+    super::taker_wallet::save_backup(window, &state, wallet, &format!("portal-router-{router_id}-backup"), password).await
 }
 
 #[tauri::command]

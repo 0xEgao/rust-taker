@@ -18,14 +18,14 @@ use crate::error::ErrorCode;
 use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
 use crate::types::{
     AddressTypeDto, BalancesDto, FidelityBondDto, NewAddress, Outpoint, SendResult, TxSummary,
-    UtxoEntry,
+    UtxoEntry, WalletAddressDto,
 };
 use openswap::bitcoin::{OutPoint, Txid};
 use std::str::FromStr;
 
 /// Cloning the Arc (not the Wallet) keeps this independent of the maker
 /// mutex — same reasoning as `commands::taker_wallet::get_wallet_handle`.
-fn get_maker_wallet_handle(
+pub fn get_maker_wallet_handle(
     state: &Arc<AppState>,
     router_id: &str,
 ) -> Result<Arc<RwLock<Wallet>>, AppError> {
@@ -94,6 +94,30 @@ pub async fn list_maker_utxos(
                 }
             })
             .collect())
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+pub async fn list_maker_addresses(
+    state: &Arc<AppState>,
+    router_id: String,
+) -> Result<Vec<WalletAddressDto>, AppError> {
+    let wallet = get_maker_wallet_handle(state, &router_id)?;
+    let issued_path = maker_wallet_file(state, &router_id, "last_address.json")?;
+    let (socks_port, backend) = {
+        let makers = state.makers.lock()?;
+        let maker = makers.get(&router_id);
+        (
+            maker.map(|maker| maker.settings.socks_port),
+            maker
+                .and_then(|maker| maker.runtime.as_ref())
+                .map(|runtime| runtime.chain_backend.clone())
+                .ok_or_else(AppError::maker_not_initialized)?,
+        )
+    };
+    tokio::task::spawn_blocking(move || -> Result<Vec<WalletAddressDto>, AppError> {
+        crate::ops::taker_wallet::address_rows(&*wallet.read()?, &issued_path, &backend, socks_port)
     })
     .await
     .map_err(AppError::internal)?
@@ -248,10 +272,10 @@ pub async fn send_maker_to_address(
             "send amount must be greater than zero",
         ));
     }
-    if fee_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0 || rate > 10_000.0) {
+    if fee_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0 || rate > crate::ops::taker_wallet::MAX_FEE_RATE) {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "fee rate must be finite and between 0 and 10,000 sat/vB",
+            "fee rate must be above 0 and at most 500 sat/vB; anything higher is almost certainly a typo",
         ));
     }
     // The same guard the taker spend takes: one fund-moving operation at a time, whichever

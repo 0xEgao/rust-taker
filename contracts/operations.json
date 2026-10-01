@@ -156,33 +156,6 @@
       "note": "Consume the session-bound upload capability and restore into a managed destination; no supplied server path."
     },
     {
-      "name": "restore_wallet_from_mnemonic",
-      "executionClass": "durable",
-      "desktop": true,
-      "web": true,
-      "webAdaptation": "specialized",
-      "retryClass": "idempotent-key",
-      "note": "Restore from a recovery phrase into a managed destination; no supplied server path. The `mnemonic` and `password` fields are scrubbed from the journal."
-    },
-    {
-      "name": "get_recovery_phrase",
-      "executionClass": "transient",
-      "desktop": true,
-      "web": true,
-      "webAdaptation": "none",
-      "retryClass": "none",
-      "note": "Returns a new wallet's recovery phrase to the session that created it; CSRF-gated, never journaled."
-    },
-    {
-      "name": "confirm_recovery_phrase_saved",
-      "executionClass": "transient",
-      "desktop": true,
-      "web": true,
-      "webAdaptation": "none",
-      "retryClass": "none",
-      "note": "Forgets the held recovery phrase once its creator has saved it."
-    },
-    {
       "name": "backup_wallet",
       "executionClass": "read",
       "desktop": true,
@@ -190,6 +163,15 @@
       "webAdaptation": "specialized",
       "retryClass": "none",
       "note": "Use POST /backups and the authenticated POST attachment download flow; no backup_wallet command route."
+    },
+    {
+      "name": "backup_maker_wallet",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Use POST /backups with a routerId and the authenticated POST attachment download flow; no backup_maker_wallet command route."
     },
     {
       "name": "get_balances",
@@ -220,6 +202,15 @@
     },
     {
       "name": "get_transactions",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_addresses",
       "executionClass": "read",
       "desktop": true,
       "web": true,
@@ -444,6 +435,15 @@
       "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
     },
     {
+      "name": "get_restore_logs",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Tail of a wallet's own log by managed wallet name while it is being restored; no client path on web."
+    },
+    {
       "name": "get_logs",
       "executionClass": "read",
       "desktop": true,
@@ -460,24 +460,6 @@
       "webAdaptation": "specialized",
       "retryClass": "idempotent-key",
       "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
-    },
-    {
-      "name": "get_router_recovery_phrase",
-      "executionClass": "transient",
-      "desktop": true,
-      "web": true,
-      "webAdaptation": "none",
-      "retryClass": "none",
-      "note": "Returns a new router's recovery phrase to the session that created it; CSRF-gated, never journaled."
-    },
-    {
-      "name": "confirm_router_recovery_phrase_saved",
-      "executionClass": "transient",
-      "desktop": true,
-      "web": true,
-      "webAdaptation": "none",
-      "retryClass": "none",
-      "note": "Forgets the held router recovery phrase once its creator has saved it."
     },
     {
       "name": "update_maker_settings",
@@ -553,6 +535,15 @@
     },
     {
       "name": "get_maker_balances",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_maker_addresses",
       "executionClass": "read",
       "desktop": true,
       "web": true,
@@ -649,6 +640,15 @@
       "webAdaptation": "replaced",
       "retryClass": "none",
       "note": "No automatic scan/import of the host dashboard directories. Explicit validated offline service migration is documented separately."
+    },
+    {
+      "name": "check_router_config",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Validate candidate router settings through the crate's config check; writes only a throwaway temp file."
     },
     {
       "name": "clear_maker_settings",
