@@ -16,15 +16,15 @@ WORKDIR /build
 # nowhere in the runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config libssl-dev build-essential && rm -rf /var/lib/apt/lists/*
-COPY Cargo.toml Cargo.lock ./
+# Glob: CI has no Cargo.lock, and COPY fails on a missing file.
+COPY Cargo.toml Cargo.lock* ./
 COPY core ./core
 COPY src-web ./src-web
 COPY src-tauri ./src-tauri
 COPY contracts ./contracts
-# The desktop member stays in the workspace: removing it rewrites the dependency graph, and
-# --locked then refuses the lockfile change. `-p portal-web` already builds only what the
-# server needs, so src-tauri is present but never compiled.
-RUN cargo build --locked --release -p portal-web
+# The desktop member stays in the workspace so the dependency graph matches the desktop build.
+# `-p portal-web` already builds only what the server needs, so src-tauri is never compiled.
+RUN cargo build --release -p portal-web
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \

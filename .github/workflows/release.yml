@@ -194,7 +194,7 @@ jobs:
         env:
           PORTAL_EMBED_WEB: dist/web
         run: |
-          cargo build --locked --release -p portal-web
+          cargo build --release -p portal-web
           cp target/release/portal-web "portal-server-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
 
       - name: Build portal-web (universal)
@@ -202,8 +202,8 @@ jobs:
         env:
           PORTAL_EMBED_WEB: dist/web
         run: |
-          cargo build --locked --release -p portal-web --target aarch64-apple-darwin
-          cargo build --locked --release -p portal-web --target x86_64-apple-darwin
+          cargo build --release -p portal-web --target aarch64-apple-darwin
+          cargo build --release -p portal-web --target x86_64-apple-darwin
           out="portal-server-${{ needs.version.outputs.version }}-${{ matrix.asset }}"
           lipo -create -output "$out" \
             target/aarch64-apple-darwin/release/portal-web \
