@@ -17,6 +17,14 @@ Runs as a desktop app, or as a server you host yourself and reach from a browser
 
 The app is in active beta and supports experimental mainnet use.
 
+<p align="center">
+  <img src="docs/images/wallet.jpg" alt="Portal's wallet page" width="96%" />
+</p>
+<p align="center">
+  <img src="docs/images/swap-complete.jpg" alt="A completed swap through three routers" width="31%" />
+  <img src="docs/images/router-fleet.jpg" alt="The router fleet" width="64%" />
+</p>
+
 # About
 
 Portal is a desktop and self-hosted wallet for [OpenSwap](https://github.com/citadel-foss/openswap),
@@ -49,6 +57,8 @@ marketplace on-chain.
 Get Portal for macOS, Linux, a self-hosted server or Docker from the
 [latest release](https://github.com/citadel-foss/portal/releases/latest), or install it from
 the Umbrel App Store. Release builds bundle everything they need, Tor included.
+
+New to Portal? The [user guide](docs/guide.md) walks you from first launch to your first swap.
 
 # Build from source
 
@@ -120,6 +130,7 @@ command-line tools use.
 
 # Links
 
+- [User guide](docs/guide.md)
 - [OpenSwap](https://github.com/citadel-foss/openswap) and its
   [protocol specification](https://github.com/citadel-foss/OpenSwap-Protocol-Specification)
 - [Website](https://citadelfoss.xyz/) · [Matrix](https://matrix.to/#/#ciatdel-foss:matrix.org)
