@@ -21,11 +21,17 @@ import { useToastStore } from "../../store/toast";
 const POLL_MS = 12_000;
 
 const PHASE_LABEL: Record<string, string> = {
-  not_started: "Waiting to start",
   incoming_recovered: "Incoming leg reclaimed",
   outgoing_recovered: "Outgoing leg reclaimed",
   cleaned_up: "Finished",
 };
+
+function recoveryLabel(phase: string, running: boolean | undefined): string {
+  if (phase !== "not_started") return PHASE_LABEL[phase] ?? phase;
+  if (running === true) return "Recovery running";
+  if (running === false) return "Recovery not running";
+  return "Recovery status unavailable";
+}
 
 export function RecoveriesPage() {
   const pushFailure = useToastStore((s) => s.pushFailure);
@@ -140,7 +146,7 @@ export function RecoveriesPage() {
                   <span>
                     <StatusChip tone={row.active ? "warning" : "success"}>
                       {row.active
-                        ? (PHASE_LABEL[row.phase] ?? row.phase)
+                        ? recoveryLabel(row.phase, pool?.recoveryRunning)
                         : `Finished · ${row.resolvedCount} reclaimed`}
                     </StatusChip>
                   </span>
