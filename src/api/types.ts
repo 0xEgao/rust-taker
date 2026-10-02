@@ -643,6 +643,9 @@ export interface RecoverySummary {
 
 export interface RecoveryStatus {
   active: boolean;
+  /** True when OpenSwap's recovery worker is alive; false when an unfinished recovery has no
+   * worker; absent when the taker is busy and cannot be inspected without blocking. */
+  recoveryRunning?: boolean;
   swapId?: string;
   phase: RecoveryPhase;
   failureReason?: string;

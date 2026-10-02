@@ -697,6 +697,10 @@ pub struct RecoverySummary {
 pub struct RecoveryStatus {
     /// Any contract still unresolved, from disk — so it survives a reload.
     pub active: bool,
+    /// Whether OpenSwap's background recovery worker currently exists and is unfinished.
+    /// `None` means the taker was busy and could not be inspected without blocking this read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_running: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub swap_id: Option<String>,
     /// The crate's `RecoveryPhase`. In practice only three of the six are ever written:

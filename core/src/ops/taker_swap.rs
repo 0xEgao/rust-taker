@@ -811,6 +811,16 @@ pub async fn get_recovery_status(
     taker: &TakerInstance,
     swap_id: Option<String>,
 ) -> Result<RecoveryStatus, AppError> {
+    // `RecoveryPhase::NotStarted` remains set while the loop scans, waits for confirmations and
+    // broadcasts claims. Inspect the worker separately without waiting behind an active swap.
+    let recovery_running = match taker.taker.try_lock() {
+        Ok(guard) => guard.as_ref().map(|taker| !taker.is_recovery_complete()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned
+            .into_inner()
+            .as_ref()
+            .map(|taker| !taker.is_recovery_complete()),
+    };
     let wallet = taker.wallet.clone();
     let data_dir = taker.data_dir.clone();
     // A healthy swap in flight holds its funds in contracts too, so a live contract UTXO is not
@@ -925,6 +935,7 @@ pub async fn get_recovery_status(
                 // Contracts with no failed record behind them are only strandable once nothing
                 // is running — that is the crashed-before-persisting case.
                 active: !swap_running && !live.is_empty(),
+                recovery_running,
                 swap_id: None,
                 phase: recovery_phase_label(RecoveryPhase::NotStarted).to_string(),
                 failure_reason: None,
@@ -964,6 +975,7 @@ pub async fn get_recovery_status(
 
         Ok(RecoveryStatus {
             active,
+            recovery_running,
             swap_id: Some(record.swap_id.clone()),
             phase: recovery_phase_label(record.recovery.phase).to_string(),
             failure_reason: record.failure_reason.clone(),

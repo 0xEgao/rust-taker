@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Clock, RefreshCw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getLogs, getRecoveryStatus, getSwapTracker, recoverSwap } from "../../api/commands";
@@ -34,13 +34,19 @@ import { useSwapCircuit } from "./circuit/useSwapCircuit";
 // The crate's recovery loop retries once a minute, so anything faster only re-reads the same file.
 const POLL_MS = 12_000;
 const PHASE_LABEL: Record<string, string> = {
-  not_started: "Not started",
   preimage_stamped: "Preimage stamped",
   swapcoins_persisted: "Swapcoins persisted",
   incoming_recovered: "Incoming leg reclaimed",
   outgoing_recovered: "Outgoing leg reclaimed",
   cleaned_up: "Fully reclaimed",
 };
+
+function recoveryLabel(phase: string, running: boolean | undefined): string {
+  if (phase !== "not_started") return PHASE_LABEL[phase] ?? phase;
+  if (running === true) return "Recovery running";
+  if (running === false) return "Recovery not running";
+  return "Recovery status unavailable";
+}
 
 /** Whose money a settled contract turned out to be. The crate's resolution says how the output
  *  was spent, not by whom, so it reads differently per leg: an outgoing contract spent by
@@ -225,6 +231,24 @@ export function RecoveryPage() {
     }
   }
 
+  // Reading recovery status includes live chain queries for the tip and contract transactions.
+  // Do not render zero-value recovery cards while that first authoritative read is still running.
+  if (status === null) {
+    return (
+      <div className="h-full overflow-y-auto px-8 py-10">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
+          <BackButton to="/swap/recovery" label="Back to Recovery" />
+          <Card className="grid min-h-[220px] place-items-center border-line-strong">
+            <div className="flex flex-col items-center gap-2.5 text-center text-[13px] text-subtle">
+              <RefreshCw size={28} strokeWidth={1.6} className="animate-spin text-primary" />
+              <span>Reading recovery state from the wallet and chain…</span>
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
   // A finished recovery still has a story to tell — it is reachable from the history, where the
   // question is "what happened to that swap?", not "is anything outstanding?".
   if (status && !status.active && status.swapId) {
@@ -262,7 +286,11 @@ export function RecoveryPage() {
               <Stat label="Contracts settled" value={String(status.resolved.length)} />
               <Stat
                 label="Outcome"
-                value={status.swapReceived ? "Completed" : (PHASE_LABEL[status.phase] ?? status.phase)}
+                value={
+                  status.swapReceived
+                    ? "Completed"
+                    : recoveryLabel(status.phase, status.recoveryRunning)
+                }
               />
             </div>
             {status.failureReason && (
@@ -409,7 +437,9 @@ export function RecoveryPage() {
                 <>
                   This swap stopped after its funds were already committed, so they are sitting in
                   Bitcoin contracts that <strong className="text-foreground">only you</strong> can
-                  spend. Portal is claiming them back. Nothing here needs you to act.
+                  spend. {status.recoveryRunning === false
+                    ? "Recovery is not running. Select Check now to restart it."
+                    : "Portal is claiming them back. Nothing here needs you to act."}
                 </>
               )}
             </p>
@@ -423,8 +453,13 @@ export function RecoveryPage() {
                 What happens next
               </h2>
               <p className="mt-1 text-[11.5px] leading-5 text-muted">
-                {routerSide ? "Portal checks the chain" : "Portal retries"} every minute. This page
-                follows it on its own.
+                {routerSide
+                  ? "Portal checks the chain every minute. This page follows it on its own."
+                  : status.recoveryRunning === false
+                    ? "Recovery is not running. Select Check now to restart it."
+                    : status.recoveryRunning === true
+                      ? "Portal retries every minute. This page follows it on its own."
+                      : "Portal could not inspect the recovery worker while it was busy. This page will check again."}
               </p>
             </div>
             <Checklist steps={steps} />
