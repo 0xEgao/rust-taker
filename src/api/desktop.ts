@@ -64,5 +64,8 @@ export const host: Host = {
   },
   // Rust owns the picker so the renderer only ever sees the opaque selection ID.
   selectBackup: () => tauriInvoke<RestoreSelection>("choose_restore_backup"),
-  createBackup: (password) => tauriInvoke<string>("backup_wallet", { password }),
+  createBackup: (password, routerId, walletPassword) =>
+    routerId === undefined
+      ? tauriInvoke<string>("backup_wallet", { password })
+      : tauriInvoke<string>("backup_maker_wallet", { routerId, password, walletPassword }),
 };

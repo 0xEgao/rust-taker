@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOffers, pollRouter, removeRouter, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { Router } from "../../api/types";
-import { Card, IndeterminateBar, Modal, SatsAmount, StatStrip, Tooltip } from "../../components/ui/display";
+import { Card, IndeterminateBar, Modal, SatsAmount, SatsGlyph, StatStrip, Tooltip } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { estimateRouterFee, routerName } from "../../lib/market-format";
 import { explorerTxUrl, formatNumber } from "../../lib/wallet-format";
@@ -105,10 +105,12 @@ function FidelityBondModal({ router, onClose }: { router: Router; onClose: () =>
   const bond = router.offer!;
   return (
     <Modal title="Fidelity Bond Details" onClose={onClose} footer={<Button variant="secondary" onClick={onClose}>Close</Button>}>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-xl border border-line p-3.5">
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3">
+        <div className="min-w-0 rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Tor Address</span>
-          <strong className="font-mono text-[13px] text-foreground">{routerName(router.address)}</strong>
+          <strong className="block truncate font-mono text-[13px] text-foreground" title={router.address}>
+            {routerName(router.address)}
+          </strong>
         </div>
         <div className="rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Bond Amount</span>
@@ -146,9 +148,16 @@ function FidelityBondModal({ router, onClose }: { router: Router; onClose: () =>
 
 function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () => void }) {
   const offer = router.offer!;
-  const [amount, setAmount] = useState(offer.minSize > 0 ? offer.minSize : Math.min(10_000_000, offer.maxSize || 10_000_000));
-  const [position, setPosition] = useState(1);
-  const [totalRouters, setTotalRouters] = useState(2);
+  // Held as typed: a number state turns a cleared box into a "0" that the next keystroke
+  // appends to.
+  const [amountText, setAmountText] = useState(
+    String(offer.minSize > 0 ? offer.minSize : Math.min(10_000_000, offer.maxSize || 10_000_000)),
+  );
+  const [positionText, setPositionText] = useState("1");
+  const [totalRoutersText, setTotalRoutersText] = useState("2");
+  const amount = Math.max(0, Math.round(Number(amountText) || 0));
+  const position = Number(positionText || NaN);
+  const totalRouters = Number(totalRoutersText || NaN);
 
   const invalid = !Number.isInteger(position) || !Number.isInteger(totalRouters) || position < 1 || totalRouters < 1 || position > totalRouters;
   const estimate = invalid
@@ -161,7 +170,15 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
         routerPosition: position,
         totalRouters,
       });
-  const totalPercent = estimate && amount > 0 ? (estimate.totalFee / amount) * 100 : 0;
+  // The crate rounds each router's whole fee up to a sat, never its parts.
+  const chargedFee = estimate ? Math.ceil(estimate.totalFee) : 0;
+  const totalPercent = estimate && amount > 0 ? (chargedFee / amount) * 100 : 0;
+  const fraction = (sats: number) => (
+    <span className="inline-flex items-baseline gap-1.5 font-numeric tabular-nums">
+      {formatNumber(sats, 2)}
+      <SatsGlyph className="text-subtle" />
+    </span>
+  );
 
   return (
     <Modal
@@ -178,8 +195,8 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
         <input
           type="number"
           min={0}
-          value={amount}
-          onChange={(e) => setAmount(Math.max(0, Math.round(Number(e.target.value))))}
+          value={amountText}
+          onChange={(e) => setAmountText(e.target.value)}
           className="h-[46px] rounded-card border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65 focus:shadow-ring"
         />
       </label>
@@ -195,8 +212,8 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
         <input
           type="number"
           min={1}
-          value={position}
-          onChange={(e) => setPosition(Number(e.target.value))}
+          value={positionText}
+          onChange={(e) => setPositionText(e.target.value)}
           className="h-[46px] rounded-card border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65 focus:shadow-ring"
         />
       </label>
@@ -205,8 +222,8 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
         <input
           type="number"
           min={1}
-          value={totalRouters}
-          onChange={(e) => setTotalRouters(Number(e.target.value))}
+          value={totalRoutersText}
+          onChange={(e) => setTotalRoutersText(e.target.value)}
           className="h-[46px] rounded-card border border-line-strong bg-surface-raised px-3 font-mono text-[13.5px] font-medium text-foreground outline-none focus:border-primary/65 focus:shadow-ring"
         />
       </label>
@@ -233,19 +250,19 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 border-b border-dashed border-white/10 py-2">
           <span className="font-mono text-[10px] text-subtle">Liquidity Fee</span>
           <strong className="font-mono text-[14px] font-extrabold text-foreground">
-            <SatsAmount sats={estimate?.liquidityFee ?? 0} />
+            {fraction(estimate?.liquidityFee ?? 0)}
           </strong>
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 border-b border-dashed border-white/10 py-2">
           <span className="font-mono text-[10px] text-subtle">Time Fee</span>
           <strong className="font-mono text-[14px] font-extrabold text-foreground">
-            <SatsAmount sats={estimate?.timeFee ?? 0} />
+            {fraction(estimate?.timeFee ?? 0)}
           </strong>
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 pt-3">
           <span className="font-mono text-[10px] text-subtle">Total Fee</span>
           <strong className="font-mono text-[19px] font-extrabold text-primary">
-            <SatsAmount sats={estimate?.totalFee ?? 0} />
+            <SatsAmount sats={chargedFee} />
           </strong>
           <small className="col-span-2 font-mono text-[10px] text-subtle">
             {estimate ? `${totalPercent.toFixed(4)} % of swap amount` : "Enter position to calculate total fee"}
@@ -362,6 +379,17 @@ export function MarketPage() {
     }, 2000);
     try {
       await syncOfferbook();
+      // The sync above only re-downloads an offer once it is half an hour old, so a router that
+      // was just funded would keep advertising its old amount. Only good routers are polled: an
+      // unresponsive one costs several Tor retries each, and the crate polls one at a time.
+      const results = await Promise.allSettled(good.map((router) => pollRouter(router.address)));
+      const failed = results.filter((result) => result.status === "rejected").length;
+      if (failed) {
+        useToastStore.getState().push(
+          "warning",
+          `${failed} router offer${failed === 1 ? "" : "s"} could not be refreshed. Some offers may be out of date.`,
+        );
+      }
       await load();
       setFooterTick((t) => t + 1);
     } catch (e) {
@@ -371,7 +399,7 @@ export function MarketPage() {
       pollIntervalRef.current = null;
       setRefreshing(false);
     }
-  }, [load, pushFailure]);
+  }, [load, pushFailure, good]);
 
   useEffect(() => () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -462,7 +490,7 @@ export function MarketPage() {
         <div>
           <h1 className="font-header text-[26px] font-bold leading-none text-foreground">Market</h1>
           <p className="mt-1.5 max-w-lg text-[13px] text-muted">
-            Real-time view of the swap marketplace
+            Router offers as last fetched. Refresh to fetch them now.
           </p>
         </div>
         <Button

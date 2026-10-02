@@ -1,13 +1,14 @@
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, RefreshCw } from "lucide-react";
 import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { estimateFees, estimateSendFee, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
+import { estimateSendFee, getBalances, getBtcPrice, getNewAddress, listAddresses, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
-import type { AddressType, Balances, FeeEstimate, Outpoint, SendFeeEstimate, TxSummary, UtxoEntry } from "../../api/types";
+import type { AddressType, Balances, Outpoint, SendFeeEstimate, UtxoEntry } from "../../api/types";
 import { Card, Identifier, Modal, SatsAmount } from "../../components/ui/display";
-import { Button, PresetTile, SegmentedToggle, TextField } from "../../components/ui/inputs";
+import { Button, FeeRateField, SegmentedToggle, TextField } from "../../components/ui/inputs";
+import { chosenFeeRate, type FeeChoice, useFeeEstimate } from "../../lib/fee-rate";
 import {
   classifySpendType,
   formatFeeRate,
@@ -20,13 +21,8 @@ import { refreshWalletCache } from "../../lib/wallet-sync";
 import { usePendingSendsStore } from "../../store/pending-sends";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 import { FaucetButton } from "../../components/app/FaucetButton";
+import { AddressList } from "../../components/app/AddressList";
 import { copyText } from "../../lib/clipboard";
-
-/** Fixed, always-distinct choices. The mempool quote informs the hint below them, not the tiles
- *  themselves — API-derived tiers collapse to the same number on a quiet mempool. */
-const FEE_PRESETS = [1, 2, 3] as const;
-
-type FeeKey = (typeof FEE_PRESETS)[number] | "custom";
 
 function SendPanel() {
   const pushToast = useToastStore((s) => s.push);
@@ -35,8 +31,7 @@ function SendPanel() {
   const walletSyncError = useWalletCacheStore((s) => s.syncError);
   const [balances, setBalances] = useState<Balances | null>(null);
   const [utxos, setUtxos] = useState<UtxoEntry[]>([]);
-  const [fees, setFees] = useState<FeeEstimate | null>(null);
-  const [feesFailed, setFeesFailed] = useState(false);
+  const { fees, failed: feesFailed, retry: loadFees } = useFeeEstimate();
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
   const [btcPriceCached, setBtcPriceCached] = useState(false);
   const {
@@ -50,7 +45,7 @@ function SendPanel() {
   const [recipient, setRecipient] = useState("");
   const [recipientValidation, setRecipientValidation] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
   const [recipientError, setRecipientError] = useState<string | undefined>();
-  const [feeKey, setFeeKey] = useState<FeeKey>(2);
+  const [feeKey, setFeeKey] = useState<FeeChoice>("medium");
   const [customFeeRate, setCustomFeeRate] = useState("");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [sending, setSending] = useState(false);
@@ -65,21 +60,8 @@ function SendPanel() {
     setUtxos(nextUtxos);
   }, []);
 
-  // Kept out of `load`: this one leaves the wallet entirely and asks mempool.space, so a
-  // third-party outage must not take the balance and UTXO picker down with it.
-  const loadFees = useCallback(() => {
-    setFeesFailed(false);
-    void estimateFees()
-      .then(setFees)
-      .catch(() => {
-        setFees(null);
-        setFeesFailed(true);
-      });
-  }, []);
-
   useEffect(() => {
     void load().catch((e) => pushFailure(e, "Failed to load wallet data."));
-    loadFees();
     // BTC/USD price is best-effort — sats/BTC still work fine without it, so its own failure
     // shouldn't toast an error, just leave the USD option disabled.
     void getBtcPrice()
@@ -96,17 +78,7 @@ function SendPanel() {
 
   const otherUnits = useMemo(() => (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit), [unit]);
 
-  // The mempool quote as one whole number: the midpoint of the range it gives, rounded, because
-  // a rate is only ever chosen in whole sats/vB here. 2-2 reads 2, 2-4 reads 3.
-  const mempoolRate = useMemo(
-    () => (fees === null ? null : Math.round((fees.low + fees.high) / 2)),
-    [fees],
-  );
-
-  const feeRate = useMemo(
-    () => (feeKey === "custom" ? Number(customFeeRate) || 0 : feeKey),
-    [feeKey, customFeeRate],
-  );
+  const feeRate = chosenFeeRate(fees, feeKey, customFeeRate);
 
 
   const spendableUtxos = useMemo(() => utxos.filter((u) => u.spendable && u.solvable), [utxos]);
@@ -150,8 +122,8 @@ function SendPanel() {
       ? null
       : sendFee.feeSats > amountSats / 10
         ? `This fee is ${Math.round((sendFee.feeSats / amountSats) * 100)}% of the amount you are sending.`
-        : fees !== null && fees.high > 0 && feeRate > fees.high * 3
-          ? `This rate is ${Math.round(feeRate / fees.high)}× what the mempool is asking right now.`
+        : fees?.fast && feeRate > fees.fast * 3
+          ? `This rate is ${Math.round(feeRate / fees.fast)}× the chain server's fast estimate.`
           : null;
 
   useEffect(() => {
@@ -189,7 +161,17 @@ function SendPanel() {
   // Not the list length: a journal we could not read must hold this too, or a failed query
   // reads as "nothing outstanding" and the next payment goes out over an unknown one.
   const paymentsHeld = useUnresolvedStore(spendingBlocked);
+  // The crate refuses to spend both kinds in one manual selection; said here, not at broadcast.
+  const mixedKinds = useMemo(() => {
+    const kinds = new Set(
+      spendableUtxos
+        .filter((u) => selectedOutpoints.some((o) => o.txid === u.txid && o.vout === u.vout))
+        .map((u) => (classifySpendType(u.spendType) === "Swap" ? "swap" : "regular")),
+    );
+    return kinds.size > 1;
+  }, [spendableUtxos, selectedOutpoints]);
   const canSend =
+    !mixedKinds &&
     walletReadyToSpend &&
     recipientValidation === "valid" &&
     amountSats > 0 &&
@@ -322,49 +304,15 @@ function SendPanel() {
 
       <div className="flex flex-col gap-2">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Fee Rate</span>
-        <div className="grid grid-cols-4 gap-2">
-          {FEE_PRESETS.map((rate) => (
-            <PresetTile
-              key={rate}
-              onClick={() => setFeeKey(rate)}
-              selected={feeKey === rate}
-              label={`${rate} s/vB`}
-              size="sm"
-            />
-          ))}
-          <PresetTile
-            onClick={() => setFeeKey("custom")}
-            selected={feeKey === "custom"}
-            label="Custom"
-            size="sm"
-          />
-        </div>
-        {/* The presets cover a normal mempool; this is the line that tells you when it isn't one,
-            so a spike doesn't silently leave every preset too low to confirm. */}
-        {mempoolRate !== null && (
-          <p className={`text-[11.5px] ${feeRate < mempoolRate ? "text-warning" : "text-subtle"}`}>
-            {feeRate < mempoolRate
-              ? `The mempool is asking about ${mempoolRate} s/vB — this rate will be slow to confirm.`
-              : `Mempool right now: ${mempoolRate} s/vB.`}
-          </p>
-        )}
-        {feesFailed && (
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-[11.5px] text-subtle">Could not read the mempool.</span>
-            <Button size="sm" variant="ghost" onClick={loadFees}>
-              Try again
-            </Button>
-          </div>
-        )}
-        {feeKey === "custom" && (
-          <TextField
-            label="Custom rate (sats/vB)"
-            inputMode="decimal"
-            placeholder="e.g. 8"
-            value={customFeeRate}
-            onChange={(e) => setCustomFeeRate(e.target.value)}
-          />
-        )}
+        <FeeRateField
+          fees={fees}
+          failed={feesFailed}
+          onRetry={loadFees}
+          choice={feeKey}
+          onChoice={setFeeKey}
+          custom={customFeeRate}
+          onCustom={setCustomFeeRate}
+        />
       </div>
 
       <details className="border-t border-dashed border-line pt-3">
@@ -401,6 +349,11 @@ function SendPanel() {
               Selected: <SatsAmount sats={selectedTotal} className="text-foreground" />
             </p>
           )}
+          {mixedKinds && (
+            <p className="text-[11.5px] text-warning">
+              Regular and swap coins can't be spent together. Select only one kind.
+            </p>
+          )}
         </div>
       </details>
 
@@ -425,7 +378,8 @@ function SendPanel() {
               <Button variant="secondary" onClick={() => setConfirming(false)}>
                 Cancel
               </Button>
-              <Button onClick={() => void submitSend()} loading={sending}>
+              {/* A send the fee check refused would only fail again on broadcast. */}
+              <Button onClick={() => void submitSend()} loading={sending} disabled={!sendFee || sendFeeError !== null}>
                 Broadcast
               </Button>
             </>
@@ -492,10 +446,6 @@ function SendPanel() {
   );
 }
 
-// The Recent Addresses disclosure lists at most 8 entries, and every extra transaction in this
-// window costs Electrum an input fetch.
-const RECENT_ADDRESS_TX_WINDOW = 25;
-const EMPTY_HISTORY: TxSummary[] = [];
 // Module-level rather than a ref, so a request still in flight when the page is left blocks a
 // duplicate from the next visit, not just from this one.
 const receiveRequests = new Set<string>();
@@ -506,15 +456,15 @@ function ReceivePanel() {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [pendingType, setPendingType] = useState<AddressType | null>(null);
   const [recentOpen, setRecentOpen] = useState(false);
-  // Both the address and the Recent Addresses history live in the wallet cache, stamped with
-  // the sync they were read at, so revisiting this page paints from there. They are only asked
-  // for again once a newer sync has landed: the address moves on when a synced coin pays it,
-  // and history is where that payment shows up.
+  // Both the address and the address list live in the wallet cache, stamped with the sync they
+  // were read at, so revisiting this page paints from there. They are only asked for again once
+  // a newer sync has landed: the address moves on when a synced coin pays it, and the list's
+  // balances are the synced coins.
   const syncedAt = useWalletCacheStore((s) => s.lastSuccessfulSyncAt);
   const cachedAddress = useWalletCacheStore((s) => s.receiveAddresses[addressType]);
-  const receiveHistory = useWalletCacheStore((s) => s.receiveHistory);
+  const addressList = useWalletCacheStore((s) => s.addressList);
   const current = cachedAddress?.address ?? null;
-  const transactions = receiveHistory?.transactions ?? EMPTY_HISTORY;
+  const addresses = addressList?.addresses ?? null;
 
   useEffect(() => {
     if (cachedAddress && cachedAddress.syncedAt === syncedAt) return;
@@ -539,20 +489,20 @@ function ReceivePanel() {
       });
   }, [addressType, cachedAddress, syncedAt, pushToast]);
 
-  // Deferred behind the first address: both calls take the wallet's read lock, and this one
-  // feeds a disclosure the user has to open before it is even visible.
-  const hasAddress = current !== null;
+  // Only once opened: it feeds a disclosure, and it takes the wallet's read lock.
   useEffect(() => {
-    if (!hasAddress) return;
-    if (receiveHistory && receiveHistory.syncedAt === syncedAt) return;
-    const key = `history:${syncedAt ?? "never"}`;
+    if (!recentOpen) return;
+    if (addressList && addressList.syncedAt === syncedAt) return;
+    const key = `addresses:${syncedAt ?? "never"}`;
     if (receiveRequests.has(key)) return;
     receiveRequests.add(key);
-    void getTransactions(RECENT_ADDRESS_TX_WINDOW, 0)
-      .then((history) => useWalletCacheStore.getState().setReceiveHistory(history, syncedAt))
-      .catch(() => {})
+    void listAddresses()
+      .then((list) => useWalletCacheStore.getState().setAddressList(list, syncedAt))
+      .catch((e) =>
+        pushToast("error", (e as { message?: string })?.message ?? "Failed to list addresses."),
+      )
       .finally(() => receiveRequests.delete(key));
-  }, [hasAddress, receiveHistory, syncedAt]);
+  }, [recentOpen, addressList, syncedAt, pushToast]);
 
   useEffect(() => {
     // Cleared, not left standing: the panel is labelled with the selected type, so holding the
@@ -568,19 +518,6 @@ function ReceivePanel() {
     };
   }, [current]);
 
-  const recentAddresses = useMemo(() => {
-    const seen = new Map<string, { sats: number; path?: string }>();
-    for (const tx of transactions) {
-      if (!tx.address || tx.amountSats <= 0) continue;
-      const entry = seen.get(tx.address);
-      seen.set(tx.address, {
-        sats: (entry?.sats ?? 0) + tx.amountSats,
-        path: entry?.path ?? tx.derivationPath,
-      });
-    }
-    return [...seen.entries()].slice(0, 8);
-  }, [transactions]);
-
   function copyAddress() {
     if (!current) return;
     void copyText(current.address).then((ok) =>
@@ -588,20 +525,6 @@ function ReceivePanel() {
         ? pushToast("success", "Address copied.")
         : pushToast("warning", "Could not reach the clipboard — select the address and copy it."),
     );
-  }
-
-  function exportCsv() {
-    const rows = [
-      "address,derivation_path,received_sats",
-      ...recentAddresses.map(([addr, { sats, path }]) => `${addr},${path ?? ""},${sats}`),
-    ];
-    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "receive-addresses.csv";
-    a.click();
-    URL.revokeObjectURL(url);
   }
 
   // Spans two subgrid rows so it matches Send at rest while the opened list grows only this
@@ -685,7 +608,7 @@ function ReceivePanel() {
           className="flex items-center gap-1.5 border-t border-dashed border-line pt-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle hover:text-foreground"
         >
           <ChevronDown size={12} strokeWidth={2.5} />
-          Recent Addresses
+          Addresses
         </button>
 
         <div className="flex-1" />
@@ -695,27 +618,7 @@ function ReceivePanel() {
         // Pulled up into the row above's bottom padding, so the list sits as close under its
         // toggle as it did inside a <details>.
         <div className="-mt-3 px-6 pb-6">
-          <div className="flex flex-col divide-y divide-line">
-            {recentAddresses.length === 0 && <p className="py-2 text-[11.5px] text-subtle">No incoming transactions yet.</p>}
-            {recentAddresses.map(([addr, { sats, path }]) => (
-              <div key={addr} className="flex items-center justify-between gap-3 py-2 text-[11.5px]">
-                <span className="min-w-0">
-                  <Identifier value={addr} className="block text-[11.5px] leading-[1.45] text-muted" />
-                  {path && <span className="mt-0.5 block font-mono text-[10px] text-subtle">{path}</span>}
-                </span>
-                <SatsAmount sats={sats} className="flex-none font-semibold text-success" />
-              </div>
-            ))}
-          </div>
-          {recentAddresses.length > 0 && (
-            <button
-              type="button"
-              onClick={exportCsv}
-              className="mt-2 flex items-center gap-1.5 font-mono text-[11px] text-primary hover:text-primary-hover"
-            >
-              <Download size={12} strokeWidth={2} /> Export CSV
-            </button>
-          )}
+          <AddressList addresses={addresses} csvName="wallet-addresses.csv" />
         </div>
       )}
     </Card>

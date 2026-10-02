@@ -2,8 +2,9 @@ import { subscribe } from "../../api/transport";
 import { capabilities, pickDirectory, pickFile, selectBackup } from "../../platform";
 import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { initWallet, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { getRestoreLogs, initWallet, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { RestoreProgress } from "../../components/app/RestoreProgress";
 import { isAppError } from "../../api/types";
 import type { InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
@@ -113,6 +114,11 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   const [progress, setProgress] = useState<InitProgress>(IDLE_PROGRESS);
   const [failure, setFailure] = useState<CheckFailure | null>(null);
   const [pendingWallet, setPendingWallet] = useState<WalletChoice | null>(null);
+  const restoringName = pendingWallet?.mode === "restore" ? pendingWallet.walletName : null;
+  const restoreLog = useCallback(
+    () => (restoringName ? getRestoreLogs(restoringName, dataDir, 200) : Promise.resolve([])),
+    [restoringName, dataDir],
+  );
   const [retryPassword, setRetryPassword] = useState("");
 
   useEffect(() => {
@@ -388,6 +394,14 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           a block being mined, so once the steps have all ticked it is the only thing that can
           explain why the app has not opened yet. */}
       {progress.note && <p className="mt-6 text-center text-[12.5px] text-muted">{progress.note}</p>}
+      {restoring && active === 0 && !progress.failed && pendingWallet && (
+        <div className="mt-6 border-t border-line pt-5 text-left">
+          <RestoreProgress
+            load={restoreLog}
+            note="A restore scans the chain for every coin this wallet ever had, so it might take several minutes. Keep this window open until it finishes."
+          />
+        </div>
+      )}
     </>
   );
 

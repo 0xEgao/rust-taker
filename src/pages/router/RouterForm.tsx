@@ -1,9 +1,12 @@
 import { AlertTriangle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { checkRouterPorts, checkTor, getRouterDefaults, getSuggestedRouterPorts } from "../../api/commands";
-import type { RouterInitConfig, RouterPortCheck } from "../../api/types";
+import { checkRouterConfig, checkRouterPorts, checkTor, getRouterDefaults, getSuggestedRouterPorts } from "../../api/commands";
+import type { RestoreSelection, RouterInitConfig, RouterPortCheck } from "../../api/types";
 import { Disclosure } from "../../components/ui/display";
-import { SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
+import { Button, FeeRateField, PasswordField, SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
+import { validateNewPassword } from "../../lib/password-policy";
+import { selectBackup } from "../../platform";
+import { chosenFeeRate, type FeeChoice, useFeeEstimate } from "../../lib/fee-rate";
 import { ROUTER_ID_PATTERN, ROUTER_NAME_MAX, routerNameError, timelockDays } from "./router-defaults";
 import { formatNumber } from "../../lib/wallet-format";
 
@@ -47,7 +50,11 @@ export interface RouterForm {
   setDataDir: (next: string) => void;
   torError: string | null;
   portErrors: RouterPortCheck;
-  /** True while Tor or a port is unusable, whatever the rest of the form says. */
+  /** The crate's own objection to the economics, such as a bond under its minimum. */
+  configError: string | null;
+  /** The crate's minimum bond amount, once its defaults have arrived. */
+  minFidelityAmount: number | null;
+  /** True while Tor, a port or the crate's config check refuses, whatever the rest says. */
   blocked: boolean;
   /** Builds the init config for a validated id and password, or null if the numbers don't hold. */
   config: (routerId: string, walletPassword: string) => RouterInitConfig | null;
@@ -64,6 +71,9 @@ export function useRouterForm(): RouterForm {
   const [dataDir, setDataDir] = useState("");
   const [torError, setTorError] = useState<string | null>(null);
   const [portErrors, setPortErrors] = useState<RouterPortCheck>({});
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [minFidelityAmount, setMinFidelityAmount] = useState<number | null>(null);
+  const configRun = useRef(0);
 
   // Bumped on every edit so a slow in-flight check can't paint a verdict for a value the
   // user has already changed.
@@ -80,7 +90,8 @@ export function useRouterForm(): RouterForm {
 
   useEffect(() => {
     void getRouterDefaults()
-      .then((d) =>
+      .then((d) => {
+        setMinFidelityAmount(d.minFidelityAmount ?? null);
         setValues((v) => ({
           ...v,
           baseFee: String(d.baseFee),
@@ -89,9 +100,8 @@ export function useRouterForm(): RouterForm {
           requiredConfirms: String(d.requiredConfirms),
           fidelityAmount: String(d.fidelityAmount),
           fidelityTimelock: String(d.fidelityTimelock),
-          fidelityFeerate: String(d.fidelityFeerate),
-        })),
-      )
+        }));
+      })
       .catch(() => {});
   }, []);
 
@@ -131,6 +141,37 @@ export function useRouterForm(): RouterForm {
     return () => clearTimeout(timer);
   }, [numbers.networkPort, numbers.rpcPort, numbers.socksPort, numbers.controlPort]);
 
+  // The crate checks a router's economics only when it reads them back from config.toml, so
+  // it is asked here, as they are edited, rather than after Create.
+  useEffect(() => {
+    if (Object.values(values).some((v) => v.trim() === "")) {
+      setConfigError(null);
+      return;
+    }
+    const run = ++configRun.current;
+    const timer = setTimeout(() => {
+      void checkRouterConfig({
+        routerId: "check",
+        walletName: "check",
+        name: "check",
+        networkPort: numbers.networkPort,
+        rpcPort: numbers.rpcPort,
+        socksPort: numbers.socksPort,
+        controlPort: numbers.controlPort,
+        baseFee: numbers.baseFee,
+        amountRelativeFeePct: numbers.amountRelativeFeePct,
+        timeRelativeFeePct: numbers.timeRelativeFeePct,
+        requiredConfirms: numbers.requiredConfirms,
+        fidelityAmount: numbers.fidelityAmount,
+        fidelityTimelock: numbers.fidelityTimelock,
+        fidelityFeerate: numbers.fidelityFeerate,
+      })
+        .then((verdict) => run === configRun.current && setConfigError(verdict))
+        .catch(() => run === configRun.current && setConfigError(null));
+    }, CHECK_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [values, numbers]);
+
   const publicNameError = publicName?.trim() ? routerNameError(publicName) : null;
   // Neither the wallet name nor the id has a length cap; the published name does.
   const defaultPublicName = (routerId: string) =>
@@ -149,8 +190,13 @@ export function useRouterForm(): RouterForm {
     setDataDir,
     torError,
     portErrors,
+    configError,
+    minFidelityAmount,
     blocked:
-      torError !== null || portErrors.networkPort !== undefined || portErrors.rpcPort !== undefined,
+      torError !== null ||
+      portErrors.networkPort !== undefined ||
+      portErrors.rpcPort !== undefined ||
+      configError !== null,
     config: (routerId, walletPassword) => {
       // An empty string parses as 0, which is a legal-looking fee. Nothing may be submitted
       // before the crate's defaults have actually arrived.
@@ -230,12 +276,13 @@ export function PublicNameField({ form, routerId }: { form: RouterForm; routerId
 export function FidelityFields({ form }: { form: RouterForm }) {
   const timelock = Number(form.values.fidelityTimelock);
   return (
-    <SummaryGroup title="Fidelity bond">
+    <SummaryGroup title="Fidelity bond" warning={form.configError ? warningLine(form.configError) : undefined}>
       <SummaryRow
         label="Target amount"
         value={form.values.fidelityAmount}
         display={sats(form.values.fidelityAmount)}
         suffix="sats"
+        hint={form.minFidelityAmount !== null ? `Minimum ${formatNumber(form.minFidelityAmount)} sats` : undefined}
         onCommit={form.set("fidelityAmount")}
       />
       <SummaryRow
@@ -246,15 +293,169 @@ export function FidelityFields({ form }: { form: RouterForm }) {
         hint={timelock > 0 ? `≈ ${timelockDays(timelock)} days locked` : undefined}
         onCommit={form.set("fidelityTimelock")}
       />
-      <SummaryRow
-        label="Fee rate"
-        value={form.values.fidelityFeerate}
-        display={form.values.fidelityFeerate || "…"}
-        suffix="sat/vB"
-        inputMode="decimal"
-        onCommit={form.set("fidelityFeerate")}
-      />
     </SummaryGroup>
+  );
+}
+
+/** The bond transaction's fee rate: a stuck bond cannot be bumped, the crate has no fee-bump
+ *  for bonds. Owns `fidelityFeerate`, so the form holds whichever rate is picked here. */
+export function BondFeeRateField({ form }: { form: RouterForm }) {
+  const { fees, failed, retry } = useFeeEstimate();
+  const [choice, setChoice] = useState<FeeChoice>("medium");
+  const [custom, setCustom] = useState("");
+  const rate = chosenFeeRate(fees, choice, custom);
+  const setFeerate = form.set("fidelityFeerate");
+  useEffect(() => {
+    setFeerate(rate > 0 ? String(rate) : "");
+    // `form.set` is rebuilt every render; only the rate decides the value.
+  }, [rate]);
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Bond fee rate</span>
+      <FeeRateField
+        fees={fees}
+        failed={failed}
+        onRetry={retry}
+        choice={choice}
+        onChoice={setChoice}
+        custom={custom}
+        onCustom={setCustom}
+      />
+    </div>
+  );
+}
+
+/** `null` while a new router gets a fresh wallet; otherwise its wallet comes from a backup file,
+ *  with `selection` null until one is chosen. */
+export type RouterRestore = { selection: RestoreSelection | null } | null;
+
+/**
+ * The router's wallet password. A new wallet takes a new password, entered twice; a restored one
+ * keeps the backup's, so restoring asks for that instead. `error` is null once the router can be
+ * created, and otherwise says what is missing.
+ */
+export function useRouterWallet() {
+  const [restore, setRestore] = useState<RouterRestore>(null);
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const error =
+    restore === null
+      ? validateNewPassword(password, confirm)
+      : !restore.selection
+        ? "Choose the backup file to continue."
+        : !password
+          ? "Enter the backup password to continue."
+          : null;
+  return {
+    restore,
+    setRestore,
+    password,
+    setPassword,
+    confirm,
+    setConfirm,
+    error,
+    /** The init config's wallet fields. */
+    fields: (config: RouterInitConfig | null): RouterInitConfig | null =>
+      config && restore?.selection
+        ? { ...config, restoreSelection: restore.selection.selectionId }
+        : config,
+    clear: () => {
+      setPassword("");
+      setConfirm("");
+      // A selection is single-use; one a finished restore consumed cannot be submitted again.
+      setRestore(null);
+    },
+  };
+}
+
+export type RouterWallet = ReturnType<typeof useRouterWallet>;
+
+/** Above everything else when restoring: the file decides what is being added, and the name
+ *  and password follow from it. */
+export function RouterRestoreChoice({ wallet }: { wallet: RouterWallet }) {
+  const [choosing, setChoosing] = useState(false);
+  const [chooseError, setChooseError] = useState<string | null>(null);
+  const { restore, setRestore, setPassword, setConfirm } = wallet;
+
+  async function choose() {
+    setChoosing(true);
+    setChooseError(null);
+    try {
+      setRestore({ selection: await selectBackup() });
+    } catch (e) {
+      if ((e as { code?: string })?.code !== "USER_CANCELLED")
+        setChooseError((e as { message?: string })?.message ?? "Could not open the backup file.");
+    } finally {
+      setChoosing(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <label className="flex cursor-pointer items-center gap-2.5 text-[12.5px] text-foreground">
+        <input
+          type="checkbox"
+          className="accent-primary"
+          checked={restore !== null}
+          onChange={(e) => {
+            setRestore(e.target.checked ? { selection: null } : null);
+            setPassword("");
+            setConfirm("");
+          }}
+        />
+        Restore from a backup file
+      </label>
+      {restore !== null && (
+        <>
+          <div className="flex items-center gap-3">
+            <Button size="sm" variant="secondary" loading={choosing} onClick={() => void choose()}>
+              {restore.selection ? "Choose another file" : "Choose backup file"}
+            </Button>
+            {restore.selection && (
+              <span className="min-w-0 truncate font-mono text-[11.5px] text-muted">
+                {restore.selection.displayName}
+              </span>
+            )}
+          </div>
+          {chooseError && <p className="text-[11.5px] text-danger">{chooseError}</p>}
+          <p className="text-[11.5px] leading-5 text-subtle">
+            Then name the router and enter the backup&apos;s password below.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function RouterPasswordFields({ wallet }: { wallet: RouterWallet }) {
+  const { restore, password, setPassword, confirm, setConfirm, error } = wallet;
+  if (restore !== null)
+    return (
+      <PasswordField
+        label="Backup password"
+        autoComplete="current-password"
+        required
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        hint="The restored router wallet keeps this password."
+      />
+    );
+  return (
+    <div className="flex flex-col gap-3">
+      <PasswordField label="Wallet password" autoComplete="new-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+      <PasswordField
+        label="Confirm wallet password"
+        autoComplete="new-password"
+        required
+        value={confirm}
+        onChange={(e) => setConfirm(e.target.value)}
+        error={password || confirm ? (error ?? undefined) : undefined}
+      />
+      <p className="text-[11.5px] leading-5 text-subtle">
+        Portal encrypts every router wallet it creates. This password cannot be recovered if it is
+        lost.
+      </p>
+    </div>
   );
 }
 

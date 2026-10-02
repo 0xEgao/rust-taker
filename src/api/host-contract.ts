@@ -62,9 +62,10 @@ export interface Host {
    *  restore consumes. Desktop opens a native picker; web uploads the bytes. Either way the
    *  browser never learns a server path. */
   selectBackup(): Promise<RestoreSelection>;
-  /** Writes an encrypted backup of the open wallet and returns the file's name. Desktop saves
-   *  it where a native dialog says; web has the server produce it and downloads it. */
-  createBackup(password: string): Promise<string>;
+  /** Writes an encrypted backup of the open wallet, or of `routerId`'s wallet, and returns the
+   *  file's name. A stopped router's wallet is opened with `walletPassword`. Desktop saves it
+   *  where a native dialog says; web has the server produce it and downloads it. */
+  createBackup(password: string, routerId?: string, walletPassword?: string): Promise<string>;
 }
 
 /** Mirrors `RestoreSelectionView` in core. */

@@ -110,6 +110,7 @@ pub fn run() {
             chain_backend::get_electrum_presets,
             chain_backend::set_chain_backend,
             chain_backend::check_backend,
+            chain_backend::estimate_fees,
             // taker wallet lifecycle
             taker_wallet::list_wallets,
             taker_wallet::init_taker,
@@ -125,10 +126,10 @@ pub fn run() {
             taker_wallet::validate_address,
             taker_wallet::get_new_address,
             taker_wallet::get_transactions,
+            taker_wallet::list_addresses,
             taker_wallet::list_utxos,
             taker_wallet::send_to_address,
             taker_wallet::sync_wallet,
-            taker_wallet::estimate_fees,
             taker_wallet::estimate_send_fee,
             taker_wallet::get_btc_price,
             // market / offerbook
@@ -153,6 +154,7 @@ pub fn run() {
             taker_reports::get_incoming_swap_utxo,
             taker_reports::verify_deniability,
             // taker logs
+            logs::get_restore_logs,
             logs::get_logs,
             // maker lifecycle
             maker::init_maker,
@@ -167,10 +169,12 @@ pub fn run() {
             maker_reports::verify_maker_deniability,
             // maker's own wallet
             maker_wallet::get_maker_balances,
+            maker_wallet::list_maker_addresses,
             maker_wallet::list_maker_utxos,
             maker_wallet::get_maker_new_address,
             maker_wallet::get_maker_transactions,
             maker_wallet::send_maker_to_address,
+            maker_wallet::backup_maker_wallet,
             maker_wallet::sync_maker_wallet,
             maker_wallet::list_maker_fidelity_bonds,
             // maker settings (persisted, non-secret config)
@@ -178,6 +182,7 @@ pub fn run() {
             maker_settings::get_saved_maker_settings,
             maker_settings::list_dashboard_imports,
             maker_settings::import_dashboard_makers,
+            maker_settings::check_router_config,
             maker_settings::clear_maker_settings,
             maker::get_router_defaults,
             maker_settings::get_suggested_maker_ports,
@@ -207,6 +212,18 @@ pub fn run() {
                 portal_core::logging::set_log_dir(root);
             }
             portal_core::tor::sweep_stale_tor_dirs();
+
+            // Before Tor starts. Once it runs, Tor takes SIGTERM itself and exits, so without
+            // this the window outlived it: Tor gone, the app idle, and logout or shutdown
+            // waiting on a process that would never end. Quitting through Tauri runs the same
+            // teardown as the Quit menu.
+            portal_core::shutdown_signal::arm();
+            let quit = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                portal_core::shutdown_signal::wait().await;
+                log::info!("termination signal received; quitting");
+                quit.exit(0);
+            });
 
             // Earlier versions persisted the backend, RPC password included. Ceasing to
             // write it is not enough — the old file has to go.

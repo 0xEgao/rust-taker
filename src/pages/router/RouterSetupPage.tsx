@@ -1,10 +1,12 @@
-import { AlertTriangle, ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, Copy, ExternalLink, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { subscribe } from "../../api/transport";
 import { getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
-import { Card, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
+import { Card, Identifier, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
+import { openExternal } from "../../platform";
+import { explorerTxUrl } from "../../lib/wallet-format";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
@@ -35,8 +37,25 @@ function readDeposit(lines: LogLine[]): { address: string; sats: number; reason:
   return null;
 }
 
-/** The crate's own bond lines: broadcast, then confirmed. */
-const BOND_MARKERS = ["Fidelity bond broadcast", "Successfully created fidelity bond"];
+/** The crate names the bond's txid when it broadcasts one, and when it adopts one it already has
+ *  but has not seen confirm — a bond a restore recovered from the chain, say. */
+const BOND_TX_RE =
+  /(?:Fidelity bond broadcast, waiting for confirmation: |Found unconfirmed fidelity bond )([0-9a-f]{64})/;
+
+function readBondTxid(lines: LogLine[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const match = lines[i].line.match(BOND_TX_RE);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/** The crate's own bond lines: broadcast or adopted, then confirmed. */
+const BOND_MARKERS = [
+  "Fidelity bond broadcast",
+  "Found unconfirmed fidelity bond",
+  "Successfully created fidelity bond",
+];
 
 /**
  * Which setup step the crate's newest step line says it is on. The newest, not any line in the
@@ -74,6 +93,7 @@ export function RouterSetupPage() {
   const [stage, setStage] = useState<Stage>("starting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [deposit, setDeposit] = useState<{ address: string; sats: number; reason: string } | null>(null);
+  const [bondTxid, setBondTxid] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
@@ -191,6 +211,8 @@ export function RouterSetupPage() {
       setLogs(lines);
       const found = readDeposit(lines);
       if (found) setDeposit(found);
+      const bond = readBondTxid(lines);
+      if (bond) setBondTxid(bond);
       const step = setupStep(lines);
       setStage((current) => {
         if (current !== "starting" && current !== "funding") return current;
@@ -247,6 +269,7 @@ export function RouterSetupPage() {
                 autoComplete="current-password"
                 value={walletPassword}
                 onChange={(e) => { setWalletPassword(e.target.value); setError(null); }}
+                onKeyDown={(e) => e.key === "Enter" && walletPassword && !startingWithPassword && void startEncryptedRouter()}
                 error={error ?? undefined}
               />
               <p className="mt-3 text-[11.5px] leading-5 text-subtle">
@@ -312,6 +335,30 @@ export function RouterSetupPage() {
               <Button variant="secondary" size="sm" loading={stopping} onClick={() => void stop()}>
                 Stop router
               </Button>
+            </div>
+          )}
+
+          {stage === "bonding" && bondTxid && (
+            <div className="border-t border-line px-8 py-5 text-left">
+              <div className="flex items-center justify-between gap-4">
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                  Bond transaction
+                </span>
+                {explorerTxUrl(bondTxid) && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const url = explorerTxUrl(bondTxid);
+                      if (url) void openExternal(url);
+                    }}
+                  >
+                    View on explorer
+                    <ExternalLink size={13} strokeWidth={2} />
+                  </Button>
+                )}
+              </div>
+              <Identifier value={bondTxid} className="mt-2 text-[11.5px] text-muted" />
             </div>
           )}
 

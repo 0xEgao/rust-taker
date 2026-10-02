@@ -4,9 +4,10 @@
 //! dialog: the picker and the main-window check are Tauri concerns, so those wrappers do that
 //! part themselves and hand core the resulting path together with the guard they already hold.
 
-use std::sync::Arc;
-use uuid::Uuid;
+use openswap::wallet::Wallet;
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
+use uuid::Uuid;
 
 use portal_core::error::{AppError, ErrorCode};
 use portal_core::ops::taker_wallet;
@@ -92,9 +93,23 @@ pub async fn choose_restore_backup(
 
 #[tauri::command]
 pub async fn restore_wallet(
-    state: tauri::State<'_, Arc<AppState>>, data_dir: Option<String>, wallet_name: String, socks_port: Option<u16>, selection_id: Uuid, password: String,
+    state: tauri::State<'_, Arc<AppState>>,
+    data_dir: Option<String>,
+    wallet_name: String,
+    socks_port: Option<u16>,
+    selection_id: Uuid,
+    password: String,
 ) -> Result<(), AppError> {
-    taker_wallet::restore_wallet(&state, DESKTOP_SESSION, data_dir, wallet_name, socks_port, selection_id, password).await
+    taker_wallet::restore_wallet(
+        &state,
+        DESKTOP_SESSION,
+        data_dir,
+        wallet_name,
+        socks_port,
+        selection_id,
+        password,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -105,6 +120,19 @@ pub async fn backup_wallet(
 ) -> Result<String, AppError> {
     ensure_main_window(&window)?;
     validate_password(&password, "backup password")?;
+    let wallet = desktop_taker(&state)?.wallet.clone();
+    save_backup(window, &state, wallet, "portal-wallet-backup", password).await
+}
+
+/// Asks where to save, then writes the encrypted backup of `wallet` there. Shared by the wallet
+/// and router backups.
+pub(crate) async fn save_backup(
+    window: tauri::WebviewWindow,
+    state: &AppState,
+    wallet: impl AsRef<RwLock<Wallet>> + Send + 'static,
+    file_stem: &str,
+    password: String,
+) -> Result<String, AppError> {
     let operation = SensitiveOperationGuard::acquire(
         &state.sensitive_operation_active,
         SensitiveOperation::BackupPrivateKey,
@@ -114,11 +142,12 @@ pub async fn backup_wallet(
         .map(|d| d.as_secs())
         .unwrap_or_default();
     let dialog_window = window.clone();
+    let file_name = format!("{file_stem}-{date}.json");
     let selected = tauri::async_runtime::spawn_blocking(move || {
         dialog_window
             .dialog()
             .file()
-            .set_file_name(format!("portal-wallet-backup-{date}.json"))
+            .set_file_name(file_name)
             .add_filter("JSON files", &["json"])
             .blocking_save_file()
     })
@@ -131,7 +160,7 @@ pub async fn backup_wallet(
             "backup destination is not a local filesystem path",
         )
     })?;
-    taker_wallet::write_backup(&*desktop_taker(&state)?, operation, destination, password).await
+    taker_wallet::write_backup(wallet, operation, destination, password).await
 }
 
 #[tauri::command]
@@ -146,20 +175,32 @@ pub async fn get_balances(state: tauri::State<'_, Arc<AppState>>) -> Result<Bala
 
 #[tauri::command]
 pub async fn get_new_address(
-    state: tauri::State<'_, Arc<AppState>>, address_type: AddressTypeDto,
+    state: tauri::State<'_, Arc<AppState>>,
+    address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
     taker_wallet::get_new_address(&*desktop_taker(&state)?, address_type).await
 }
 
 #[tauri::command]
 pub async fn get_transactions(
-    state: tauri::State<'_, Arc<AppState>>, count: Option<usize>, skip: Option<usize>,
+    state: tauri::State<'_, Arc<AppState>>,
+    count: Option<usize>,
+    skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
     taker_wallet::get_transactions(&*desktop_taker(&state)?, count, skip).await
 }
 
 #[tauri::command]
-pub async fn list_utxos(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<UtxoEntry>, AppError> {
+pub async fn list_addresses(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<WalletAddressDto>, AppError> {
+    taker_wallet::list_addresses(&*desktop_taker(&state)?).await
+}
+
+#[tauri::command]
+pub async fn list_utxos(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<UtxoEntry>, AppError> {
     taker_wallet::list_utxos(&*desktop_taker(&state)?).await
 }
 
@@ -173,17 +214,20 @@ pub async fn send_to_address(
     outpoints: Option<Vec<Outpoint>>,
 ) -> Result<SendResult, AppError> {
     ensure_main_window(&window)?;
-    taker_wallet::send_to_address(&state, &*desktop_taker(&state)?, address, amount_sats, fee_rate, outpoints).await
+    taker_wallet::send_to_address(
+        &state,
+        &*desktop_taker(&state)?,
+        address,
+        amount_sats,
+        fee_rate,
+        outpoints,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn sync_wallet(state: tauri::State<'_, Arc<AppState>>) -> Result<(), AppError> {
     taker_wallet::sync_wallet(&*desktop_taker(&state)?).await
-}
-
-#[tauri::command]
-pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
-    taker_wallet::estimate_fees().await
 }
 
 #[tauri::command]
@@ -194,12 +238,17 @@ pub async fn estimate_send_fee(
     fee_rate: Option<f64>,
     outpoints: Option<Vec<Outpoint>>,
 ) -> Result<portal_core::types::SendFeeEstimate, AppError> {
-    taker_wallet::estimate_send_fee(&*desktop_taker(&state)?, address, amount_sats, fee_rate, outpoints)
-        .await
+    taker_wallet::estimate_send_fee(
+        &*desktop_taker(&state)?,
+        address,
+        amount_sats,
+        fee_rate,
+        outpoints,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
     taker_wallet::get_btc_price().await
 }
-

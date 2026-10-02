@@ -11,25 +11,44 @@ use portal_core::state::AppState;
 use portal_core::types::*;
 
 #[tauri::command]
-pub async fn get_maker_balances(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<BalancesDto, AppError> {
+pub async fn get_maker_balances(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<BalancesDto, AppError> {
     maker_wallet::get_maker_balances(&state, router_id).await
 }
 
 #[tauri::command]
-pub async fn list_maker_utxos(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<Vec<UtxoEntry>, AppError> {
+pub async fn list_maker_utxos(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<Vec<UtxoEntry>, AppError> {
     maker_wallet::list_maker_utxos(&state, router_id).await
 }
 
 #[tauri::command]
+pub async fn list_maker_addresses(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<Vec<WalletAddressDto>, AppError> {
+    maker_wallet::list_maker_addresses(&state, router_id).await
+}
+
+#[tauri::command]
 pub async fn get_maker_transactions(
-    state: tauri::State<'_, Arc<AppState>>, router_id: String, count: Option<usize>, skip: Option<usize>,
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+    count: Option<usize>,
+    skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
     maker_wallet::get_maker_transactions(&state, router_id, count, skip).await
 }
 
 #[tauri::command]
 pub async fn get_maker_new_address(
-    state: tauri::State<'_, Arc<AppState>>, router_id: String, address_type: AddressTypeDto,
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+    address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
     maker_wallet::get_maker_new_address(&state, router_id, address_type).await
 }
@@ -45,17 +64,56 @@ pub async fn send_maker_to_address(
     outpoints: Option<Vec<Outpoint>>,
 ) -> Result<SendResult, AppError> {
     crate::native::ensure_main_window(&window)?;
-    maker_wallet::send_maker_to_address(&state, router_id, address, amount_sats, fee_rate, outpoints)
-        .await
+    maker_wallet::send_maker_to_address(
+        &state,
+        router_id,
+        address,
+        amount_sats,
+        fee_rate,
+        outpoints,
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn sync_maker_wallet(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<(), AppError> {
+pub async fn backup_maker_wallet(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+    password: String,
+    wallet_password: Option<String>,
+) -> Result<String, AppError> {
+    crate::native::ensure_main_window(&window)?;
+    portal_core::security::input::validate_password(&password, "backup password")?;
+    let wallet = portal_core::ops::maker::router_wallet(
+        &state,
+        portal_core::state::DESKTOP_SESSION,
+        &router_id,
+        wallet_password,
+    )
+    .await?;
+    super::taker_wallet::save_backup(
+        window,
+        &state,
+        wallet,
+        &format!("portal-router-{router_id}-backup"),
+        password,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn sync_maker_wallet(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<(), AppError> {
     maker_wallet::sync_maker_wallet(&state, router_id).await
 }
 
 #[tauri::command]
-pub async fn list_maker_fidelity_bonds(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<Vec<FidelityBondDto>, AppError> {
+pub async fn list_maker_fidelity_bonds(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<Vec<FidelityBondDto>, AppError> {
     maker_wallet::list_maker_fidelity_bonds(&state, router_id).await
 }
-

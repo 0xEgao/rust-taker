@@ -1,5 +1,13 @@
 import { create } from "zustand";
-import type { AddressType, Balances, NewAddress, TxSummary, UtxoEntry, WalletInfo } from "../api/types";
+import type {
+  AddressType,
+  Balances,
+  NewAddress,
+  TxSummary,
+  UtxoEntry,
+  WalletAddress,
+  WalletInfo,
+} from "../api/types";
 
 // Survives WalletPage unmount/remount so revisits paint instantly.
 export const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
@@ -38,13 +46,13 @@ interface WalletCacheState {
   lastSuccessfulSyncAt: number | null;
   historyStatus: WalletHistoryStatus;
   historyError: string | null;
-  /** The Receive panel's address per type and its Recent Addresses history, each stamped with
+  /** The Receive panel's address per type and its address list, each stamped with
    *  the `lastSuccessfulSyncAt` it was read at. Both only change when a sync lands, so a
    *  matching stamp means the panel can paint from here instead of asking again. */
   receiveAddresses: Partial<Record<AddressType, { address: NewAddress; syncedAt: number | null }>>;
-  receiveHistory: { transactions: TxSummary[]; syncedAt: number | null } | null;
+  addressList: { addresses: WalletAddress[]; syncedAt: number | null } | null;
   setReceiveAddress: (type: AddressType, address: NewAddress, syncedAt: number | null) => void;
-  setReceiveHistory: (transactions: TxSummary[], syncedAt: number | null) => void;
+  setAddressList: (addresses: WalletAddress[], syncedAt: number | null) => void;
   beginSession: (walletName: string, dataDir: string, restored: boolean) => void;
   setSyncing: () => void;
   setSyncSuccess: (timestamp?: number) => void;
@@ -68,10 +76,10 @@ export const useWalletCacheStore = create<WalletCacheState>((set) => ({
   historyStatus: "idle",
   historyError: null,
   receiveAddresses: {},
-  receiveHistory: null,
+  addressList: null,
   setReceiveAddress: (type, address, syncedAt) =>
     set((state) => ({ receiveAddresses: { ...state.receiveAddresses, [type]: { address, syncedAt } } })),
-  setReceiveHistory: (transactions, syncedAt) => set({ receiveHistory: { transactions, syncedAt } }),
+  setAddressList: (addresses, syncedAt) => set({ addressList: { addresses, syncedAt } }),
   beginSession: (walletName, dataDir, restored) => {
     const walletKey = `${dataDir}/wallets/${walletName}`;
     const lastSuccessfulSyncAt = restored ? Date.now() : (loadSyncTimes()[walletKey] ?? null);
@@ -91,7 +99,7 @@ export const useWalletCacheStore = create<WalletCacheState>((set) => ({
             historyStatus: "idle" as const,
             historyError: null,
             receiveAddresses: {},
-            receiveHistory: null,
+            addressList: null,
           }
         : {}),
     }));
@@ -121,6 +129,6 @@ export const useWalletCacheStore = create<WalletCacheState>((set) => ({
     historyStatus: "idle",
     historyError: null,
     receiveAddresses: {},
-    receiveHistory: null,
+    addressList: null,
   }),
 }));

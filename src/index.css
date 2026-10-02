@@ -195,12 +195,14 @@ button {
   translate: 0 1px;
 }
 
+/* Percentages are of the half-width bar itself: -100% starts it just off the left edge and
+   200% ends it just off the right, so it crosses the whole track. */
 @keyframes market-progress {
   0% {
-    transform: translateX(-72%);
+    transform: translateX(-100%);
   }
   100% {
-    transform: translateX(72%);
+    transform: translateX(200%);
   }
 }
 

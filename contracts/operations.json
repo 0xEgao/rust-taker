@@ -165,6 +165,15 @@
       "note": "Use POST /backups and the authenticated POST attachment download flow; no backup_wallet command route."
     },
     {
+      "name": "backup_maker_wallet",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Use POST /backups with a routerId and the authenticated POST attachment download flow; no backup_maker_wallet command route."
+    },
+    {
       "name": "get_balances",
       "executionClass": "read",
       "desktop": true,
@@ -193,6 +202,15 @@
     },
     {
       "name": "get_transactions",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_addresses",
       "executionClass": "read",
       "desktop": true,
       "web": true,
@@ -417,6 +435,15 @@
       "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
     },
     {
+      "name": "get_restore_logs",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Tail of a wallet's own log by managed wallet name while it is being restored; no client path on web."
+    },
+    {
       "name": "get_logs",
       "executionClass": "read",
       "desktop": true,
@@ -516,6 +543,15 @@
       "note": "Return the existing safe DTO; bound response size and redact internal details."
     },
     {
+      "name": "list_maker_addresses",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
       "name": "list_maker_utxos",
       "executionClass": "read",
       "desktop": true,
@@ -604,6 +640,15 @@
       "webAdaptation": "replaced",
       "retryClass": "none",
       "note": "No automatic scan/import of the host dashboard directories. Explicit validated offline service migration is documented separately."
+    },
+    {
+      "name": "check_router_config",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Validate candidate router settings through the crate's config check; writes only a throwaway temp file."
     },
     {
       "name": "clear_maker_settings",

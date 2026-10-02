@@ -13,6 +13,11 @@ use super::desktop_taker;
 use portal_core::types::*;
 
 #[tauri::command]
+pub async fn get_restore_logs(data_dir: Option<String>, wallet_name: String, lines: Option<usize>) -> Result<Vec<LogLine>, AppError> {
+    logs::get_restore_logs(data_dir, wallet_name, lines).await
+}
+
+#[tauri::command]
 pub async fn get_logs(state: tauri::State<'_, Arc<AppState>>, lines: Option<usize>) -> Result<Vec<LogLine>, AppError> {
     logs::get_logs(&*desktop_taker(&state)?, lines).await
 }

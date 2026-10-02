@@ -28,3 +28,7 @@ pub async fn check_backend(config: Option<ChainBackendConfig>, socks_port: Optio
     chain_backend::check_backend(DESKTOP_SESSION, config, socks_port).await
 }
 
+#[tauri::command]
+pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
+    chain_backend::estimate_fees(DESKTOP_SESSION).await
+}

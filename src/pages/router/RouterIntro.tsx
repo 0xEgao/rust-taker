@@ -1,14 +1,23 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { checkTor, initRouter } from "../../api/commands";
+import { checkTor, getRouterLogs, initRouter } from "../../api/commands";
 import { Card } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
-import { Button, PasswordField, TextField } from "../../components/ui/inputs";
-import { validateNewPassword } from "../../lib/password-policy";
+import { Button, TextField } from "../../components/ui/inputs";
 import { withMinDelay } from "../../lib/timing";
 import { ROUTER_ID_PATTERN } from "./router-defaults";
-import { AdvancedFields, FidelityFields, PublicNameField, useRouterForm } from "./RouterForm";
+import {
+  AdvancedFields,
+  BondFeeRateField,
+  FidelityFields,
+  PublicNameField,
+  RouterPasswordFields,
+  RouterRestoreChoice,
+  useRouterForm,
+  useRouterWallet,
+} from "./RouterForm";
 import { DashboardImport } from "./DashboardImport";
+import { RestoreProgress } from "../../components/app/RestoreProgress";
 
 // Each step usually resolves far quicker than it can be read.
 const MIN_STEP_MS = 900;
@@ -32,15 +41,15 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
   const navigate = useNavigate();
   const form = useRouterForm();
   const [name, setName] = useState("");
-  const [password, setPassword] = useState("");
-  const [passwordConfirm, setPasswordConfirm] = useState("");
+  const wallet = useRouterWallet();
   const [stage, setStage] = useState<Stage>("name");
   const [steps, setSteps] = useState<Steps>(IDLE);
   const [error, setError] = useState<string | null>(null);
 
   const trimmed = name.trim();
+  const restoreLog = useCallback(() => getRouterLogs(trimmed, 200), [trimmed]);
   const malformed = trimmed.length > 0 && !ROUTER_ID_PATTERN.test(trimmed);
-  const passwordError = validateNewPassword(password, passwordConfirm);
+  const passwordError = wallet.error;
 
   // Same reason as AddRouterPage: the button alone cannot say why it will not press.
   const blockedReason = !trimmed
@@ -50,10 +59,11 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
       : form.publicNameError
         ? "Fix the public name to continue."
         : (passwordError ??
-        (form.blocked ? "Resolve the warning under Advanced settings to continue." : null));
+        (form.blocked ? form.configError ? "Fix the fidelity bond values to continue." : "Resolve the warning under Advanced settings to continue." : null));
 
   async function create() {
-    const config = !trimmed || malformed || passwordError ? null : form.config(trimmed, password);
+    const config =
+      !trimmed || malformed || passwordError ? null : wallet.fields(form.config(trimmed, wallet.password));
     if (!config) return;
     setStage("creating");
     setError(null);
@@ -79,8 +89,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
       // Portal's own Tor anyway, and a restart moves them.
       await withMinDelay(initRouter({ ...config, ...torPorts }), MIN_STEP_MS);
       setSteps((s) => ({ ...s, create: "passed" }));
-      setPassword("");
-      setPasswordConfirm("");
+      wallet.clear();
       // Created but not yet bonded: setup starts it and walks the deposit.
       navigate(`/router/${encodeURIComponent(trimmed)}/setup`);
     } catch (e) {
@@ -98,6 +107,9 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
         {stage === "name" ? (
           <>
             <div className="p-8 text-left">
+              <div className="mb-4 border-b border-line pb-4">
+                <RouterRestoreChoice wallet={wallet} />
+              </div>
               <TextField
                 label="Router ID"
                 value={name}
@@ -113,29 +125,12 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
               <div className="mt-4">
                 <PublicNameField form={form} routerId={trimmed} />
               </div>
-              <div className="mt-4 flex flex-col gap-3">
-                <PasswordField
-                  label="Wallet password"
-                  autoComplete="new-password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-                <PasswordField
-                  label="Confirm wallet password"
-                  autoComplete="new-password"
-                  required
-                  value={passwordConfirm}
-                  onChange={(e) => setPasswordConfirm(e.target.value)}
-                  error={password || passwordConfirm ? passwordError : undefined}
-                />
-                <p className="text-[11.5px] leading-5 text-subtle">
-                  Portal encrypts every router wallet it creates. This password cannot be recovered
-                  if it is lost.
-                </p>
+              <div className="mt-4">
+                <RouterPasswordFields wallet={wallet} />
               </div>
               <div className="mt-5 flex flex-col gap-4 border-t border-line pt-5">
                 <FidelityFields form={form} />
+                <BondFeeRateField form={form} />
                 <AdvancedFields form={form} routerId={trimmed} />
               </div>
             </div>
@@ -158,9 +153,18 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
               <Checklist
                 steps={[
                   { label: "Checking Tor", state: steps.tor },
-                  { label: `Creating ${trimmed}`, state: steps.create },
+                  { label: `${wallet.restore ? "Restoring" : "Creating"} ${trimmed}`, state: steps.create },
                 ]}
               />
+              {wallet.restore && steps.create === "running" && (
+                <div className="mt-5 border-t border-line pt-5">
+                  <RestoreProgress
+                    load={restoreLog}
+                    finalStep="Registering the router"
+                    note={"This might take several minutes. You can leave this page and come back: the restore keeps running, and the router appears in your router list, ready to start, when it is done."}
+                  />
+                </div>
+              )}
             </div>
             {error && (
               <div className="border-t border-line px-8 py-5 text-left">

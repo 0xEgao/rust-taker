@@ -15,52 +15,13 @@ const MIN_BACKUP_PASSWORD = 8;
  * an encrypted backup, and where it is connected.
  */
 export function WalletFooterCard() {
-  const pushToast = useToastStore((s) => s.push);
-
   const [status, setStatus] = useState<BackendStatus | null>(null);
-  const [open, setOpen] = useState(false);
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [error, setError] = useState<string | undefined>();
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     void checkBackend()
       .then(setStatus)
       .catch(() => setStatus(null));
   }, []);
-
-  function submit() {
-    setError(undefined);
-    if (!password) return setError("Please enter a backup password.");
-    if (password.length < MIN_BACKUP_PASSWORD) {
-      return setError(
-        `Password must be at least ${MIN_BACKUP_PASSWORD} characters.`,
-      );
-    }
-    if (password !== confirm) return setError("Passwords do not match.");
-    void run();
-  }
-
-  async function run() {
-    setBusy(true);
-    try {
-      const displayName = await createBackup(password);
-      pushToast("success", `Encrypted backup created: ${displayName}`);
-      setOpen(false);
-    } catch (e) {
-      // The native save dialog was dismissed; not a failure worth reporting.
-      if ((e as { code?: string })?.code === "USER_CANCELLED") return;
-      pushToast(
-        "error",
-        `Backup failed: ${(e as { message?: string })?.message ?? "unknown error"}`,
-      );
-    } finally {
-      setPassword("");
-      setConfirm("");
-      setBusy(false);
-    }
-  }
 
   return (
     <Card className="border-line-strong">
@@ -101,39 +62,103 @@ export function WalletFooterCard() {
       </div>
 
       <div className="p-5">
-        <p className="text-[12px] leading-5 text-muted">
-          The backup contains your wallet&apos;s keys. Protect it with a strong
-          password and keep that password somewhere safe — the same one is
-          required to restore it.
-        </p>
-        {!open ? (
-          <Button size="sm" className="mt-4" onClick={() => setOpen(true)}>
-            <Save size={14} strokeWidth={2} /> Create backup
-          </Button>
-        ) : (
-          <div className="mt-4">
-            <div className="grid grid-cols-2 gap-3 max-[620px]:grid-cols-1">
-              <PasswordField
-                label="Backup Password"
-                placeholder="Enter password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <PasswordField
-                label="Confirm Password"
-                placeholder="Re-enter password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submit()}
-              />
-            </div>
-            {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
-            <Button size="sm" className="mt-3" onClick={submit} loading={busy}>
-              <Check size={14} strokeWidth={2} /> Confirm &amp; create backup
-            </Button>
-          </div>
-        )}
+        <BackupForm />
       </div>
     </Card>
+  );
+}
+
+/** Password, confirm, then the host saves the encrypted file. Without `routerId` it backs up
+ *  the open wallet. A stopped router's wallet is closed, so it also asks for that password. */
+export function BackupForm({ routerId, routerStopped = false }: { routerId?: string; routerStopped?: boolean }) {
+  const pushToast = useToastStore((s) => s.push);
+
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [walletPassword, setWalletPassword] = useState("");
+  const [error, setError] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
+
+  function submit() {
+    setError(undefined);
+    if (!password) return setError("Please enter a backup password.");
+    if (password.length < MIN_BACKUP_PASSWORD) {
+      return setError(
+        `Password must be at least ${MIN_BACKUP_PASSWORD} characters.`,
+      );
+    }
+    if (password !== confirm) return setError("Passwords do not match.");
+    if (routerStopped && !walletPassword) return setError("Enter the router wallet password.");
+    void run();
+  }
+
+  async function run() {
+    setBusy(true);
+    try {
+      const displayName = await createBackup(password, routerId, routerStopped ? walletPassword : undefined);
+      pushToast("success", `Encrypted backup created: ${displayName}`);
+      setOpen(false);
+    } catch (e) {
+      // The native save dialog was dismissed; not a failure worth reporting.
+      if ((e as { code?: string })?.code === "USER_CANCELLED") return;
+      pushToast(
+        "error",
+        `Backup failed: ${(e as { message?: string })?.message ?? "unknown error"}`,
+      );
+    } finally {
+      setPassword("");
+      setConfirm("");
+      setWalletPassword("");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="text-[12px] leading-5 text-muted">
+        The backup contains {routerId === undefined ? "your wallet's" : "this router wallet's"} keys.
+        Protect it with a strong password and keep that password somewhere safe — the same one
+        is required to restore it.
+      </p>
+      {!open ? (
+        <Button size="sm" className="mt-4" onClick={() => setOpen(true)}>
+          <Save size={14} strokeWidth={2} /> Create backup
+        </Button>
+      ) : (
+        <div className="mt-4">
+          {routerStopped && (
+            <div className="mb-3">
+              <PasswordField
+                label="Router wallet password"
+                autoComplete="current-password"
+                value={walletPassword}
+                onChange={(e) => setWalletPassword(e.target.value)}
+                hint="The router is stopped, so its wallet is opened just for this backup."
+              />
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3 max-[620px]:grid-cols-1">
+            <PasswordField
+              label="Backup Password"
+              placeholder="Enter password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <PasswordField
+              label="Confirm Password"
+              placeholder="Re-enter password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+            />
+          </div>
+          {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
+          <Button size="sm" className="mt-3" onClick={submit} loading={busy}>
+            <Check size={14} strokeWidth={2} /> Confirm &amp; create backup
+          </Button>
+        </div>
+      )}
+    </>
   );
 }

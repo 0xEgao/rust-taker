@@ -11,8 +11,10 @@ use portal_core::state::AppState;
 use portal_core::types::*;
 
 #[tauri::command]
-pub fn list_makers() -> Result<Vec<MakerSettingsDto>, AppError> {
-    maker_settings::list_makers()
+pub fn list_makers(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<MakerSettingsDto>, AppError> {
+    maker_settings::list_makers(&state)
 }
 
 #[tauri::command]
@@ -31,7 +33,17 @@ pub fn import_dashboard_makers(router_ids: Vec<String>) -> Result<Vec<MakerSetti
 }
 
 #[tauri::command]
-pub fn clear_maker_settings(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<(), AppError> {
+pub async fn check_router_config(settings: MakerSettingsDto) -> Result<Option<String>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || maker_settings::check_router_config(settings))
+        .await
+        .map_err(AppError::internal)?
+}
+
+#[tauri::command]
+pub fn clear_maker_settings(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<(), AppError> {
     maker_settings::clear_maker_settings(&state, router_id)
 }
 
@@ -44,4 +56,3 @@ pub fn get_suggested_maker_ports() -> Result<SuggestedMakerPortsDto, AppError> {
 pub fn check_maker_ports(network_port: u16, rpc_port: u16) -> Result<MakerPortCheckDto, AppError> {
     maker_settings::check_maker_ports(network_port, rpc_port)
 }
-

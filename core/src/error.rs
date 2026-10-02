@@ -251,9 +251,14 @@ impl From<WalletError> for AppError {
             } => serde_json::json!({ "available": available, "required": required }).into(),
             _ => None,
         };
+        // `General` already carries a sentence; its debug form wraps it in `General("…")`.
+        let message = match &e {
+            WalletError::General(message) => message.clone(),
+            _ => format!("{e:?}"),
+        };
         Self {
             code,
-            message: format!("{e:?}"),
+            message,
             details,
         }
     }

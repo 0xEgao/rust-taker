@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   CircleDollarSign,
   Copy,
   LockKeyhole,
@@ -21,14 +22,16 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import {
+  checkRouterConfig,
   checkTor,
+  getRouterDefaults,
   clearRouterSettings,
-  estimateFees,
   getBtcPrice,
   getRouterBalances,
   getRouterInfo,
   getRouterLogs,
   getRouterNewAddress,
+  listRouterAddresses,
   getRouterStatus,
   getSavedRouterSettings,
   listRouterFidelityBonds,
@@ -39,9 +42,11 @@ import {
   syncRouterWallet,
   updateRouterSettings,
 } from "../../api/commands";
+import { chosenFeeRate, type FeeChoice, useFeeEstimate } from "../../lib/fee-rate";
+import { BackupForm } from "../wallet/WalletBackupCard";
+import { AddressList } from "../../components/app/AddressList";
 import { isAppError } from "../../api/types";
 import type {
-  FeeEstimate,
   AddressType,
   Balances,
   FidelityBond,
@@ -49,6 +54,7 @@ import type {
   RouterStatus,
   RouterSwapReportSummary,
   UtxoEntry,
+  WalletAddress,
   WalletInfo,
 } from "../../api/types";
 import {
@@ -64,6 +70,7 @@ import {
 } from "../../components/ui/display";
 import {
   Button,
+  FeeRateField,
   LinkButton,
   PasswordField,
   TextField,
@@ -73,6 +80,7 @@ import {
 } from "../../components/ui/inputs";
 import { copyText } from "../../lib/clipboard";
 import {
+  formatNumber,
   formatRelativeTime,
   formatUnitAmount,
   type Unit,
@@ -383,7 +391,9 @@ function RouterSendPanel({
 }) {
   const pushToast = useToastStore((state) => state.push);
   const [recipient, setRecipient] = useState("");
-  const [feeRate, setFeeRate] = useState("2");
+  const { fees, failed: feesFailed, retry: retryFees } = useFeeEstimate();
+  const [feeChoice, setFeeChoice] = useState<FeeChoice>("medium");
+  const [customFeeRate, setCustomFeeRate] = useState("");
   const [sending, setSending] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
@@ -391,10 +401,7 @@ function RouterSendPanel({
     useUnitAmount(btcPrice);
   const [btcPriceCached, setBtcPriceCached] = useState(false);
 
-  const [fees, setFees] = useState<FeeEstimate | null>(null);
-
-  // Best-effort, as on the wallet's Send: without a price only the USD option is unavailable,
-  // and without a mempool quote only the hint.
+  // Best-effort, as on the wallet's Send: without a price only the USD option is unavailable.
   useEffect(() => {
     void getBtcPrice()
       .then((p) => {
@@ -402,24 +409,15 @@ function RouterSendPanel({
         setBtcPriceCached(p.cached);
       })
       .catch(() => setBtcPrice(null));
-    void estimateFees()
-      .then(setFees)
-      .catch(() => setFees(null));
   }, []);
-  // The wallet's Send rounds the quote the same way: the midpoint, in whole sats/vB.
-  const mempoolRate = fees === null ? null : Math.round((fees.low + fees.high) / 2);
 
   const spendable = utxos
     .filter((u) => u.spendable && u.solvable)
     .reduce((sum, u) => sum + u.amountSats, 0);
   const otherUnits = (["sats", "btc", "usd"] as Unit[]).filter((u) => u !== unit);
-  const rate = Number(feeRate);
+  const rate = chosenFeeRate(fees, feeChoice, customFeeRate);
   const blocked =
-    recipient.trim().length === 0 ||
-    amountSats <= 0 ||
-    amountSats > spendable ||
-    !Number.isFinite(rate) ||
-    rate <= 0;
+    recipient.trim().length === 0 || amountSats <= 0 || amountSats > spendable || rate <= 0;
 
   async function send() {
     setConfirming(false);
@@ -492,19 +490,18 @@ function RouterSendPanel({
             <span>{formatUnitAmount(amountSats, otherUnits[1], btcPrice) ?? "—"}</span>
           </div>
         )}
-        <TextField
-          label="Fee rate (s/vB)"
-          inputMode="decimal"
-          value={feeRate}
-          onChange={(e) => setFeeRate(e.target.value)}
-          hint={
-            mempoolRate === null
-              ? undefined
-              : Number(feeRate) < mempoolRate
-                ? `The mempool is asking about ${mempoolRate} s/vB — this rate will be slow to confirm.`
-                : `Mempool right now: ${mempoolRate} s/vB.`
-          }
-        />
+        <div className="flex flex-col gap-2">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Fee rate</span>
+          <FeeRateField
+            fees={fees}
+            failed={feesFailed}
+            onRetry={retryFees}
+            choice={feeChoice}
+            onChoice={setFeeChoice}
+            custom={customFeeRate}
+            onCustom={setCustomFeeRate}
+          />
+        </div>
         <Button className="w-full" disabled={blocked} loading={sending} onClick={() => setConfirming(true)}>
           Send
         </Button>
@@ -540,10 +537,10 @@ function RouterSendPanel({
               <span className="font-numeric text-[12.5px] text-foreground">{rate} s/vB</span>
             </span>
           </div>
-          {(fees && fees.high > 0 ? rate > fees.high * 3 : rate > 100) && (
+          {(fees?.fast ? rate > fees.fast * 3 : rate > 100) && (
             <p className="text-[11.5px] leading-5 text-warning">
-              {fees && fees.high > 0
-                ? `This rate is ${Math.round(rate / fees.high)}× what the mempool is asking right now.`
+              {fees?.fast
+                ? `This rate is ${Math.round(rate / fees.fast)}× the chain server's fast estimate.`
                 : `${rate} s/vB is far above a normal rate.`}{" "}
               Check it before broadcasting.
             </p>
@@ -567,12 +564,33 @@ function WalletPanel({
   running: boolean;
 }) {
   const { utxos, transactions, addresses } = useRouterWalletSnapshot(routerId);
+  const [addressesOpen, setAddressesOpen] = useState(false);
+  const [walletAddresses, setWalletAddresses] = useState<WalletAddress[] | null>(null);
   const [addressType, setAddressType] = useState<AddressType>("p2tr");
   const [addressError, setAddressError] = useState<string | null>(null);
   const address = addresses[addressType] ?? null;
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const pushToast = useToastStore((state) => state.push);
+  const utxoKey = JSON.stringify(utxos
+    .map((u) => [u.txid, u.vout, u.amountSats, u.confirmations > 0, u.address, u.derivationPath])
+    .sort());
+  const addressKey = JSON.stringify(addresses);
+  // Re-read when balances, confirmation status or issued addresses change, not every poll.
+  useEffect(() => {
+    if (!addressesOpen || !running) return;
+    let live = true;
+    void listRouterAddresses(routerId)
+      .then((list) => live && setWalletAddresses(list))
+      .catch((e) => {
+        if (!live) return;
+        setWalletAddresses([]);
+        pushToast("error", (e as { message?: string })?.message ?? "Failed to list addresses.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [addressesOpen, running, routerId, utxoKey, addressKey, pushToast]);
   useEffect(() => {
     setQrDataUrl(null);
     if (!address) return;
@@ -601,8 +619,12 @@ function WalletPanel({
     if (!running) return;
     await refreshRouterWallet(routerId).catch(() => {});
   }, [routerId, running]);
+  // The backend syncs a running router every 2 minutes; without re-reading, a payment it has
+  // already found stays off this tab until a manual refresh.
   useEffect(() => {
     void load();
+    const timer = setInterval(() => void load(), 30_000);
+    return () => clearInterval(timer);
   }, [load]);
 
   // Asked again whenever the transactions reload, since that is when a payment to the address
@@ -712,6 +734,20 @@ function WalletPanel({
               className={copied ? "text-success" : ""}
               icon={copied ? <Check size={14} strokeWidth={2} /> : <Copy size={14} strokeWidth={1.8} />}
             />
+          </div>
+        )}
+        <button
+          type="button"
+          aria-expanded={addressesOpen}
+          onClick={() => setAddressesOpen((open) => !open)}
+          className="mt-4 flex items-center gap-1.5 border-t border-dashed border-line pt-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle hover:text-foreground"
+        >
+          <ChevronDown size={12} strokeWidth={2.5} />
+          Addresses
+        </button>
+        {addressesOpen && (
+          <div className="mt-2">
+            <AddressList addresses={walletAddresses} csvName={`${routerId}-addresses.csv`} />
           </div>
         )}
       </Card>
@@ -875,15 +911,10 @@ function parseSettingsForm(
     return "Ports must be between 1 and 65535.";
   if (new Set(ports).size !== ports.length)
     return "Network and RPC ports must be different.";
-  if (values.fidelityAmount < 1)
-    return "Fidelity amount must be greater than zero.";
   if (values.requiredConfirms < 1)
     return "Required confirmations must be at least one.";
   if (values.fidelityFeerate < 1)
     return "Fidelity fee rate must be at least 1 sat/vB.";
-  if (values.fidelityTimelock < 12_960 || values.fidelityTimelock > 25_920) {
-    return "Fidelity timelock must be between 12,960 and 25,920 blocks.";
-  }
   const nameError = routerNameError(form.name);
   if (nameError) return `Public name: ${nameError}`;
   return { ...settings, ...values, name: form.name.trim() };
@@ -918,6 +949,15 @@ function SettingsPanel({
   const [restartPending, setRestartPending] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const bondFees = useFeeEstimate();
+  const [minBond, setMinBond] = useState<number | null>(null);
+  useEffect(() => {
+    void getRouterDefaults()
+      .then((d) => setMinBond(d.minFidelityAmount ?? null))
+      .catch(() => {});
+  }, []);
+  // Starts on Custom showing the saved rate: opening Settings must not change it.
+  const [bondFeeChoice, setBondFeeChoice] = useState<FeeChoice>("custom");
   useEffect(() => setForm(settingsToForm(settings)), [routerId]);
   useEffect(() => {
     void checkTor()
@@ -931,7 +971,27 @@ function SettingsPanel({
 
   const displayName = settings.name || routerId;
   const parsed = parseSettingsForm(settings, form);
-  const error = typeof parsed === "string" ? parsed : null;
+  // The crate's own config check, asked as values change: its limits are not public, and
+  // otherwise its refusal would only surface when the router next starts.
+  const [crateError, setCrateError] = useState<string | null>(null);
+  const parsedKey = typeof parsed === "string" ? null : JSON.stringify(parsed);
+  useEffect(() => {
+    if (parsedKey === null) {
+      setCrateError(null);
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      void checkRouterConfig(JSON.parse(parsedKey) as RouterSettings)
+        .then((verdict) => live && setCrateError(verdict))
+        .catch(() => live && setCrateError(null));
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [parsedKey]);
+  const error = typeof parsed === "string" ? parsed : crateError;
   const dirty =
     form.name !== settings.name ||
     EDITABLE_SETTING_KEYS.some((key) => form[key] !== String(settings[key]));
@@ -1037,7 +1097,7 @@ function SettingsPanel({
   }
 
   function requestSave() {
-    if (typeof parsed === "string" || transitioning) return;
+    if (typeof parsed === "string" || crateError !== null || transitioning) return;
     setConfirmSave(true);
   }
 
@@ -1145,13 +1205,29 @@ function SettingsPanel({
         >
           <div className="col-span-2 max-[620px]:col-span-1">
             <SummaryGroup title="Bond defaults">
-              {row("fidelityAmount", "Target amount", { suffix: "sats" })}
-              {row("fidelityTimelock", "Timelock", { suffix: "blocks" })}
-              {row("fidelityFeerate", "Fee rate", {
-                suffix: "sat/vB",
-                inputMode: "decimal",
+              {row("fidelityAmount", "Target amount", {
+                suffix: "sats",
+                hint: minBond !== null ? `Minimum ${formatNumber(minBond)} sats` : undefined,
               })}
+              {row("fidelityTimelock", "Timelock", { suffix: "blocks" })}
             </SummaryGroup>
+            <div className="mt-4 flex flex-col gap-2">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Bond fee rate</span>
+              <FeeRateField
+                fees={bondFees.fees}
+                failed={bondFees.failed}
+                onRetry={bondFees.retry}
+                choice={bondFeeChoice}
+                onChoice={(choice) => {
+                  setBondFeeChoice(choice);
+                  const rate = chosenFeeRate(bondFees.fees, choice, form.fidelityFeerate);
+                  if (choice !== "custom" && rate > 0)
+                    setForm((current) => ({ ...current, fidelityFeerate: String(rate) }));
+                }}
+                custom={form.fidelityFeerate}
+                onCustom={(value) => setForm((current) => ({ ...current, fidelityFeerate: value }))}
+              />
+            </div>
           </div>
         </SettingsSection>
       </div>
@@ -1483,7 +1559,7 @@ export function RouterWorkspacePage() {
             </div>
           </div>
           <div className="flex gap-2">
-            {phase === "starting" && (
+            {phase === "starting" && status?.hasBond === false && (
               <LinkButton to={`/router/${encodeURIComponent(id)}/setup`} variant="secondary">
                 Continue setup
               </LinkButton>
@@ -1531,14 +1607,25 @@ export function RouterWorkspacePage() {
         </div>
         <main className={`mt-5 ${fitScreen ? "flex min-h-0 flex-1 flex-col" : ""}`}>
           {tab === "overview" && (
-            <OverviewPanel
-              status={status}
-              settings={settings}
-              info={info}
-              balances={balances}
-              bonds={bonds}
-              reports={reports}
-            />
+            <div className="flex flex-col gap-4 pb-16">
+              <OverviewPanel
+                status={status}
+                settings={settings}
+                info={info}
+                balances={balances}
+                bonds={bonds}
+                reports={reports}
+              />
+              <Card className="border-line-strong">
+                <div className="border-b border-line px-5 py-4">
+                  <h2 className="font-header text-[14px] font-bold">Wallet backup</h2>
+                  <p className="mt-1 text-[11px] text-muted">An encrypted export of this router&apos;s wallet</p>
+                </div>
+                <div className="p-5">
+                  <BackupForm routerId={id} routerStopped={!running} />
+                </div>
+              </Card>
+            </div>
           )}
           {tab === "wallet" && <WalletPanel routerId={id} running={running} />}
           {tab === "logs" && <LogsPanel routerId={id} />}

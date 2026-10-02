@@ -23,10 +23,11 @@ import {
   getSwapProgress,
   getSwapTracker,
   cancelSwap,
-  prepareSwap,
   startSwap,
 } from "../../api/commands";
 import { isAppError } from "../../api/types";
+import { chosenFeeRate, type FeeChoice, useFeeEstimate } from "../../lib/fee-rate";
+import { useSwapPrepare } from "../../store/swap-prepare";
 import type {
   SwapPreparation,
   AppError,
@@ -52,6 +53,7 @@ import {
 } from "../../components/ui/display";
 import {
   Button,
+  FeeRateField,
   PresetTile,
   SegmentedToggle,
   TextField,
@@ -91,11 +93,14 @@ function EstimatedSats({
 // A blocking prepare takes tens of seconds; this only reads a local file.
 const PREPARATION_POLL_MS = 1_200;
 
-const ROUTER_COUNT_PRESETS = [2, 3, 4] as const;
+const ROUTER_COUNT_PRESETS = [1, 2, 3] as const;
+/** The Custom tile's own value; its count comes from the text field. */
+const CUSTOM_ROUTER_COUNT = 4;
 
-/** `SwapParams::new`'s own default and `MAX_TX_COUNT`; the backend rejects anything outside. */
-const DEFAULT_TX_COUNT = 2;
+/** `MAX_TX_COUNT`; the backend rejects anything outside 1..=10. */
+const DEFAULT_TX_COUNT = 1;
 const MAX_TX_COUNT = 10;
+
 
 const FUNDING_RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
 
@@ -140,9 +145,8 @@ export function SwapPage() {
       spendable: balances.spendable,
       regular: balances.regular,
       swap: balances.swap,
-      maxSwappable:
-        Math.max(balances.regular, balances.swap) -
-        Math.min(3000, Math.max(balances.regular, balances.swap)),
+      // One swap is funded from one kind of coin, never both together.
+      maxSwappable: Math.max(balances.regular, balances.swap),
     };
   }, [balances]);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
@@ -160,6 +164,9 @@ export function SwapPage() {
   const [fundingEstimateStatus, setFundingEstimateStatus] = useState<
     "idle" | "loading" | "retrying" | "ready" | "error"
   >("idle");
+  // What the funding plan needs and has, when the wallet cannot cover it: waiting never fixes
+  // that, so it is shown at once instead of retried.
+  const [shortfall, setShortfall] = useState<{ available: number; required: number } | null>(null);
   // Bumped by the summary's Retry to re-arm the quote with a fresh attempt budget.
   const [fundingAttempt, setFundingAttempt] = useState(0);
   // Compared against the quote's own rate rather than a literal 2: the protocol's fixed rate
@@ -169,9 +176,13 @@ export function SwapPage() {
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [protocol, setProtocol] = useState<ProtocolVersion>("taproot");
   const [routerCount, setRouterCount] = useState(2);
-  const [customRouterCount, setCustomRouterCount] = useState("5");
+  const [customRouterCount, setCustomRouterCount] = useState(String(CUSTOM_ROUTER_COUNT));
   const [selectedRouters, setSelectedRouters] = useState<string[]>([]);
   const [txCount, setTxCount] = useState(DEFAULT_TX_COUNT);
+  const [feeKey, setFeeKey] = useState<FeeChoice>("medium");
+  const [customFeeRate, setCustomFeeRate] = useState("");
+  const { fees, failed: feesFailed, retry: retryFees } = useFeeEstimate();
+  const feeRate = chosenFeeRate(fees, feeKey, customFeeRate, true);
   const [destination, setDestination] = useState<"wallet" | "address">("wallet");
   const [paymentAddress, setPaymentAddress] = useState("");
 
@@ -181,10 +192,11 @@ export function SwapPage() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [failure, setFailure] = useState<AppError | null>(null);
   const [tracker, setTracker] = useState<SwapTrackerProgress | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [preparingSince, setPreparingSince] = useState<number | null>(null);
+  const prepare = useSwapPrepare();
+  const preparingSince = prepare.since;
+  const submitting = preparingSince !== null;
+  const review = prepare.review;
   const [preparation, setPreparation] = useState<SwapPreparation | null>(null);
-  const [review, setReview] = useState<SwapSummary | null>(null);
   const [reviewExpired, setReviewExpired] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -429,8 +441,8 @@ export function SwapPage() {
 
   const effectiveRouterCount = manualRouters
     ? selectedRouters.length
-    : routerCount === 5
-      ? Math.max(2, Number(customRouterCount) || 5)
+    : routerCount === CUSTOM_ROUTER_COUNT
+      ? Math.max(1, Number(customRouterCount) || CUSTOM_ROUTER_COUNT)
       : routerCount;
 
   const estimateRouters = useMemo(() => {
@@ -445,7 +457,7 @@ export function SwapPage() {
   useEffect(() => {
     let cancelled = false;
     setFundingEstimate(null);
-    if (amountSats <= 0) {
+    if (amountSats <= 0 || feeRate < 1) {
       setFundingEstimateStatus("idle");
       return () => {
         cancelled = true;
@@ -455,19 +467,30 @@ export function SwapPage() {
     let timer: ReturnType<typeof setTimeout>;
     const run = () => {
       setFundingEstimateStatus("loading");
+      setShortfall(null);
       const outpoints =
         manualCoins && selectedOutpoints.length > 0
           ? selectedOutpoints
           : undefined;
-      void estimateSwapFunding(amountSats, protocol, outpoints, txCount)
+      void estimateSwapFunding(amountSats, protocol, outpoints, txCount, feeRate)
         .then((estimate) => {
           if (cancelled) return;
           setFundingEstimate(estimate);
           setFundingEstimateStatus("ready");
         })
-        .catch(() => {
+        .catch((e: unknown) => {
           if (cancelled) return;
           setFundingEstimate(null);
+          if (isAppError(e) && e.code === "INSUFFICIENT_FUNDS") {
+            const details = e.details as { available?: number; required?: number } | undefined;
+            setShortfall(
+              typeof details?.available === "number" && typeof details.required === "number"
+                ? { available: details.available, required: details.required }
+                : null,
+            );
+            setFundingEstimateStatus("error");
+            return;
+          }
           // A quote most often fails because a long sync is holding the wallet lock, which
           // clears on its own — so back off and try again rather than leaving the summary
           // blank with no way forward. Manual Retry re-arms this budget.
@@ -487,7 +510,7 @@ export function SwapPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [amountSats, protocol, manualCoins, selectedOutpoints, txCount, fundingAttempt]);
+  }, [amountSats, protocol, manualCoins, selectedOutpoints, txCount, feeRate, fundingAttempt]);
 
   const feeSummary = useMemo(() => {
     const hasCompleteRoute =
@@ -547,27 +570,36 @@ export function SwapPage() {
     }
     if (amountInput.length > 0 && amountSats <= 0)
       list.push("Enter a valid amount.");
+    if (feeRate < 1 && (feeKey === "custom" || feesFailed))
+      list.push("Choose a fee rate: whole sats/vB, at least 1.");
     if (amountSats > 0 && liquidity && amountSats > liquidity.maxSwappable)
       list.push("Amount exceeds your swappable balance.");
     if (manualCoins && selectedTotal < amountSats)
       list.push("Selected UTXOs don't cover the swap amount.");
-    if (destination === "address") {
-      if (amountSats > 0 && amountSats < 10_000)
-        list.push("Payment amount is below what routers will route.");
-    } else if (
+    // Each incoming contract is swept to its own output, and each has to clear dust.
+    const dustFloor = fundingEstimate
+      ? fundingEstimate.receiveDustSats * fundingEstimate.incomingUtxoCount
+      : null;
+    if (
+      destination !== "address" &&
       amountSats > 0 &&
       feeSummary.receiveAmount !== null &&
-      feeSummary.receiveAmount < 10_000
+      feeSummary.totalFee !== null &&
+      fundingEstimate !== null &&
+      dustFloor !== null &&
+      feeSummary.receiveAmount < dustFloor
     ) {
-      list.push("Estimated receive amount is too small after fees.");
+      // What comes off the routed amount; the funding fee is paid on top of it. Rounded up to a
+      // hundred so the routers' percentage fees, which grow with the amount, are still covered.
+      const deductions = feeSummary.totalFee - fundingEstimate.feeSats;
+      const minimum = Math.ceil((deductions + dustFloor) / 100) * 100;
+      list.push(
+        `After fees you would receive about ${formatNumber(feeSummary.receiveAmount)} sats, below the ${formatNumber(dustFloor)}-sat dust limit. Enter at least ${formatNumber(minimum)} sats${feeKey === "slow" ? "" : ", or choose a lower fee rate"}.`,
+      );
     }
     if (destination === "address" && paymentAddress.trim().length === 0)
       list.push("Enter the address this swap should pay.");
-    if (manualRouters && selectedRouters.length < 2) {
-      list.push("Pin at least two routers, or untick them all to auto-select.");
-    } else if (effectiveRouterCount < 2) {
-      list.push("A Portal route requires at least two routers.");
-    }
+    if (effectiveRouterCount < 1) list.push("Choose at least one router.");
     if (compatibleRouters.length === 0) {
       list.push(`No compatible ${protocol} routers found in the offerbook.`);
     } else if (!manualRouters && effectiveRouterCount > compatibleRouters.length) {
@@ -579,6 +611,9 @@ export function SwapPage() {
   }, [
     amountInput,
     amountSats,
+    feeRate,
+    feeKey,
+    feesFailed,
     destination,
     paymentAddress,
     liquidity,
@@ -586,6 +621,8 @@ export function SwapPage() {
     selectedOutpoints,
     selectedTotal,
     feeSummary.receiveAmount,
+    feeSummary.totalFee,
+    fundingEstimate,
     manualRouters,
     selectedRouters,
     compatibleRouters,
@@ -657,44 +694,51 @@ export function SwapPage() {
       );
       return;
     }
-    setPreparingSince(Math.floor(Date.now() / 1000));
-    setSubmitting(true);
-    try {
-      const request: SwapRequest = {
-        protocol,
-        amountSats,
-        routerCount: effectiveRouterCount,
-        outpoints:
-          manualCoins && selectedOutpoints.length > 0
-            ? selectedOutpoints
-            : undefined,
-        preferredRouters:
-          manualRouters && selectedRouters.length > 0
-            ? selectedRouters
-            : undefined,
-        txCount,
-        paymentAddress:
-          destination === "address" ? paymentAddress.trim() : undefined,
-      };
-      setReview(await prepareSwap(request));
-    } catch (e) {
-      const err = isAppError(e) ? e : null;
-      pushToast("error", err?.message ?? "Failed to start swap.");
-    } finally {
-      setSubmitting(false);
-    }
+    const request: SwapRequest = {
+      protocol,
+      amountSats,
+      routerCount: effectiveRouterCount,
+      outpoints:
+        manualCoins && selectedOutpoints.length > 0
+          ? selectedOutpoints
+          : undefined,
+      preferredRouters:
+        manualRouters && selectedRouters.length > 0
+          ? selectedRouters
+          : undefined,
+      txCount,
+      feeRate,
+      paymentAddress:
+        destination === "address" ? paymentAddress.trim() : undefined,
+    };
+    prepare.run(request);
   }
 
+  // A preparation that failed while this page was away still owes its message.
+  const { error: prepareError, clearError: clearPrepareError } = prepare;
+  useEffect(() => {
+    if (!prepareError) return;
+    pushToast("error", prepareError);
+    clearPrepareError();
+  }, [prepareError, clearPrepareError, pushToast]);
+
+  // Counted from when the review arrived, which may have been while this page was away.
+  const reviewAt = prepare.reviewAt;
   useEffect(() => {
     setReviewExpired(false);
-    if (!review) return;
-    const id = setTimeout(() => setReviewExpired(true), REVIEW_TTL_MS);
+    if (reviewAt === null) return;
+    const remaining = REVIEW_TTL_MS - (Date.now() - reviewAt);
+    if (remaining <= 0) {
+      setReviewExpired(true);
+      return;
+    }
+    const id = setTimeout(() => setReviewExpired(true), remaining);
     return () => clearTimeout(id);
-  }, [review]);
+  }, [reviewAt]);
 
   function cancelReview() {
     if (review) void cancelSwap(review.swapId).catch(() => {});
-    setReview(null);
+    prepare.clearReview();
   }
 
   async function confirmSwap() {
@@ -706,7 +750,7 @@ export function SwapPage() {
       setSwapId(review.swapId);
       setStartedAt(Math.floor(Date.now() / 1000));
       setPhase("running");
-      setReview(null);
+      prepare.clearReview();
     } catch (e) {
       const err = isAppError(e) ? e : null;
       pushToast("error", err?.message ?? "Failed to start swap.");
@@ -1237,13 +1281,13 @@ export function SwapPage() {
                 />
               ))}
               <PresetTile
-                onClick={() => pickRouterCount(5)}
-                selected={!manualRouters && routerCount === 5}
+                onClick={() => pickRouterCount(CUSTOM_ROUTER_COUNT)}
+                selected={!manualRouters && routerCount === CUSTOM_ROUTER_COUNT}
                 label="Custom"
-                value="5+"
+                value={`${CUSTOM_ROUTER_COUNT}+`}
               />
             </div>
-            {!manualRouters && routerCount === 5 && (
+            {!manualRouters && routerCount === CUSTOM_ROUTER_COUNT && (
               <TextField
                 label="Number of routers"
                 inputMode="numeric"
@@ -1256,6 +1300,22 @@ export function SwapPage() {
                 ? `Route pinned to ${selectedRouters.length} specific router${selectedRouters.length === 1 ? "" : "s"} in advanced options — pick a count to go back to automatic.`
                 : "More routers means stronger privacy and higher fees."}
             </p>
+          </div>
+
+          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
+            <h2 className="font-header text-[13.5px] font-bold text-foreground">
+              Fee Rate
+            </h2>
+            <FeeRateField
+              fees={fees}
+              failed={feesFailed}
+              onRetry={retryFees}
+              choice={feeKey}
+              onChoice={setFeeKey}
+              custom={customFeeRate}
+              onCustom={setCustomFeeRate}
+              whole
+            />
           </div>
 
           <div className="flex flex-col gap-2 border-t border-line pt-5">
@@ -1321,7 +1381,14 @@ export function SwapPage() {
                             onChange={() => toggleRouter(m.address)}
                             className="accent-primary"
                           />
-                          <span className="font-mono text-[11px] leading-[1.45] text-muted">{routerName(m.address)}</span>
+                          {m.offer?.name ? (
+                            <span className="flex min-w-0 flex-col leading-[1.35]">
+                              <span className="truncate text-[12px] font-semibold text-foreground">{m.offer.name}</span>
+                              <span className="truncate font-mono text-[10.5px] text-subtle">{routerName(m.address)}</span>
+                            </span>
+                          ) : (
+                            <span className="font-mono text-[11px] leading-[1.45] text-muted">{routerName(m.address)}</span>
+                          )}
                         </span>
                         <span className="flex flex-none items-center gap-2 font-mono text-[11px] text-subtle">
                           {m.offer?.amountRelativeFeePct.toFixed(3)}%
@@ -1488,9 +1555,9 @@ export function SwapPage() {
             {fundingEstimateStatus === "error" && (
               <div className="flex flex-col gap-2 rounded-control border border-warning/35 bg-warning/[0.06] px-3 py-2.5">
                 <p className="text-[11.5px] leading-4 text-warning">
-                  The wallet couldn't quote a funding transaction for this amount and coin
-                  selection, so the mining-fee rows are blank. Router fees come from the
-                  offerbook and are unaffected.
+                  {shortfall
+                    ? `Not enough funds: this amount plus its funding transaction's mining fee needs ${shortfall.required.toLocaleString("en-US")} sats, and the wallet can spend ${shortfall.available.toLocaleString("en-US")}.`
+                    : "The wallet couldn't quote a funding transaction for this amount and coin selection, so the mining-fee rows are blank. Router fees come from the offerbook and are unaffected."}
                 </p>
                 <div>
                   <Button

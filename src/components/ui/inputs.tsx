@@ -1,6 +1,9 @@
 import { ArrowRight, Check, Eye, EyeOff } from "lucide-react";
 import { motion } from "framer-motion";
 import { Link, type LinkProps } from "react-router-dom";
+import type { FeeEstimate } from "../../api/types";
+import { chosenFeeRate, FEE_TIERS, MAX_FEE_RATE, type FeeChoice } from "../../lib/fee-rate";
+import { formatFeeRate } from "../../lib/wallet-format";
 import {
   useId,
   useState,
@@ -238,6 +241,78 @@ export function PresetTile({
         </strong>
       )}
     </button>
+  );
+}
+
+/** Fast / Medium / Slow from the chain server's estimator, or a custom rate. */
+export function FeeRateField({
+  fees,
+  failed,
+  onRetry,
+  choice,
+  onChoice,
+  custom,
+  onCustom,
+  whole = false,
+}: {
+  fees: FeeEstimate | null;
+  failed: boolean;
+  onRetry: () => void;
+  choice: FeeChoice;
+  onChoice: (choice: FeeChoice) => void;
+  custom: string;
+  onCustom: (value: string) => void;
+  whole?: boolean;
+}) {
+  const shown = (rate: number) =>
+    rate > 0 ? `${formatFeeRate(rate)} s/vB` : fees === null && !failed ? "…" : "—";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-4 gap-2">
+        {FEE_TIERS.map(({ key, label }) => (
+          <PresetTile
+            key={key}
+            size="sm"
+            label={label}
+            value={shown(chosenFeeRate(fees, key, "", whole))}
+            selected={choice === key}
+            onClick={() => onChoice(key)}
+          />
+        ))}
+        <PresetTile
+          size="sm"
+          label="Custom"
+          value={chosenFeeRate(fees, "custom", custom, whole) > 0 ? `${custom.trim()} s/vB` : "—"}
+          selected={choice === "custom"}
+          onClick={() => onChoice("custom")}
+        />
+      </div>
+      {failed && (
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[11.5px] text-subtle">
+            Could not read a fee estimate from the chain server.
+          </span>
+          <Button size="sm" variant="ghost" onClick={onRetry}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {choice === "custom" && (
+        <TextField
+          label="Custom rate (sats/vB)"
+          inputMode={whole ? "numeric" : "decimal"}
+          placeholder="e.g. 8"
+          value={custom}
+          onChange={(e) => onCustom(e.target.value)}
+          error={
+            Number(custom) > MAX_FEE_RATE
+              ? `At most ${MAX_FEE_RATE} sats/vB; anything higher is almost certainly a typo.`
+              : undefined
+          }
+          hint={whole ? "Whole sats/vB only." : undefined}
+        />
+      )}
+    </div>
   );
 }
 

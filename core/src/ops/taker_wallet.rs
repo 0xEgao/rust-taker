@@ -20,16 +20,20 @@ use uuid::Uuid;
 
 use crate::storage::{self, resolve_data_dir, wallet_path};
 
-use crate::ops::chain_backend;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
+use crate::ops::chain_backend;
 use crate::security::input::validate_leaf_name;
 use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
 use crate::state::{AppState, PendingFileSelection, TakerInstance, TakerSlot};
 use crate::types::{
-    AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
-    InitResult, NewAddress, Outpoint, PathsDto, PriceEstimate, RestoreSelectionView, SendResult,
-    SendFeeEstimate, SessionStateDto, TxSummary, UtxoEntry, WalletInfo, WalletListing,
+    AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, InitConfig, InitResult,
+    NewAddress, Outpoint, PathsDto, PriceEstimate, RestoreSelectionView, SendFeeEstimate,
+    SendResult, SessionStateDto, TxSummary, UtxoEntry, WalletAddressDto, WalletInfo, WalletListing,
 };
+
+/// Portal's guard against a mistyped fee rate, for swaps and sends alike: the crate takes any
+/// rate, and a few hundred sats/vB is already far past any real mempool.
+pub(crate) const MAX_FEE_RATE: f64 = 500.0;
 
 /// The price moves far slower than anyone reads it, so one fetch serves every caller for a
 /// while. Memory only: after a restart the first caller fetches it again.
@@ -140,14 +144,20 @@ pub async fn init_taker(
             // Bound while waiting, so this session sees the other one's init progress too. Only
             // for events: `taker_for` still refuses it until the join has checked its password.
             OpenStep::Wait => {
-                state.bindings.lock()?.insert(session.to_string(), key.clone());
+                state
+                    .bindings
+                    .lock()?
+                    .insert(session.to_string(), key.clone());
                 tokio::time::sleep(OPENING_POLL).await;
             }
             OpenStep::Init => break,
         }
     }
 
-    state.bindings.lock()?.insert(session.to_string(), key.clone());
+    state
+        .bindings
+        .lock()?
+        .insert(session.to_string(), key.clone());
     let opened = open_taker(state, session, &root, &key, config, &tor).await;
     let mut takers = state.takers.lock()?;
     match opened {
@@ -300,7 +310,10 @@ async fn join_taker(
 /// AES-GCM authenticates, so a wrong password cannot decrypt to anything. The encryption check
 /// comes first because without a password the crate reads the file as plaintext, and any CBOR
 /// document — an encrypted one included — parses as "something".
-pub(crate) fn verify_wallet_password(path: &Path, password: Option<String>) -> Result<(), AppError> {
+pub(crate) fn verify_wallet_password(
+    path: &Path,
+    password: Option<String>,
+) -> Result<(), AppError> {
     use openswap::security::{load_sensitive_struct, SecurityError, SerdeCbor};
     let wrong = || AppError::new(ErrorCode::WalletWrongPassword, "incorrect wallet password");
     if password.is_none() {
@@ -348,7 +361,11 @@ async fn check_join_network(
     }
     let (mine, running) = tokio::join!(
         chain_backend::check_backend(session, Some(own.clone()), Some(socks_port)),
-        chain_backend::check_backend(session, Some(taker.chain_backend.clone()), Some(taker.socks_port)),
+        chain_backend::check_backend(
+            session,
+            Some(taker.chain_backend.clone()),
+            Some(taker.socks_port)
+        ),
     );
     let (Some(mine), Some(running)) = (mine?.chain, running?.chain) else {
         return Err(AppError::new(
@@ -358,7 +375,13 @@ async fn check_join_network(
     };
     if mine != running {
         // The backend reports mainnet as "bitcoin", which reads as the currency.
-        let name = |chain: &str| if chain == "bitcoin" { "mainnet".to_string() } else { chain.to_string() };
+        let name = |chain: &str| {
+            if chain == "bitcoin" {
+                "mainnet".to_string()
+            } else {
+                chain.to_string()
+            }
+        };
         let (mine, running) = (name(&mine), name(&running));
         return Err(AppError::new(
             ErrorCode::WalletNetworkMismatch,
@@ -377,7 +400,12 @@ async fn check_join_network(
 /// Takes this session off its wallet. The wallet itself is dropped once no session is left on
 /// it, unless a swap is still running — the swap thread releases it when the swap settles.
 pub fn release_session(state: &Arc<AppState>, session: &str) {
-    let Some(key) = state.bindings.lock().ok().and_then(|mut b| b.remove(session)) else {
+    let Some(key) = state
+        .bindings
+        .lock()
+        .ok()
+        .and_then(|mut b| b.remove(session))
+    else {
         return;
     };
     if let Ok(takers) = state.takers.lock() {
@@ -470,7 +498,10 @@ pub fn shutdown_all(state: &Arc<AppState>) {
             sessions.clear();
         }
         if taker.swap_running() {
-            log::warn!("{} has a swap running; leaving it to the swap thread", taker.wallet_name);
+            log::warn!(
+                "{} has a swap running; leaving it to the swap thread",
+                taker.wallet_name
+            );
             continue;
         }
         release_if_unused(state, &taker.data_dir);
@@ -583,7 +614,10 @@ pub async fn restore_wallet(
     // Portal's backups are always encrypted. Checked before the one-shot file selection is
     // consumed, like the name clash below.
     if password.is_empty() {
-        return Err(AppError::new(ErrorCode::InvalidInput, "enter the backup password"));
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "enter the backup password",
+        ));
     }
     let _operation = SensitiveOperationGuard::acquire(
         &state.sensitive_operation_active,
@@ -607,15 +641,35 @@ pub async fn restore_wallet(
             format!("a wallet named '{wallet_name}' already exists — pick another name"),
         ));
     }
+    let backup = take_restore_selection(state, selection_id, &password).await?;
+    crate::security::fs::ensure_private_dir(&dir)?;
+    crate::security::fs::ensure_private_dir(&dir.join("wallets"))?;
+    let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
+    restore_backup(backup, dir, wallet_name, backend, password).await
+}
+
+/// A backup file a restore has claimed. The upload behind it, if any, is deleted with it.
+pub(crate) struct ChosenBackup {
+    path: PathBuf,
+    _staged: StagedFile,
+}
+
+/// Claims a host-registered backup file. The password is checked first and the selection only
+/// consumed after, so a mistyped password can retry the same file.
+pub(crate) async fn take_restore_selection(
+    state: &Arc<AppState>,
+    selection_id: Uuid,
+    password: &str,
+) -> Result<ChosenBackup, AppError> {
     // The crate only logs a wrong backup password and writes nothing, which reads as a failed
-    // restore. Checked before the selection is consumed, so the same file can be retried.
+    // restore.
     let chosen = state
         .pending_file_selections
         .lock()?
         .get(&selection_id)
         .map(|selection| selection.path.clone());
     if let Some(chosen) = chosen {
-        let check = password.clone();
+        let check = password.to_string();
         tokio::task::spawn_blocking(move || verify_backup_password(&chosen, check))
             .await
             .map_err(AppError::internal)??;
@@ -630,20 +684,29 @@ pub async fn restore_wallet(
                 "restore file selection is missing, expired, or already used",
             )
         })?;
-    // Held to the end of this function, so an upload is gone however the restore ends — it
-    // is the whole encrypted wallet, and nothing needs it once the restore has read it.
-    let _staged = StagedFile(selection.staged.then(|| selection.path.clone()));
+    // The upload is the whole encrypted wallet, and nothing needs it once the restore has read it.
+    let staged = StagedFile(selection.staged.then(|| selection.path.clone()));
     if selection.created_at.elapsed() > Duration::from_secs(300) {
         return Err(AppError::new(
             ErrorCode::InvalidFileSelection,
             "restore file selection expired; choose the file again",
         ));
     }
-    crate::security::fs::ensure_private_dir(&dir)?;
-    crate::security::fs::ensure_private_dir(&dir.join("wallets"))?;
-    let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
-    let backup_path = selection.path;
+    Ok(ChosenBackup {
+        path: selection.path,
+        _staged: staged,
+    })
+}
 
+/// Restores `backup` to `<dir>/wallets/<wallet_name>`, encrypted with the backup's password.
+pub(crate) async fn restore_backup(
+    backup: ChosenBackup,
+    dir: PathBuf,
+    wallet_name: String,
+    backend: openswap::wallet::BackendConfig,
+    password: String,
+) -> Result<(), AppError> {
+    let restored_path = wallet_path(&dir, &wallet_name);
     let log_dir = dir.clone();
     tokio::task::spawn_blocking(move || {
         let _log = crate::logging::wallet_scope(log_dir);
@@ -651,7 +714,7 @@ pub async fn restore_wallet(
             Some(dir),
             Some(wallet_name),
             backend,
-            backup_path,
+            backup.path.clone(),
             Some(password),
         )
     })
@@ -672,12 +735,11 @@ pub async fn restore_wallet(
 /// destination was picked and holds the sensitive-operation guard across the choice, so this
 /// takes the guard rather than acquiring a second one.
 pub async fn write_backup(
-    taker: &TakerInstance,
+    wallet: impl AsRef<RwLock<Wallet>> + Send + 'static,
     _operation: SensitiveOperationGuard,
     destination: PathBuf,
     password: String,
 ) -> Result<String, AppError> {
-    let wallet = taker.wallet.clone();
     // The openswap helper always replaces the selected extension with `.json`.
     // Validate and pre-create that actual target so its first write is private too.
     let destination = destination.with_extension("json");
@@ -700,7 +762,9 @@ pub async fn write_backup(
     crate::security::fs::write_private(&destination, &[])?;
 
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let _operation = _operation;
         wallet
+            .as_ref()
             .read()?
             .backup_wallet_gui_app(destination_path, Some(password))?;
         Ok(())
@@ -859,7 +923,10 @@ pub(crate) fn issue_unused_address(
         // Read under the same lock that derives from it, so no other caller can take this index
         // in between.
         let index = *wallet.get_external_index();
-        (wallet.get_next_external_address(addr_type)?.to_string(), index)
+        (
+            wallet.get_next_external_address(addr_type)?.to_string(),
+            index,
+        )
     };
     let path_str = receive_path(addr_type, &address, index);
     set_cached_slot(&mut cached, addr_type, address.clone(), index);
@@ -887,7 +954,12 @@ fn cached_slot(cached: &LastAddresses, addr_type: AddressType) -> (Option<String
     }
 }
 
-fn set_cached_slot(cached: &mut LastAddresses, addr_type: AddressType, address: String, index: u32) {
+fn set_cached_slot(
+    cached: &mut LastAddresses,
+    addr_type: AddressType,
+    address: String,
+    index: u32,
+) {
     match addr_type {
         AddressType::P2WPKH => {
             cached.p2wpkh = Some(address);
@@ -926,11 +998,19 @@ fn receive_path(addr_type: AddressType, address: &str, index: u32) -> String {
 
 /// The full path of a wallet coin, for the UTXO lists. Seed coins and fidelity bonds have one;
 /// swap and contract coins sit on multisig or timelock scripts rather than an HD key.
-pub(crate) fn utxo_derivation_path(spend_info: &UTXOSpendInfo, address: Option<&str>) -> Option<String> {
+pub(crate) fn utxo_derivation_path(
+    spend_info: &UTXOSpendInfo,
+    address: Option<&str>,
+) -> Option<String> {
     match spend_info {
         // The crate's path is relative to the account (`m/<keychain>/<index>`), so the account
         // part is added here.
-        UTXOSpendInfo::SeedCoin { path, address_type, .. } => {
+        UTXOSpendInfo::SeedCoin {
+            path, address_type, ..
+        }
+        | UTXOSpendInfo::SweptCoin {
+            path, address_type, ..
+        } => {
             let mut parts = path.trim_start_matches("m/").split('/');
             let keychain = parts.next()?.parse().ok()?;
             let index = parts.next()?.parse().ok()?;
@@ -1067,12 +1147,93 @@ impl AddressPaths {
         if let Some(path) = self.issued.get(address) {
             return Some(path.clone());
         }
-        let script = Address::from_str(address).ok()?.assume_checked().script_pubkey();
+        let script = Address::from_str(address)
+            .ok()?
+            .assume_checked()
+            .script_pubkey();
         self.utxos
             .iter()
             .find(|(s, _)| *s == script)
             .and_then(|(_, info)| utxo_derivation_path(info, Some(address)))
     }
+}
+
+pub async fn list_addresses(taker: &TakerInstance) -> Result<Vec<WalletAddressDto>, AppError> {
+    let (wallet, issued_path) = (taker.wallet.clone(), last_address_path(taker));
+    let (backend, socks_port) = (taker.chain_backend.clone(), Some(taker.socks_port));
+    tokio::task::spawn_blocking(move || -> Result<Vec<WalletAddressDto>, AppError> {
+        address_rows(&*wallet.read()?, &issued_path, &backend, socks_port)
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+/// Every receive address Portal handed out, paid or not, and every HD address holding a coin
+/// now, change included. The crate exposes no list of derived addresses, so an emptied change
+/// address cannot be listed: nothing Portal can read still names it.
+pub(crate) fn address_rows(
+    wallet: &Wallet,
+    issued_path: &Path,
+    backend: &crate::types::ChainBackendConfig,
+    socks_port: Option<u16>,
+) -> Result<Vec<WalletAddressDto>, AppError> {
+    // Paths read `m/<purpose>'/<coin>'/0'/<keychain>/<index>`; a row without one is skipped
+    // rather than guessed at.
+    let row = |address: String, path: String| -> Option<(u32, WalletAddressDto)> {
+        let parts: Vec<&str> = path.split('/').collect();
+        let address_type = match *parts.get(1)? {
+            "86'" => "p2tr",
+            "84'" => "p2wpkh",
+            _ => return None,
+        };
+        let change = parts.get(4)? == &"1";
+        let index = parts.get(5)?.parse().ok()?;
+        Some((
+            index,
+            WalletAddressDto {
+                address,
+                address_type: address_type.to_string(),
+                change,
+                derivation_path: path,
+                balance_sats: 0,
+                unconfirmed: false,
+            },
+        ))
+    };
+    let mut rows: HashMap<String, (u32, WalletAddressDto)> = HashMap::new();
+    for (address, path) in load_last_addresses(issued_path).issued {
+        if let Some(entry) = row(address.clone(), path) {
+            rows.insert(address, entry);
+        }
+    }
+    for (utxo, info) in wallet.list_all_utxo_spend_info() {
+        if !matches!(
+            info,
+            UTXOSpendInfo::SeedCoin { .. } | UTXOSpendInfo::SweptCoin { .. }
+        ) {
+            continue;
+        }
+        // Electrum listings carry no address; the UTXO list rebuilds it from the script too.
+        let Some(address) = chain_backend::utxo_address(&utxo, backend, socks_port) else {
+            continue;
+        };
+        if !rows.contains_key(&address) {
+            let Some(entry) = utxo_derivation_path(&info, Some(&address))
+                .and_then(|path| row(address.clone(), path))
+            else {
+                continue;
+            };
+            rows.insert(address.clone(), entry);
+        }
+        if let Some((_, entry)) = rows.get_mut(&address) {
+            entry.balance_sats += utxo.amount.to_sat();
+            entry.unconfirmed |= utxo.confirmations == 0;
+        }
+    }
+    let mut rows: Vec<(u32, WalletAddressDto)> = rows.into_values().collect();
+    // Newest first; at one index, receive before change.
+    rows.sort_by(|(a, x), (b, y)| b.cmp(a).then(x.change.cmp(&y.change)));
+    Ok(rows.into_iter().map(|(_, entry)| entry).collect())
 }
 
 pub async fn list_utxos(taker: &TakerInstance) -> Result<Vec<UtxoEntry>, AppError> {
@@ -1113,7 +1274,10 @@ fn selected_outpoints(outpoints: Option<Vec<Outpoint>>) -> Result<Option<Vec<Out
         return Ok(None);
     };
     if list.len() > 10_000 {
-        return Err(AppError::new(ErrorCode::InvalidInput, "too many selected inputs"));
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "too many selected inputs",
+        ));
     }
     let parsed = list
         .into_iter()
@@ -1123,8 +1287,16 @@ fn selected_outpoints(outpoints: Option<Vec<Outpoint>>) -> Result<Option<Vec<Out
             Ok(OutPoint::new(txid, o.vout))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if parsed.iter().collect::<std::collections::HashSet<_>>().len() != parsed.len() {
-        return Err(AppError::new(ErrorCode::InvalidInput, "selected inputs contain duplicates"));
+    if parsed
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != parsed.len()
+    {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "selected inputs contain duplicates",
+        ));
     }
     Ok(Some(parsed))
 }
@@ -1137,10 +1309,11 @@ pub async fn estimate_send_fee(
     outpoints: Option<Vec<Outpoint>>,
 ) -> Result<SendFeeEstimate, AppError> {
     let fee_rate = fee_rate.unwrap_or(2.0);
-    if !fee_rate.is_finite() || fee_rate <= 0.0 || fee_rate > 10_000.0 {
+    if !fee_rate.is_finite() || fee_rate <= 0.0 || fee_rate > crate::ops::taker_wallet::MAX_FEE_RATE
+    {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "fee rate must be finite and between 0 and 10,000 sat/vB",
+            "fee rate must be above 0 and at most 500 sat/vB; anything higher is almost certainly a typo",
         ));
     }
     let script = Address::from_str(address.trim())
@@ -1152,13 +1325,20 @@ pub async fn estimate_send_fee(
     let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<SendFeeEstimate, AppError> {
         let _log = crate::logging::wallet_scope(log_dir);
-        let address_type = if script.is_p2wpkh() { AddressType::P2WPKH } else { AddressType::P2TR };
+        let address_type = if script.is_p2wpkh() {
+            AddressType::P2WPKH
+        } else {
+            AddressType::P2TR
+        };
         let asked = std::time::Instant::now();
         let guard = wallet.read()?;
         // The estimate itself is arithmetic; any wait is another holder of the wallet (a sync,
         // the transaction list fetching inputs, recovery), which is worth seeing in the log.
         if asked.elapsed() > Duration::from_secs(1) {
-            log::info!("Send fee estimate waited {:?} for the wallet", asked.elapsed());
+            log::info!(
+                "Send fee estimate waited {:?} for the wallet",
+                asked.elapsed()
+            );
         }
         let coins = guard.coin_select(
             Amount::from_sat(amount_sats),
@@ -1170,7 +1350,10 @@ pub async fn estimate_send_fee(
         // Version and locktime, the input and output counts, 41 bytes per input, then the payment
         // and a P2TR change output.
         let base = 4 + 4 + 1 + 1 + 41 * coins.len() + (8 + 1 + script.len()) + (8 + 1 + 34);
-        let witness: usize = coins.iter().map(|(_, info)| info.estimate_witness_size()).sum();
+        let witness: usize = coins
+            .iter()
+            .map(|(_, info)| info.estimate_witness_size())
+            .sum();
         let vsize = (base * 4 + witness + 2).div_ceil(4) as u64;
         Ok(SendFeeEstimate {
             fee_sats: (fee_rate * vsize as f64).ceil() as u64,
@@ -1204,10 +1387,12 @@ pub async fn send_to_address(
             "send amount must be greater than zero",
         ));
     }
-    if fee_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0 || rate > 10_000.0) {
+    if fee_rate.is_some_and(|rate| {
+        !rate.is_finite() || rate <= 0.0 || rate > crate::ops::taker_wallet::MAX_FEE_RATE
+    }) {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
-            "fee rate must be finite and between 0 and 10,000 sat/vB",
+            "fee rate must be above 0 and at most 500 sat/vB; anything higher is almost certainly a typo",
         ));
     }
     let _operation = SensitiveOperationGuard::acquire(
@@ -1255,52 +1440,15 @@ pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
 /// sub-1 sat/vB rates, dragging the mean below the 1 sat/vB relay minimum so the
 /// resulting transaction can't propagate. Each of its `get_*_priority_rate`
 /// calls also re-runs the whole fan-out, costing six HTTP requests per refresh.
-pub async fn estimate_fees() -> Result<FeeEstimate, AppError> {
-    tokio::task::spawn_blocking(|| -> Result<FeeEstimate, AppError> {
-        let response = minreq::get("https://mempool.space/api/v1/fees/recommended")
-            .with_timeout(10)
-            .send()
-            .map_err(AppError::internal)?;
-        if !(200..300).contains(&response.status_code) {
-            return Err(AppError::new(
-                ErrorCode::Internal,
-                format!("fee service returned HTTP {}", response.status_code),
-            ));
-        }
-        let body: serde_json::Value = response.json().map_err(AppError::internal)?;
-        // Passed through unclamped: these are the three targets mempool.space quotes, and
-        // adjusting them would report a rate it never gave us.
-        Ok(FeeEstimate {
-            high: read_fee(&body, "fastestFee")?,
-            mid: read_fee(&body, "halfHourFee")?,
-            low: read_fee(&body, "hourFee")?,
-        })
-    })
-    .await
-    .map_err(AppError::internal)?
-}
-
-fn read_fee(body: &serde_json::Value, key: &str) -> Result<f64, AppError> {
-    body.get(key)
-        .and_then(serde_json::Value::as_f64)
-        // Under the 1 sat/vB relay minimum the value is unusable rather than merely low, so
-        // it is rejected like a missing field instead of being rounded up into a fiction.
-        .filter(|rate| rate.is_finite() && *rate >= 1.0)
-        .ok_or_else(|| {
-            AppError::new(
-                ErrorCode::Internal,
-                format!("fee response missing a valid `{key}` value"),
-            )
-        })
-}
-
-/// Hits mempool.space/api/v1/prices over clearnet, same as estimate_fees — public market data,
+/// Hits mempool.space/api/v1/prices over clearnet — public market data,
 /// not swap-sensitive, so it isn't routed through Tor. A quote younger than
 /// [`PRICE_MAX_AGE_SECS`] is served from memory; a failed fetch falls back to the last one this
 /// process saw.
 pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
     let last = *LAST_PRICE.lock()?;
-    if let Some(quote) = last.filter(|q| unix_timestamp().saturating_sub(q.fetched_at) < PRICE_MAX_AGE_SECS) {
+    if let Some(quote) =
+        last.filter(|q| unix_timestamp().saturating_sub(q.fetched_at) < PRICE_MAX_AGE_SECS)
+    {
         return Ok(PriceEstimate {
             usd: quote.usd,
             cached: false,
@@ -1403,8 +1551,14 @@ mod derivation_path_tests {
 
     #[test]
     fn receive_paths_follow_the_account_layout() {
-        assert_eq!(receive_path(AddressType::P2TR, "tb1pqqqq", 7), "m/86'/1'/0'/0/7");
-        assert_eq!(receive_path(AddressType::P2WPKH, "bc1qqqqq", 3), "m/84'/0'/0'/0/3");
+        assert_eq!(
+            receive_path(AddressType::P2TR, "tb1pqqqq", 7),
+            "m/86'/1'/0'/0/7"
+        );
+        assert_eq!(
+            receive_path(AddressType::P2WPKH, "bc1qqqqq", 3),
+            "m/84'/0'/0'/0/3"
+        );
     }
 
     #[test]
@@ -1417,15 +1571,26 @@ mod derivation_path_tests {
 
     #[test]
     fn fidelity_bonds_use_the_crate_bond_path() {
-        let bond = UTXOSpendInfo::FidelityBondCoin { index: 2, input_value: Amount::from_sat(1_000) };
-        assert_eq!(utxo_derivation_path(&bond, None), Some("m/175'/2/2".to_string()));
+        let bond = UTXOSpendInfo::FidelityBondCoin {
+            index: 2,
+            input_value: Amount::from_sat(1_000),
+        };
+        assert_eq!(
+            utxo_derivation_path(&bond, None),
+            Some("m/175'/2/2".to_string())
+        );
     }
 
     #[test]
     fn coins_without_an_hd_key_have_no_path() {
-        let swap = UTXOSpendInfo::IncomingSwapCoin { multisig_redeemscript: ScriptBuf::new() };
+        let swap = UTXOSpendInfo::IncomingSwapCoin {
+            multisig_redeemscript: ScriptBuf::new(),
+        };
         assert_eq!(utxo_derivation_path(&swap, Some("tb1qqqqq")), None);
-        assert_eq!(utxo_derivation_path(&seed("m/0/1", AddressType::P2TR), None), None);
+        assert_eq!(
+            utxo_derivation_path(&seed("m/0/1", AddressType::P2TR), None),
+            None
+        );
     }
 }
 
