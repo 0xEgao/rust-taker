@@ -49,6 +49,7 @@ import { chainName, currentStatus, onCurrentChain, useConnectionStore } from "..
 import { DashboardImport } from "./DashboardImport";
 import { copyText } from "../../lib/clipboard";
 import { formatNumber } from "../../lib/wallet-format";
+import { subscribe } from "../../api/transport";
 
 interface OwnedRouter {
   settings: RouterSettings;
@@ -66,6 +67,8 @@ let introPlayed = false;
 
 const PHASE_CLASS: Record<RouterPhase["phase"], string> = {
   notConfigured: "bg-subtle",
+  restoring:
+    "bg-primary shadow-[0_0_10px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]",
   initializing:
     "bg-warning shadow-[0_0_10px_color-mix(in_oklab,var(--color-warning)_45%,transparent)]",
   starting:
@@ -95,7 +98,7 @@ function phaseTone(
 ): "success" | "warning" | "danger" | "subtle" {
   if (phase === "running") return "success";
   if (phase === "failed") return "danger";
-  if (["initializing", "starting", "stopping"].includes(phase))
+  if (["restoring", "initializing", "starting", "stopping"].includes(phase))
     return "warning";
   return "subtle";
 }
@@ -126,6 +129,7 @@ function RouterCard({
   const [unlockError, setUnlockError] = useState<string | undefined>();
   const { settings, status, balances } = router;
   const phase = status?.phase.phase ?? "notConfigured";
+  const restoring = phase === "restoring";
   const running = isRunning(router);
   const inSetup = phase === "starting" && status?.hasBond === false;
   const torAddress = status?.torAddress;
@@ -210,34 +214,46 @@ function RouterCard({
         <StatusChip tone={phaseTone(phase)}>{phaseLabel(phase)}</StatusChip>
       </div>
 
-      <div className="mt-5 flex h-[62px] items-center gap-3 rounded-card border border-line bg-surface/70 px-4">
-        <span className="shrink-0 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Tor</span>
-        <code
-          className="min-w-0 flex-1 truncate text-[11.5px] text-muted"
-          title={torAddress}
-        >
-          {torAddress
-            ? formatTorEndpoint(torAddress, 16, 10, true)
-            : running
-              ? "Waiting for address…"
-              : "Available after start"}
-        </code>
-        <button
-          type="button"
-          onClick={copyTorAddress}
-          disabled={!torAddress}
-          aria-label="Copy Tor address"
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-control text-muted outline-none hover:bg-[var(--color-hover)] hover:text-foreground focus-visible:shadow-ring active:translate-y-px disabled:opacity-30"
-        >
-          {copied ? (
-            <Check size={15} className="text-success" />
-          ) : (
-            <Copy size={15} />
-          )}
-        </button>
-      </div>
+      {!restoring && (
+        <div className="mt-5 flex h-[62px] items-center gap-3 rounded-card border border-line bg-surface/70 px-4">
+          <span className="shrink-0 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Tor</span>
+          <code
+            className="min-w-0 flex-1 truncate text-[11.5px] text-muted"
+            title={torAddress}
+          >
+            {torAddress
+              ? formatTorEndpoint(torAddress, 16, 10, true)
+              : running
+                ? "Waiting for address…"
+                : "Available after start"}
+          </code>
+          <button
+            type="button"
+            onClick={copyTorAddress}
+            disabled={!torAddress}
+            aria-label="Copy Tor address"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-control text-muted outline-none hover:bg-[var(--color-hover)] hover:text-foreground focus-visible:shadow-ring active:translate-y-px disabled:opacity-30"
+          >
+            {copied ? (
+              <Check size={15} className="text-success" />
+            ) : (
+              <Copy size={15} />
+            )}
+          </button>
+        </div>
+      )}
 
-      {balances ? (
+      {restoring ? (
+        <div className="mt-5 grid min-h-[132px] place-items-center rounded-card border border-primary/25 bg-primary/5 px-6 text-center">
+          <div>
+            <RefreshCw size={18} className="mx-auto animate-spin text-primary" />
+            <strong className="mt-3 block text-[13px] text-foreground">Wallet is restoring</strong>
+            <span className="mt-1.5 block text-[11px] leading-5 text-muted">
+              Please wait. The restore continues in the background and this card will update when it finishes.
+            </span>
+          </div>
+        </div>
+      ) : balances ? (
         <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-card border border-line bg-line [&>*:nth-child(odd)]:mr-px [&>*:nth-child(-n+2)]:mb-px [&>*]:bg-surface/80">
           <BalanceValue label="Spendable" sats={balances.spendable} tone="text-primary" />
           <BalanceValue label="Regular" sats={balances.regular} />
@@ -253,46 +269,52 @@ function RouterCard({
         </div>
       ) : null}
 
-      <div className="mt-auto flex items-end justify-between gap-3 pt-5">
-        <div className="min-w-0">
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-            {router.reportCount === null ? (
-              "Reports unavailable"
-            ) : (
-              <>
-                {router.reportCount} reports ·{" "}
-                <SatsAmount sats={router.earningsSats ?? 0} /> earned
-              </>
-            )}
-          </span>
-          {phase === "failed" && (
-            <span className="mt-1 block max-w-[240px] truncate text-[10px] text-danger" title={status?.phase.phase === "failed" ? status.phase.message : undefined}>
-              {status?.phase.phase === "failed" ? status.phase.message : ""}
+      {restoring ? (
+        <p className="mt-auto pt-5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-subtle">
+          Restoring in background
+        </p>
+      ) : (
+        <div className="mt-auto flex items-end justify-between gap-3 pt-5">
+          <div className="min-w-0">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+              {router.reportCount === null ? (
+                "Reports unavailable"
+              ) : (
+                <>
+                  {router.reportCount} reports ·{" "}
+                  <SatsAmount sats={router.earningsSats ?? 0} /> earned
+                </>
+              )}
             </span>
-          )}
+            {phase === "failed" && (
+              <span className="mt-1 block max-w-[240px] truncate text-[10px] text-danger" title={status?.phase.phase === "failed" ? status.phase.message : undefined}>
+                {status?.phase.phase === "failed" ? status.phase.message : ""}
+              </span>
+            )}
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void toggleRouter()}
+              loading={actionLoading}
+              // A router waiting for its bond deposit is `starting`; Stop has to work there too.
+              disabled={phase === "initializing" || phase === "stopping"}
+            >
+              {running ? <Square size={12} /> : <Play size={12} />}
+              {running ? "Stop" : "Start"}
+            </Button>
+            {/* Every start passes through `starting`; only one with no bond yet is still in setup,
+                whose page is otherwise only reachable through the URL once left. */}
+            <LinkButton
+              to={`/router/${encodeURIComponent(settings.routerId)}${inSetup ? "/setup" : ""}`}
+              size="sm"
+            >
+              {inSetup ? "Continue setup" : "Manage"}
+            </LinkButton>
+          </div>
         </div>
-        <div className="flex shrink-0 gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void toggleRouter()}
-            loading={actionLoading}
-            // A router waiting for its bond deposit is `starting`; Stop has to work there too.
-            disabled={phase === "initializing" || phase === "stopping"}
-          >
-            {running ? <Square size={12} /> : <Play size={12} />}
-            {running ? "Stop" : "Start"}
-          </Button>
-          {/* Every start passes through `starting`; only one with no bond yet is still in setup,
-              whose page is otherwise only reachable through the URL once left. */}
-          <LinkButton
-            to={`/router/${encodeURIComponent(settings.routerId)}${inSetup ? "/setup" : ""}`}
-            size="sm"
-          >
-            {inSetup ? "Continue setup" : "Manage"}
-          </LinkButton>
-        </div>
-      </div>
+      )}
 
       {/* Portalled: each card sits inside a framer-motion wrapper whose transform would
           otherwise become the containing block for the modal's fixed overlay, trapping it
@@ -393,6 +415,11 @@ export function RouterPage() {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    const unlisten = subscribe("maker://phase-changed", () => void refresh());
+    return () => void unlisten.then((stop) => stop());
+  }, [refresh]);
+
   // The header's refresh, as on a router's own page: sync every running router's wallet, then
   // re-read the fleet. Its own guard, for the same reason that page gives.
   const syncing = useRef(false);
@@ -419,9 +446,11 @@ export function RouterPage() {
 
   const stats = useMemo(() => {
     const running = routers.filter(isRunning).length;
+    const restoring = routers.filter((router) => router.status?.phase.phase === "restoring").length;
     return {
       running,
-      stopped: routers.length - running,
+      restoring,
+      stopped: routers.length - running - restoring,
       spendable: routers.reduce(
         (sum, router) => sum + (router.balances?.spendable ?? 0),
         0,
@@ -439,7 +468,9 @@ export function RouterPage() {
         .filter(
           (router) =>
             filter === "all" ||
-            (filter === "running" ? isRunning(router) : !isRunning(router)),
+            (filter === "running"
+              ? isRunning(router)
+              : !isRunning(router) && router.status?.phase.phase !== "restoring"),
         )
         .sort(
           (a, b) =>
@@ -508,7 +539,12 @@ export function RouterPage() {
           className="mt-6"
           items={[
             { label: "Routers", value: formatNumber(routers.length), detail: `${stats.running} running` },
-            { label: "Running", value: formatNumber(stats.running), detail: `${stats.stopped} stopped`, tone: "success" },
+            {
+              label: "Running",
+              value: formatNumber(stats.running),
+              detail: `${stats.stopped} stopped${stats.restoring ? ` · ${stats.restoring} restoring` : ""}`,
+              tone: "success",
+            },
             { label: "Spendable", value: <SatsAmount sats={stats.spendable} />, detail: "across router wallets" },
             { label: "Net earnings", value: <SatsAmount sats={stats.earnings} />, detail: "from saved reports", tone: "success" },
           ]}

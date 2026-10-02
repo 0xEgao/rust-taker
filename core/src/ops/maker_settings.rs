@@ -15,7 +15,7 @@ use openswap::utill::MIN_RELAY_FEE_RATE;
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
-use crate::types::{MakerPortCheckDto, MakerSettingsDto, SuggestedMakerPortsDto};
+use crate::types::{MakerPhase, MakerPortCheckDto, MakerSettingsDto, SuggestedMakerPortsDto};
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,7 +169,11 @@ pub(crate) fn write_runtime_config(settings: &MakerSettingsDto) -> Result<(), Ap
     // refusing would leave Settings unable to fix the very value that broke it.
     let mut config = if config_path.exists() {
         read_runtime_config(&config_path).unwrap_or_else(|error| {
-            log::warn!("rewriting {} the crate could not read: {}", config_path.display(), error.message);
+            log::warn!(
+                "rewriting {} the crate could not read: {}",
+                config_path.display(),
+                error.message
+            );
             MakerServerConfig::default()
         })
     } else {
@@ -206,41 +210,49 @@ pub fn check_router_config(settings: MakerSettingsDto) -> Result<Option<String>,
 }
 
 fn crate_verdict(config: &MakerServerConfig) -> Result<Option<String>, AppError> {
-    let path = std::env::temp_dir().join(format!("portal-router-check-{}.toml", uuid::Uuid::new_v4()));
+    let path =
+        std::env::temp_dir().join(format!("portal-router-check-{}.toml", uuid::Uuid::new_v4()));
     config.write_to_file(&path)?;
-    let verdict = MakerServerConfig::new(Some(&path)).err().map(|e| match e {
-        openswap::wallet::WalletError::Fidelity(e) => e.to_string(),
-        other => other.to_string(),
-    });
+    let verdict = match MakerServerConfig::new(Some(&path)) {
+        Ok(_) => Ok(None),
+        Err(openswap::wallet::WalletError::Fidelity(e)) => Ok(Some(e.to_string())),
+        Err(openswap::wallet::WalletError::General(message)) => Ok(Some(message)),
+        Err(error) => Err(error.into()),
+    };
     let _ = std::fs::remove_file(&path);
-    Ok(verdict)
+    verdict
 }
 
 /// The smallest bond amount the crate's config check accepts, so the form can say it up front.
 /// The crate keeps that constant private and its error type unreachable from here, so the value
 /// is found by asking the check itself rather than restated. Fixed for a build, hence cached.
 pub(crate) fn min_fidelity_amount() -> Option<u64> {
-    static MIN: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
-    *MIN.get_or_init(|| {
-        let accepts = |amount: u64| {
-            let config = MakerServerConfig { fidelity_amount: amount, ..Default::default() };
-            matches!(crate_verdict(&config), Ok(None))
+    static MIN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    if let Some(min) = MIN.get() {
+        return Some(*min);
+    }
+    let accepts = |amount: u64| {
+        let config = MakerServerConfig {
+            fidelity_amount: amount,
+            ..Default::default()
         };
-        // The crate's own default must pass; everything below it is searched.
-        let (mut low, mut high) = (0, MakerServerConfig::default().fidelity_amount);
-        if !accepts(high) {
-            return None;
+        crate_verdict(&config).map(|verdict| verdict.is_none())
+    };
+    // A failed filesystem operation leaves the cache empty so the next request can retry.
+    let (mut low, mut high) = (0, MakerServerConfig::default().fidelity_amount);
+    if !accepts(high).ok()? {
+        return None;
+    }
+    while high - low > 1 {
+        let mid = low + (high - low) / 2;
+        if accepts(mid).ok()? {
+            high = mid;
+        } else {
+            low = mid;
         }
-        while high - low > 1 {
-            let mid = low + (high - low) / 2;
-            if accepts(mid) {
-                high = mid;
-            } else {
-                low = mid;
-            }
-        }
-        Some(high)
-    })
+    }
+    let _ = MIN.set(high);
+    Some(high)
 }
 
 fn dashboard_settings_path() -> Option<PathBuf> {
@@ -301,7 +313,10 @@ fn load_dashboard_registrations(
             let dto = MakerSettingsDto {
                 router_id: router_id.clone(),
                 // Ids have no length cap; a name longer than wallets accept would stop it starting.
-                name: router_id.chars().take(crate::ops::maker::MAX_ROUTER_NAME_LEN).collect(),
+                name: router_id
+                    .chars()
+                    .take(crate::ops::maker::MAX_ROUTER_NAME_LEN)
+                    .collect(),
                 wallet_name,
                 network_port: settings.network_port,
                 rpc_port: settings.rpc_port,
@@ -329,7 +344,11 @@ pub(crate) fn load_all() -> Result<HashMap<String, MakerSettingsDto>, AppError> 
     // it; that router keeps its registered values, and its start reports the crate's error.
     for settings in stored.makers.values_mut() {
         if let Err(error) = apply_runtime_config(settings) {
-            log::warn!("router {}: config.toml not applied: {}", settings.router_id, error.message);
+            log::warn!(
+                "router {}: config.toml not applied: {}",
+                settings.router_id,
+                error.message
+            );
         }
     }
     Ok(stored.makers)
@@ -349,8 +368,17 @@ pub(crate) fn save(settings: &MakerSettingsDto) -> Result<(), AppError> {
     save_file(&path, &stored)
 }
 
-pub fn list_makers() -> Result<Vec<MakerSettingsDto>, AppError> {
-    let mut makers = load_all()?
+pub fn list_makers(state: &Arc<AppState>) -> Result<Vec<MakerSettingsDto>, AppError> {
+    let mut all = load_all()?;
+    // A restore is registered only after it finishes. Include its process-local entry so leaving
+    // the form does not make the ongoing restore disappear from the dashboard.
+    for (router_id, entry) in state.makers.lock()?.iter() {
+        if matches!(entry.phase, MakerPhase::Restoring) {
+            all.entry(router_id.clone())
+                .or_insert_with(|| entry.settings.clone());
+        }
+    }
+    let mut makers = all
         .into_values()
         .map(|mut settings| {
             let dir = match &settings.data_dir {
@@ -401,10 +429,7 @@ pub fn import_dashboard_makers(router_ids: Vec<String>) -> Result<Vec<MakerSetti
     Ok(imported)
 }
 
-pub fn clear_maker_settings(
-    state: &Arc<AppState>,
-    router_id: String,
-) -> Result<(), AppError> {
+pub fn clear_maker_settings(state: &Arc<AppState>, router_id: String) -> Result<(), AppError> {
     if let Some(entry) = state.makers.lock()?.get(&router_id) {
         if !matches!(
             entry.phase,
@@ -587,7 +612,10 @@ mod tests {
         saved.fidelity_amount = 1_000;
         write_runtime_config(&saved).unwrap();
         let rejected = MakerServerConfig::new(Some(&config_path));
-        assert!(rejected.is_err(), "the crate refuses a bond under its minimum");
+        assert!(
+            rejected.is_err(),
+            "the crate refuses a bond under its minimum"
+        );
 
         let mut registry_copy = settings();
         registry_copy.data_dir = saved.data_dir.clone();
@@ -606,9 +634,17 @@ mod tests {
         let mut legacy = settings();
         legacy.name = String::new();
         legacy.router_id = "r".repeat(40);
-        legacy.data_dir = Some(std::env::temp_dir().join("portal-no-such-router").display().to_string());
+        legacy.data_dir = Some(
+            std::env::temp_dir()
+                .join("portal-no-such-router")
+                .display()
+                .to_string(),
+        );
         apply_runtime_config(&mut legacy).unwrap();
-        assert_eq!(legacy.name, "r".repeat(crate::ops::maker::MAX_ROUTER_NAME_LEN));
+        assert_eq!(
+            legacy.name,
+            "r".repeat(crate::ops::maker::MAX_ROUTER_NAME_LEN)
+        );
     }
 
     #[test]

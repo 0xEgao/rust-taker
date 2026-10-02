@@ -380,6 +380,7 @@ export interface RouterPortCheck {
 
 export type RouterPhase =
   | { phase: "notConfigured" }
+  | { phase: "restoring" }
   | { phase: "initializing" }
   | { phase: "starting" }
   | { phase: "running" }

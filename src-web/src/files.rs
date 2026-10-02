@@ -45,7 +45,10 @@ pub async fn upload(
     }
 
     // Expired leftovers go now rather than accumulating in a private directory forever.
-    portal_core::storage::sweep_stale_transfers(&state.data_root, std::time::Duration::from_secs(300));
+    portal_core::storage::sweep_stale_transfers(
+        &state.data_root,
+        std::time::Duration::from_secs(300),
+    );
 
     let guard = SensitiveOperationGuard::acquire(
         &state.runtime.sensitive_operation_active,
@@ -58,7 +61,11 @@ pub async fn upload(
         path,
         true,
     )?;
-    Ok((StatusCode::OK, Json(serde_json::to_value(view).unwrap_or(json!({})))).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(view).unwrap_or(json!({}))),
+    )
+        .into_response())
 }
 
 /// Produces the password-encrypted backup into private staging and returns its ID. The ID is
@@ -85,7 +92,12 @@ pub async fn create_backup(
             )
             .await?
         }
-        None => state.runtime.taker_for(&caller.session)?.wallet.clone(),
+        None => state
+            .runtime
+            .taker_for(&caller.session)?
+            .wallet
+            .clone()
+            .into(),
     };
     let guard = SensitiveOperationGuard::acquire(
         &state.runtime.sensitive_operation_active,
@@ -100,13 +112,7 @@ pub async fn create_backup(
     portal_core::security::fs::ensure_private_dir(
         destination.parent().expect("transfers has a parent"),
     )?;
-    portal_core::ops::taker_wallet::write_backup(
-        wallet,
-        guard,
-        destination,
-        body.password,
-    )
-    .await?;
+    portal_core::ops::taker_wallet::write_backup(wallet, guard, destination, body.password).await?;
     Ok((StatusCode::OK, Json(json!({ "artifactId": id }))).into_response())
 }
 

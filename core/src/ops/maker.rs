@@ -8,18 +8,18 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use openswap::utill::MIN_RELAY_FEE_RATE;
-use openswap::maker::{start_server, MakerServer, MakerServerConfig};
-use openswap::wallet::Wallet;
 use crate::events::AppEvent;
+use openswap::maker::{start_server, MakerServer, MakerServerConfig};
+use openswap::utill::MIN_RELAY_FEE_RATE;
+use openswap::wallet::Wallet;
 
+use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::ops::chain_backend;
 use crate::ops::maker_settings;
-use crate::storage::wallet_path;
-use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::security::input::{validate_leaf_name, validate_password};
 use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
 use crate::state::{try_lock_makers, AppState, MakerHandle, MakerRuntime};
+use crate::storage::wallet_path;
 use crate::types::{
     MakerInitConfig, MakerPhase, MakerPhaseEvent, MakerSettingsDto, MakerStatusDto, WalletInfo,
 };
@@ -51,7 +51,8 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
     }
     validate_leaf_name(&config.wallet_name, "walletName")?;
     let name_len = config.name.chars().count();
-    if name_len == 0 || name_len > MAX_ROUTER_NAME_LEN || config.name.chars().any(char::is_control) {
+    if name_len == 0 || name_len > MAX_ROUTER_NAME_LEN || config.name.chars().any(char::is_control)
+    {
         return Err(invalid(format!(
             "name must be 1 to {MAX_ROUTER_NAME_LEN} characters, with no control characters"
         )));
@@ -201,10 +202,12 @@ pub(crate) fn read_tor_hostname(data_dir: &Path) -> Option<String> {
 }
 
 fn emit_phase(state: &AppState, router_id: &str, phase: MakerPhase) {
-    state.events.publish(AppEvent::RouterPhaseChanged(MakerPhaseEvent {
-        router_id: router_id.to_string(),
-        phase,
-    }));
+    state
+        .events
+        .publish(AppEvent::RouterPhaseChanged(MakerPhaseEvent {
+            router_id: router_id.to_string(),
+            phase,
+        }));
 }
 
 fn ensure_unique_registration(
@@ -321,17 +324,23 @@ pub async fn init_maker(
                 "another router creation is already reserving this data directory or port",
             ));
         }
+        let phase = if restore.is_some() {
+            MakerPhase::Restoring
+        } else {
+            MakerPhase::Initializing
+        };
         makers.insert(
             router_id.clone(),
             MakerHandle {
                 settings: settings.clone(),
                 runtime: None,
-                phase: MakerPhase::Initializing,
+                phase: phase.clone(),
                 generation: 0,
             },
         );
+        drop(makers);
+        emit_phase(state, &router_id, phase);
     }
-    emit_phase(state, &router_id, MakerPhase::Initializing);
 
     crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
     // Registered first, as Initializing, so the router's log can be followed while the restore
@@ -343,7 +352,8 @@ pub async fn init_maker(
                 SensitiveOperation::RestorePrivateKey,
             )?;
             let backup =
-                crate::ops::taker_wallet::take_restore_selection(state, selection_id, password).await?;
+                crate::ops::taker_wallet::take_restore_selection(state, selection_id, password)
+                    .await?;
             let socks_port = crate::tor::ensure_tor()
                 .map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?
                 .socks_port;
@@ -359,7 +369,7 @@ pub async fn init_maker(
         }
         .await;
         if let Err(error) = restored {
-            // Whatever the restore wrote is incomplete, and the backup can always recreate it.
+            // Restore rejects an existing wallet above, so cleanup can only remove this attempt's file.
             abort_failed_creation(state, &router_id, Some(&wallet_file), &error)?;
             return Err(error);
         }
@@ -422,6 +432,43 @@ pub async fn init_maker(
     })
 }
 
+/// Keeps a stopped router reserved until the backup has released its wallet.
+pub struct BackupWallet {
+    // Fields drop in declaration order: release the wallet before allowing another open.
+    wallet: Arc<std::sync::RwLock<Wallet>>,
+    _reservation: Option<RouterReservation>,
+}
+
+impl From<Arc<std::sync::RwLock<Wallet>>> for BackupWallet {
+    fn from(wallet: Arc<std::sync::RwLock<Wallet>>) -> Self {
+        Self {
+            wallet,
+            _reservation: None,
+        }
+    }
+}
+
+impl AsRef<std::sync::RwLock<Wallet>> for BackupWallet {
+    fn as_ref(&self) -> &std::sync::RwLock<Wallet> {
+        &self.wallet
+    }
+}
+
+struct RouterReservation {
+    state: Arc<AppState>,
+    router_id: String,
+    previous: MakerPhase,
+}
+
+impl Drop for RouterReservation {
+    fn drop(&mut self) {
+        let mut makers = self.state.makers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = makers.get_mut(&self.router_id) {
+            entry.phase = self.previous.clone();
+        }
+    }
+}
+
 /// A router's wallet for a one-off read such as a backup. A running router's is its live one. A
 /// stopped router's is opened from its file with `wallet_password`, the way `init_maker` re-adds
 /// a router, while the router is held busy so a start cannot open the same file meanwhile.
@@ -430,9 +477,9 @@ pub async fn router_wallet(
     session: &str,
     router_id: &str,
     wallet_password: Option<String>,
-) -> Result<Arc<std::sync::RwLock<Wallet>>, AppError> {
+) -> Result<BackupWallet, AppError> {
     if let Ok(wallet) = crate::ops::maker_wallet::get_maker_wallet_handle(state, router_id) {
-        return Ok(wallet);
+        return Ok(wallet.into());
     }
     if !state.makers.lock()?.contains_key(router_id) {
         let settings =
@@ -444,13 +491,25 @@ pub async fn router_wallet(
         let entry = makers
             .get_mut(router_id)
             .ok_or_else(|| AppError::maker_not_found(router_id))?;
-        if !matches!(entry.phase, MakerPhase::Stopped | MakerPhase::Failed { .. } | MakerPhase::NotConfigured) {
+        if !matches!(
+            entry.phase,
+            MakerPhase::Stopped | MakerPhase::Failed { .. } | MakerPhase::NotConfigured
+        ) {
             return Err(AppError::maker_busy());
         }
         let previous = std::mem::replace(&mut entry.phase, MakerPhase::Initializing);
         (entry.settings.clone(), previous)
     };
-    let opened = async {
+    let reservation = RouterReservation {
+        state: state.clone(),
+        router_id: router_id.to_string(),
+        previous,
+    };
+    let session = session.to_string();
+    let router_id = router_id.to_string();
+    // Cancellation must not release the reservation while construct_server is still opening
+    // the file on its blocking thread.
+    tokio::spawn(async move {
         let config = settings.into_init(wallet_password);
         let data_dir = resolve_maker_data_dir(&config)?;
         // `MakerServer::init` creates a wallet where none exists; this must only ever open one.
@@ -467,15 +526,15 @@ pub async fn router_wallet(
         })
         .await
         .map_err(AppError::internal)??;
-        let server = construct_server(session, config, data_dir).await?;
+        let server = construct_server(&session, config, data_dir).await?;
         server.watch_service.shutdown();
-        Ok(server.wallet.clone())
-    }
-    .await;
-    if let Some(entry) = state.makers.lock()?.get_mut(router_id) {
-        entry.phase = previous;
-    }
-    opened
+        Ok(BackupWallet {
+            wallet: server.wallet.clone(),
+            _reservation: Some(reservation),
+        })
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
 /// Updates a stopped maker's persisted configuration. Wallet identity and
@@ -536,7 +595,10 @@ pub fn update_maker_settings(
     Ok(settings)
 }
 
-fn insert_saved_registration(state: &Arc<AppState>, settings: MakerSettingsDto) -> Result<(), AppError> {
+fn insert_saved_registration(
+    state: &Arc<AppState>,
+    settings: MakerSettingsDto,
+) -> Result<(), AppError> {
     let router_id = settings.router_id.clone();
     let mut makers = state.makers.lock()?;
     makers.entry(router_id).or_insert(MakerHandle {
@@ -570,9 +632,10 @@ pub async fn start_maker(
             .get_mut(&router_id)
             .ok_or_else(|| AppError::maker_not_found(&router_id))?;
         match entry.phase {
-            MakerPhase::Starting | MakerPhase::Initializing | MakerPhase::Stopping => {
-                return Err(AppError::maker_busy())
-            }
+            MakerPhase::Restoring
+            | MakerPhase::Starting
+            | MakerPhase::Initializing
+            | MakerPhase::Stopping => return Err(AppError::maker_busy()),
             MakerPhase::Running => {
                 return Err(AppError::new(
                     ErrorCode::RouterAlreadyRunning,
@@ -785,24 +848,34 @@ pub async fn start_maker(
 /// offer's maximum size is refreshed by a sync, so without this a deposit stays unadvertised.
 const WALLET_SYNC_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
-fn sync_while_running(state: &Arc<AppState>, router_id: &str, generation: u64, server: &MakerServer) {
+fn sync_while_running(
+    state: &Arc<AppState>,
+    router_id: &str,
+    generation: u64,
+    server: &MakerServer,
+) {
     let current = || {
         state
             .makers
             .lock()
             .ok()
             .and_then(|makers| {
-                makers.get(router_id).map(|e| {
-                    e.generation == generation && matches!(e.phase, MakerPhase::Running)
-                })
+                makers
+                    .get(router_id)
+                    .map(|e| e.generation == generation && matches!(e.phase, MakerPhase::Running))
             })
             .unwrap_or(false)
     };
-    let chain = state
-        .makers
-        .lock()
-        .ok()
-        .and_then(|makers| Some(makers.get(router_id)?.runtime.as_ref()?.chain_backend.clone()));
+    let chain = state.makers.lock().ok().and_then(|makers| {
+        Some(
+            makers
+                .get(router_id)?
+                .runtime
+                .as_ref()?
+                .chain_backend
+                .clone(),
+        )
+    });
     let Some(chain) = chain else { return };
     loop {
         // Checked every second so a stop is never held up by a sleeping timer.
@@ -828,7 +901,11 @@ fn sync_while_running(state: &Arc<AppState>, router_id: &str, generation: u64, s
             .wallet
             .write()
             .map_err(|_| AppError::internal("router wallet lock poisoned"))
-            .and_then(|mut wallet| wallet.sync_and_save(&server.shutdown).map_err(AppError::from));
+            .and_then(|mut wallet| {
+                wallet
+                    .sync_and_save(&server.shutdown)
+                    .map_err(AppError::from)
+            });
         if let Err(e) = result {
             log::warn!("router {router_id} wallet sync failed: {}", e.message);
         }
@@ -873,7 +950,10 @@ pub async fn stop_maker(state: &Arc<AppState>, router_id: String) -> Result<(), 
         let entry = makers
             .get_mut(&router_id)
             .ok_or_else(|| AppError::maker_not_found(&router_id))?;
-        if matches!(entry.phase, MakerPhase::Initializing | MakerPhase::Stopping) {
+        if matches!(
+            entry.phase,
+            MakerPhase::Restoring | MakerPhase::Initializing | MakerPhase::Stopping
+        ) {
             return Err(AppError::maker_busy());
         }
         if !matches!(entry.phase, MakerPhase::Starting | MakerPhase::Running) {
@@ -952,12 +1032,12 @@ pub fn get_maker_status(
     });
     // Never waits: a status poll must not queue behind a sync holding the wallet.
     let has_bond = entry.runtime.as_ref().and_then(|runtime| {
-        runtime
-            .server
-            .wallet
-            .try_read()
-            .ok()
-            .map(|wallet| wallet.get_fidelity_bonds().iter().any(|bond| !bond.is_spent()))
+        runtime.server.wallet.try_read().ok().map(|wallet| {
+            wallet
+                .get_fidelity_bonds()
+                .iter()
+                .any(|bond| !bond.is_spent())
+        })
     });
     let wallet_encrypted = entry.settings.data_dir.as_deref().and_then(|data_dir| {
         Wallet::is_wallet_encrypted(&wallet_path(
@@ -977,10 +1057,7 @@ pub fn get_maker_status(
     })
 }
 
-pub fn get_maker_info(
-    state: &Arc<AppState>,
-    router_id: String,
-) -> Result<WalletInfo, AppError> {
+pub fn get_maker_info(state: &Arc<AppState>, router_id: String) -> Result<WalletInfo, AppError> {
     if !state.makers.lock()?.contains_key(&router_id) {
         if let Some(settings) = maker_settings::load(&router_id)? {
             insert_saved_registration(state, settings)?;
@@ -1035,6 +1112,52 @@ pub fn shutdown_all(state: &Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn backup_reservation_blocks_another_open_and_restores_phase() {
+        let state = Arc::new(AppState::default());
+        let router_id = "backup-reservation".to_string();
+        let missing =
+            std::env::temp_dir().join(format!("portal-backup-test-{}", uuid::Uuid::new_v4()));
+        let settings = MakerSettingsDto::from_init(&named("Test"), &missing);
+        state.makers.lock().unwrap().insert(
+            router_id.clone(),
+            MakerHandle {
+                settings,
+                runtime: None,
+                phase: MakerPhase::Initializing,
+                generation: 0,
+            },
+        );
+        let reservation = RouterReservation {
+            state: state.clone(),
+            router_id: router_id.clone(),
+            previous: MakerPhase::Failed {
+                message: "previous failure".to_string(),
+            },
+        };
+        let result = router_wallet(&state, "test", &router_id, None).await;
+        assert!(matches!(
+            result,
+            Err(AppError {
+                code: ErrorCode::RouterBusy,
+                ..
+            })
+        ));
+        drop(reservation);
+        assert!(matches!(&state.makers.lock().unwrap()[&router_id].phase,
+            MakerPhase::Failed { message } if message == "previous failure"));
+        let result = router_wallet(&state, "test", &router_id, None).await;
+        assert!(matches!(
+            result,
+            Err(AppError {
+                code: ErrorCode::WalletLoadFailed,
+                ..
+            })
+        ));
+        assert!(matches!(&state.makers.lock().unwrap()[&router_id].phase,
+            MakerPhase::Failed { message } if message == "previous failure"));
+    }
 
     #[test]
     fn maker_ids_are_path_safe() {

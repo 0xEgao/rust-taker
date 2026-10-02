@@ -66,8 +66,16 @@ pub fn passed_gate(session: &str) -> bool {
 /// choice is not remembered between launches. The signet entry is `DEFAULT_ELECTRUM_URL`
 /// itself rather than a second copy of the same string.
 const ELECTRUM_PRESETS: &[(&str, &str, &str)] = &[
-    ("Portal signet", crate::types::DEFAULT_ELECTRUM_URL, "signet"),
-    ("Blockstream", "ssl://electrum.blockstream.info:50002", "bitcoin"),
+    (
+        "Portal signet",
+        crate::types::DEFAULT_ELECTRUM_URL,
+        "signet",
+    ),
+    (
+        "Blockstream",
+        "ssl://electrum.blockstream.info:50002",
+        "bitcoin",
+    ),
     ("DIY Nodes", "ssl://electrum.diynodes.com:50002", "bitcoin"),
     ("Grey", "ssl://fulcrum.grey.pw:51002", "bitcoin"),
 ];
@@ -84,7 +92,6 @@ pub fn electrum_presets() -> Vec<ElectrumPresetDto> {
 }
 
 static ELECTRUM_NETWORK: Mutex<Option<(String, Option<Network>)>> = Mutex::new(None);
-
 
 /// Deletes the config earlier versions wrote. Called once at startup: ceasing to write it
 /// would otherwise leave a plaintext RPC password on disk forever.
@@ -121,7 +128,11 @@ pub fn forget_session(session: &str) {
     if let Some(sessions) = SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         sessions.remove(session);
     }
-    if let Some(passed) = PASSED_GATE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+    if let Some(passed) = PASSED_GATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
         passed.remove(session);
     }
 }
@@ -319,7 +330,10 @@ fn merge_preserved_password(session: &str, mut config: ChainBackendConfig) -> Ch
     if let Some(node) = config.node.as_mut() {
         if node.password.is_empty() {
             if let Some(saved) = load(session).node {
-                if saved.host == node.host && saved.port == node.port && saved.username == node.username {
+                if saved.host == node.host
+                    && saved.port == node.port
+                    && saved.username == node.username
+                {
                     node.password = saved.password;
                 }
             }
@@ -358,8 +372,9 @@ pub fn record_network_once(
     }
     let session = session.to_string();
     tokio::spawn(async move {
-        let Ok(BackendStatus { chain: Some(chain), .. }) =
-            check_backend(&session, Some(config), Some(socks_port)).await
+        let Ok(BackendStatus {
+            chain: Some(chain), ..
+        }) = check_backend(&session, Some(config), Some(socks_port)).await
         else {
             return;
         };
@@ -425,28 +440,73 @@ static FEE_ESTIMATES: Mutex<Option<(String, std::time::Instant, FeeEstimate)>> =
 
 async fn estimate_fees_uncached(config: ChainBackendConfig) -> Result<FeeEstimate, AppError> {
     tokio::task::spawn_blocking(move || -> Result<FeeEstimate, AppError> {
-        let own = resolve_bounded(&config, "", None)
-            .ok()
-            .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
-            .filter(|chain| {
-                chain
-                    .get_blockchain_info()
-                    .is_ok_and(|info| info.chain == Network::Bitcoin)
-            });
-        if let Some(chain) = own {
-            return fee_tiers(&chain);
+        let use_tor =
+            config.kind == ChainBackendKind::Electrum && electrum_needs_tor(&config.electrum);
+        let socks_port = live_socks_port(None);
+        if use_tor && socks_port.is_none() {
+            return Err(AppError::new(
+                ErrorCode::TorUnreachable,
+                "Tor is not available for fee estimates",
+            ));
+        }
+        match config.kind {
+            ChainBackendKind::CoreRpc => {
+                if let Some(node) = &config.node {
+                    if let Ok(client) = bounded_core_client(node) {
+                        if client
+                            .get_blockchain_info()
+                            .is_ok_and(|info| info.chain == Network::Bitcoin)
+                        {
+                            // CoreRPC keeps its transport private. Use the same targets and
+                            // conversion as the crate, with a bounded client for these UI reads.
+                            if let Ok(fees) = fee_tiers(|priority| {
+                                let estimate = client.estimate_smart_fee(priority as u16, None)?;
+                                estimate
+                                    .fee_rate
+                                    .map(|rate| rate.to_sat() as f64 / 1000.0)
+                                    .ok_or_else(|| {
+                                        WalletError::General("no fee estimate".to_string())
+                                    })
+                            }) {
+                                return Ok(fees);
+                            }
+                        }
+                    }
+                }
+            }
+            ChainBackendKind::Electrum => {
+                let own = resolve_bounded(&config, "", socks_port)
+                    .ok()
+                    .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
+                    .filter(|chain| {
+                        chain
+                            .get_blockchain_info()
+                            .is_ok_and(|info| info.chain == Network::Bitcoin)
+                    });
+                if let Some(chain) = own {
+                    if let Ok(fees) = fee_tiers(|priority| chain.estimate_feerate(priority)) {
+                        return Ok(fees);
+                    }
+                }
+            }
         }
         let mut failure = None;
-        for (_, url, _) in ELECTRUM_PRESETS.iter().filter(|(_, _, network)| *network == "bitcoin") {
+        for (_, url, _) in ELECTRUM_PRESETS
+            .iter()
+            .filter(|(_, _, network)| *network == "bitcoin")
+        {
             let mut electrum = electrum_config(
-                &ElectrumBackendDto { url: (*url).to_string(), use_tor: false },
-                None,
+                &ElectrumBackendDto {
+                    url: (*url).to_string(),
+                    use_tor,
+                },
+                socks_port,
             );
             electrum.max_retries = 0;
             electrum.timeout = Some(PROBE_TIMEOUT_SECS);
             match AnyBlockchain::from_config(&BackendConfig::Electrum(electrum))
                 .map_err(AppError::from)
-                .and_then(|chain| fee_tiers(&chain))
+                .and_then(|chain| fee_tiers(|priority| chain.estimate_feerate(priority)))
             {
                 Ok(fees) => return Ok(fees),
                 Err(e) => failure = Some(e),
@@ -458,13 +518,16 @@ async fn estimate_fees_uncached(config: ChainBackendConfig) -> Result<FeeEstimat
     .map_err(AppError::internal)?
 }
 
-fn fee_tiers(chain: &AnyBlockchain) -> Result<FeeEstimate, AppError> {
+fn fee_tiers(
+    estimate: impl Fn(FeePriority) -> Result<f64, WalletError>,
+) -> Result<FeeEstimate, AppError> {
     let mut rates = [None; 3];
-    for (slot, priority) in rates
-        .iter_mut()
-        .zip([FeePriority::Urgent, FeePriority::Medium, FeePriority::Low])
+    for (slot, priority) in
+        rates
+            .iter_mut()
+            .zip([FeePriority::Urgent, FeePriority::Medium, FeePriority::Low])
     {
-        match chain.estimate_feerate(priority) {
+        match estimate(priority) {
             // The relay floor, as the crate's own recovery rates apply it: a lower rate would
             // not relay.
             Ok(rate) => *slot = Some(rate.max(MIN_RELAY_FEE_RATE)),
@@ -526,20 +589,25 @@ fn probe_electrum(dto: &ElectrumBackendDto, socks_port: Option<u16>) -> BackendS
     }
 }
 
+fn bounded_core_client(node: &NodeBackendDto) -> Result<Client, AppError> {
+    let url = format!("http://{}:{}", node.host, node.port);
+    let transport = simple_http::Builder::new()
+        .url(&url)
+        .map_err(AppError::internal)?
+        .auth(node.username.clone(), Some(node.password.clone()))
+        .timeout(Duration::from_secs(PROBE_TIMEOUT_SECS as u64))
+        .build();
+    Ok(Client::from_jsonrpc(jsonrpc::Client::with_transport(
+        transport,
+    )))
+}
+
 fn probe_core_rpc(node: &NodeBackendDto) -> BackendStatus {
     let url = format!("http://{}:{}", node.host, node.port);
-    // Built by hand rather than via `Client::new` so the probe inherits `PROBE_TIMEOUT_SECS`
-    // instead of the transport's 15-minute default — this runs on the startup checklist,
-    // where a filtered port would otherwise hang behind the OS connect timeout.
-    let transport = match simple_http::Builder::new().url(&url).map(|b| {
-        b.auth(node.username.clone(), Some(node.password.clone()))
-            .timeout(Duration::from_secs(PROBE_TIMEOUT_SECS as u64))
-            .build()
-    }) {
-        Ok(t) => t,
-        Err(e) => return unreachable(format!("{e:?}")),
+    let client = match bounded_core_client(node) {
+        Ok(client) => client,
+        Err(e) => return unreachable(e.message),
     };
-    let client = Client::from_jsonrpc(jsonrpc::Client::with_transport(transport));
     let info = match client.get_blockchain_info() {
         Ok(i) => i,
         Err(e) => {
@@ -636,6 +704,64 @@ fn electrum_network(config: &ChainBackendConfig, socks_port: Option<u16>) -> Opt
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn tor_fee_estimates_fail_closed_without_a_proxy() {
+        let mut config = ChainBackendConfig::default();
+        config.electrum.use_tor = true;
+        let error = estimate_fees_uncached(config).await.unwrap_err();
+        assert!(matches!(error.code, ErrorCode::TorUnreachable));
+    }
+
+    #[test]
+    fn core_fee_and_chain_info_requests_time_out() {
+        let checks: Vec<_> = [false, true]
+            .into_iter()
+            .map(|fee_request| {
+                std::thread::spawn(move || {
+                    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    let (release, released) = std::sync::mpsc::channel();
+                    let server = std::thread::spawn(move || {
+                        listener.set_nonblocking(true).unwrap();
+                        let mut streams = Vec::new();
+                        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                        while std::time::Instant::now() < deadline {
+                            if released.try_recv().is_ok() {
+                                break;
+                            }
+                            if let Ok((stream, _)) = listener.accept() {
+                                streams.push(stream);
+                            }
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                    });
+                    let config = node("127.0.0.1", port, "test", "test");
+                    let client = bounded_core_client(config.node.as_ref().unwrap()).unwrap();
+                    let start = std::time::Instant::now();
+                    let failed = if fee_request {
+                        client
+                            .estimate_smart_fee(FeePriority::Medium as u16, None)
+                            .is_err()
+                    } else {
+                        client.get_blockchain_info().is_err()
+                    };
+                    let elapsed = start.elapsed();
+                    let _ = release.send(());
+                    server.join().unwrap();
+                    assert!(failed);
+                    // simple_http retries a failed header read once on a fresh socket.
+                    assert!(
+                        elapsed < Duration::from_secs(2 * PROBE_TIMEOUT_SECS as u64 + 5),
+                        "{elapsed:?}"
+                    );
+                })
+            })
+            .collect();
+        for check in checks {
+            check.join().unwrap();
+        }
+    }
+
     /// A reload asks this to decide whether to send the session back to the gate; a router
     /// session has no wallet to prove it otherwise.
     #[test]
@@ -643,7 +769,10 @@ mod tests {
         let session = format!("gate-test-{}", std::process::id());
         assert!(!passed_gate(&session));
         load(&session);
-        assert!(!passed_gate(&session), "reading the seeded default is not passing the gate");
+        assert!(
+            !passed_gate(&session),
+            "reading the seeded default is not passing the gate"
+        );
         set_chain_backend(&session, ChainBackendConfig::default()).unwrap();
         assert!(passed_gate(&session));
         forget_session(&session);
@@ -690,7 +819,10 @@ mod tests {
             node("127.0.0.1", 8332, "mallory", ""),
         ] {
             assert_eq!(
-                merge_preserved_password("t", changed).node.unwrap().password,
+                merge_preserved_password("t", changed)
+                    .node
+                    .unwrap()
+                    .password,
                 "",
                 "the saved credential must not follow a different node"
             );

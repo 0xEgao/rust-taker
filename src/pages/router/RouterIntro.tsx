@@ -161,7 +161,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
                   <RestoreProgress
                     load={restoreLog}
                     finalStep="Registering the router"
-                    note={"This can take several minutes. You can leave this page and come back: the restore keeps running, and the router appears in your router list, ready to start, when it is done."}
+                    note={"This might take several minutes. You can leave this page and come back: the restore keeps running, and the router appears in your router list, ready to start, when it is done."}
                   />
                 </div>
               )}

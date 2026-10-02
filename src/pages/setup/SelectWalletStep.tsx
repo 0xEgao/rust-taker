@@ -398,7 +398,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
         <div className="mt-6 border-t border-line pt-5 text-left">
           <RestoreProgress
             load={restoreLog}
-            note="A restore scans the chain for every coin this wallet ever had, so it can take several minutes. Keep this window open until it finishes."
+            note="A restore scans the chain for every coin this wallet ever had, so it might take several minutes. Keep this window open until it finishes."
           />
         </div>
       )}

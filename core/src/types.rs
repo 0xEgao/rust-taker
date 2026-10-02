@@ -936,6 +936,7 @@ impl MakerSettingsDto {
 pub enum MakerPhase {
     #[default]
     NotConfigured,
+    Restoring,
     Initializing,
     Starting,
     Running,

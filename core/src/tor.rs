@@ -37,6 +37,7 @@ static RUNTIME: Mutex<Option<TorRuntime>> = Mutex::new(None);
 /// Without this a failed readiness wait — which clears `RUNTIME` — would let the next retry
 /// call `tor_main` a second time and take the whole app down with it.
 static STARTED: AtomicBool = AtomicBool::new(false);
+static EXITED: AtomicBool = AtomicBool::new(false);
 
 /// Starts Portal's Tor if it isn't running yet and returns the ports to bind to.
 pub fn ensure_tor() -> Result<TorRuntime, String> {
@@ -89,7 +90,7 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
 /// Halts Portal's Tor through its own control port. The last thing stopped on quit: the
 /// makers and the taker both route through it, so it has to outlive them.
 pub fn shutdown() {
-    let Some(tor) = runtime() else {
+    let Some(tor) = RUNTIME.lock().ok().and_then(|mut slot| slot.take()) else {
         return;
     };
     // SIGNAL HALT rather than letting the thread die with the process, so Tor runs its own
@@ -98,18 +99,15 @@ pub fn shutdown() {
         log::warn!("could not halt Portal's Tor cleanly: {e}");
     }
     let deadline = Instant::now() + HALT_TIMEOUT;
-    while Instant::now() < deadline && control_responds_as_tor(tor.control_port) {
+    while Instant::now() < deadline && !EXITED.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
     }
     // This process's directory goes with it once Tor has let go of it; the startup sweep only
     // reaches directories whose process is gone, and is left for the ones killed outright.
-    if !control_responds_as_tor(tor.control_port) {
+    if EXITED.load(Ordering::Acquire) {
         if let Ok(dir) = tor_dir() {
             let _ = std::fs::remove_dir_all(dir);
         }
-    }
-    if let Ok(mut slot) = RUNTIME.lock() {
-        *slot = None;
     }
 }
 
@@ -373,6 +371,7 @@ fn start_embedded_tor(
             Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
             Err(_) => log::warn!("embedded tor thread panicked"),
         }
+        EXITED.store(true, Ordering::Release);
         // `shutdown` clears the slot before Tor goes, so a slot still full means nobody here
         // asked for this. During bootstrap that is how a SIGTERM looks from our side: Tor
         // still owns the handler, catches it, and exits — and we would otherwise sit there

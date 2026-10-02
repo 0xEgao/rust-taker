@@ -382,7 +382,14 @@ export function MarketPage() {
       // The sync above only re-downloads an offer once it is half an hour old, so a router that
       // was just funded would keep advertising its old amount. Only good routers are polled: an
       // unresponsive one costs several Tor retries each, and the crate polls one at a time.
-      await Promise.allSettled(good.map((router) => pollRouter(router.address)));
+      const results = await Promise.allSettled(good.map((router) => pollRouter(router.address)));
+      const failed = results.filter((result) => result.status === "rejected").length;
+      if (failed) {
+        useToastStore.getState().push(
+          "warning",
+          `${failed} router offer${failed === 1 ? "" : "s"} could not be refreshed. Some offers may be out of date.`,
+        );
+      }
       await load();
       setFooterTick((t) => t + 1);
     } catch (e) {

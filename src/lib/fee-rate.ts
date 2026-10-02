@@ -51,7 +51,7 @@ export function chosenFeeRate(
       : 0;
   }
   const rate = fees?.[choice];
-  if (rate == null) return 0;
+  if (rate == null || !Number.isFinite(rate) || rate < 1 || rate > MAX_FEE_RATE) return 0;
   // Rounded up to the one decimal the rate is shown with, so a tier never pays under its estimate.
-  return whole ? Math.max(1, Math.round(rate)) : Math.ceil(rate * 10) / 10;
+  return whole ? Math.max(1, Math.ceil(rate)) : Math.ceil(rate * 10) / 10;
 }

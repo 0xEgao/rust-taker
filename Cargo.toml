@@ -10,8 +10,7 @@ license = "MIT"
 # Single source of truth for versions shared by the hosts and the core library, so a bump
 # cannot leave two crates linking different copies of the same types.
 [workspace.dependencies]
-# On openswap PR #1093 (bonds recovered on restore) until it merges; then back to master.
-openswap = { git = "https://github.com/mojoX911/openswap", branch = "fix/restore-fidelity-bonds" }
+openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"

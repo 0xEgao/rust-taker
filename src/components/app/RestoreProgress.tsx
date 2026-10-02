@@ -52,7 +52,7 @@ export function RestoreProgress({
           { label: "Unlocking it with the password", state: state(true, started) },
           { label: "Connecting to the chain server", state: state(started, scanning) },
           {
-            label: `Scanning old addresses (several minutes)${coins > 0 ? ` · ${coins} coin${coins === 1 ? "" : "s"} found` : ""}`,
+            label: `Scanning old addresses (might take several minutes)${coins > 0 ? ` · ${coins} coin${coins === 1 ? "" : "s"} found` : ""}`,
             state: state(scanning, done),
           },
           ...(finalStep ? [{ label: finalStep, state: state(done, false) }] : []),

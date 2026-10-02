@@ -572,7 +572,11 @@ function WalletPanel({
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const pushToast = useToastStore((state) => state.push);
-  // Re-read when the coins change: a balance on this list is only as fresh as the last sync.
+  const utxoKey = JSON.stringify(utxos
+    .map((u) => [u.txid, u.vout, u.amountSats, u.confirmations > 0, u.address, u.derivationPath])
+    .sort());
+  const addressKey = JSON.stringify(addresses);
+  // Re-read when balances, confirmation status or issued addresses change, not every poll.
   useEffect(() => {
     if (!addressesOpen || !running) return;
     let live = true;
@@ -586,7 +590,7 @@ function WalletPanel({
     return () => {
       live = false;
     };
-  }, [addressesOpen, running, routerId, utxos, pushToast]);
+  }, [addressesOpen, running, routerId, utxoKey, addressKey, pushToast]);
   useEffect(() => {
     setQrDataUrl(null);
     if (!address) return;
