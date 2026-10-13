@@ -222,7 +222,8 @@ export function Modal({ title, children, footer, onClose, wide = false }: ModalP
 }
 
 // JetBrains Mono's ₿ strokes overshoot the digits' cap height, so at 1em it reads larger than them.
-const SATS_SIGN = <span className="text-[0.85em]">₿</span>;
+// At 0.85em its body sits on the baseline below the digits' centre; the lift centres it on them.
+const SATS_SIGN = <span className="relative -top-[0.065em] text-[0.85em]">₿</span>;
 
 /** ₿ prefixes a sats count here, not BTC. */
 export function SatsAmount({
