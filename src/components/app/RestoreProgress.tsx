@@ -7,16 +7,19 @@ const UTXO_RE = /CachedUtxos: (\d+) -> (\d+)/;
 
 /**
  * A restore, read off the crate's own log lines for it. The restore only starts writing once the
- * backup has been read and its password accepted, so the first line ticks both; it then connects
+ * backup has been read and its password accepted, or the phrase checked, so the first line ticks
+ * that; it then connects
  * to the chain server, "Sync Started" begins the address scan, each "[UTXO_STATE]" line reports
  * coins found so far, and "Synced & Saved" ends it. Nothing is advanced on a timer.
  */
 export function RestoreProgress({
   load,
+  fromPhrase = false,
   finalStep,
   note,
 }: {
   load: () => Promise<LogLine[]>;
+  fromPhrase?: boolean;
   /** What happens after the scan, if the page shows it here. */
   finalStep?: string;
   note: string;
@@ -48,8 +51,12 @@ export function RestoreProgress({
     <div className="flex flex-col gap-4">
       <Checklist
         steps={[
-          { label: "Reading the backup file", state: state(true, started) },
-          { label: "Unlocking it with the password", state: state(true, started) },
+          ...(fromPhrase
+            ? [{ label: "Checking the recovery phrase", state: state(true, started) }]
+            : [
+                { label: "Reading the backup file", state: state(true, started) },
+                { label: "Unlocking it with the password", state: state(true, started) },
+              ]),
           { label: "Connecting to the chain server", state: state(started, scanning) },
           {
             label: `Scanning old addresses (might take several minutes)${coins > 0 ? ` · ${coins} coin${coins === 1 ? "" : "s"} found` : ""}`,

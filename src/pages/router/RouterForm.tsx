@@ -4,6 +4,7 @@ import { checkRouterConfig, checkRouterPorts, checkTor, getRouterDefaults, getSu
 import type { RestoreSelection, RouterInitConfig, RouterPortCheck } from "../../api/types";
 import { Disclosure } from "../../components/ui/display";
 import { Button, FeeRateField, PasswordField, SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
+import { phraseIsComplete, RecoveryPhraseInput } from "../../components/app/RecoveryPhrase";
 import { validateNewPassword } from "../../lib/password-policy";
 import { selectBackup } from "../../platform";
 import { chosenFeeRate, type FeeChoice, useFeeEstimate } from "../../lib/fee-rate";
@@ -326,26 +327,31 @@ export function BondFeeRateField({ form }: { form: RouterForm }) {
 }
 
 /** `null` while a new router gets a fresh wallet; otherwise its wallet comes from a backup file,
- *  with `selection` null until one is chosen. */
-export type RouterRestore = { selection: RestoreSelection | null } | null;
+ *  with `selection` null until one is chosen, or from a recovery phrase. */
+export type RouterRestore =
+  | { from: "backup"; selection: RestoreSelection | null }
+  | { from: "phrase"; phrase: string }
+  | null;
 
 /**
- * The router's wallet password. A new wallet takes a new password, entered twice; a restored one
- * keeps the backup's, so restoring asks for that instead. `error` is null once the router can be
- * created, and otherwise says what is missing.
+ * The router's wallet password. A new wallet takes a new password, entered twice, and so does one
+ * restored from a phrase; one restored from a backup keeps the backup's, so that restore asks for
+ * it instead. `error` is null once the router can be created, and otherwise says what is missing.
  */
 export function useRouterWallet() {
   const [restore, setRestore] = useState<RouterRestore>(null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const error =
-    restore === null
-      ? validateNewPassword(password, confirm)
-      : !restore.selection
+    restore?.from === "backup"
+      ? !restore.selection
         ? "Choose the backup file to continue."
         : !password
           ? "Enter the backup password to continue."
-          : null;
+          : null
+      : restore?.from === "phrase" && !phraseIsComplete(restore.phrase)
+        ? "Enter the full recovery phrase to continue."
+        : validateNewPassword(password, confirm);
   return {
     restore,
     setRestore,
@@ -356,13 +362,17 @@ export function useRouterWallet() {
     error,
     /** The init config's wallet fields. */
     fields: (config: RouterInitConfig | null): RouterInitConfig | null =>
-      config && restore?.selection
-        ? { ...config, restoreSelection: restore.selection.selectionId }
-        : config,
+      !config
+        ? null
+        : restore?.from === "backup" && restore.selection
+          ? { ...config, restoreSelection: restore.selection.selectionId }
+          : restore?.from === "phrase"
+            ? { ...config, mnemonic: restore.phrase }
+            : config,
     clear: () => {
       setPassword("");
       setConfirm("");
-      // A selection is single-use; one a finished restore consumed cannot be submitted again.
+      // A selection is single-use, and a phrase should not outlive the restore that used it.
       setRestore(null);
     },
   };
@@ -370,7 +380,7 @@ export function useRouterWallet() {
 
 export type RouterWallet = ReturnType<typeof useRouterWallet>;
 
-/** Above everything else when restoring: the file decides what is being added, and the name
+/** Above everything else when restoring: the source decides what is being added, and the name
  *  and password follow from it. */
 export function RouterRestoreChoice({ wallet }: { wallet: RouterWallet }) {
   const [choosing, setChoosing] = useState(false);
@@ -381,7 +391,7 @@ export function RouterRestoreChoice({ wallet }: { wallet: RouterWallet }) {
     setChoosing(true);
     setChooseError(null);
     try {
-      setRestore({ selection: await selectBackup() });
+      setRestore({ from: "backup", selection: await selectBackup() });
     } catch (e) {
       if ((e as { code?: string })?.code !== "USER_CANCELLED")
         setChooseError((e as { message?: string })?.message ?? "Could not open the backup file.");
@@ -390,22 +400,25 @@ export function RouterRestoreChoice({ wallet }: { wallet: RouterWallet }) {
     }
   }
 
+  function pick(next: RouterRestore) {
+    setRestore(next);
+    setChooseError(null);
+    setPassword("");
+    setConfirm("");
+  }
+
   return (
     <div className="flex flex-col gap-3">
       <label className="flex cursor-pointer items-center gap-2.5 text-[12.5px] text-foreground">
         <input
           type="checkbox"
           className="accent-primary"
-          checked={restore !== null}
-          onChange={(e) => {
-            setRestore(e.target.checked ? { selection: null } : null);
-            setPassword("");
-            setConfirm("");
-          }}
+          checked={restore?.from === "backup"}
+          onChange={(e) => pick(e.target.checked ? { from: "backup", selection: null } : null)}
         />
         Restore from a backup file
       </label>
-      {restore !== null && (
+      {restore?.from === "backup" && (
         <>
           <div className="flex items-center gap-3">
             <Button size="sm" variant="secondary" loading={choosing} onClick={() => void choose()}>
@@ -423,13 +436,34 @@ export function RouterRestoreChoice({ wallet }: { wallet: RouterWallet }) {
           </p>
         </>
       )}
+      <label className="flex cursor-pointer items-center gap-2.5 text-[12.5px] text-foreground">
+        <input
+          type="checkbox"
+          className="accent-primary"
+          checked={restore?.from === "phrase"}
+          onChange={(e) => pick(e.target.checked ? { from: "phrase", phrase: "" } : null)}
+        />
+        Restore from a recovery phrase
+      </label>
+      {restore?.from === "phrase" && (
+        <>
+          <RecoveryPhraseInput
+            value={restore.phrase}
+            onChange={(phrase) => setRestore({ from: "phrase", phrase })}
+          />
+          <p className="text-[11.5px] leading-5 text-subtle">
+            Brings back the router&apos;s coins and its fidelity bond. Swaps still in progress
+            cannot be restored. Then name the router and choose a new wallet password below.
+          </p>
+        </>
+      )}
     </div>
   );
 }
 
 export function RouterPasswordFields({ wallet }: { wallet: RouterWallet }) {
-  const { restore, password, setPassword, confirm, setConfirm, error } = wallet;
-  if (restore !== null)
+  const { restore, password, setPassword, confirm, setConfirm } = wallet;
+  if (restore?.from === "backup")
     return (
       <PasswordField
         label="Backup password"
@@ -449,7 +483,7 @@ export function RouterPasswordFields({ wallet }: { wallet: RouterWallet }) {
         required
         value={confirm}
         onChange={(e) => setConfirm(e.target.value)}
-        error={password || confirm ? (error ?? undefined) : undefined}
+        error={password || confirm ? (validateNewPassword(password, confirm) ?? undefined) : undefined}
       />
       <p className="text-[11.5px] leading-5 text-subtle">
         Portal encrypts every router wallet it creates. This password cannot be recovered if it is

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { HashRouter, Navigate, Outlet, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AppShell } from "./components/app/AppShell";
 import { QuitShutdown } from "./components/app/QuitShutdown";
+import { RecoveryPhraseGate } from "./components/app/RecoveryPhrase";
 import { ConnectPage } from "./pages/connect/ConnectPage";
 import { LoginPage } from "./pages/auth/LoginPage";
 import { LaunchPage } from "./pages/launch/LaunchPage";
@@ -20,7 +21,13 @@ import { SwapPage } from "./pages/swap/SwapPage";
 import { SwapReportPage } from "./pages/swap/SwapReportPage";
 import { SwapReportsPage } from "./pages/swap/SwapReportsPage";
 import { WalletPage } from "./pages/wallet/WalletPage";
-import { getSessionState } from "./api/commands";
+import {
+  confirmRecoveryPhraseSaved,
+  confirmRouterRecoveryPhraseSaved,
+  getRecoveryPhrase,
+  getRouterRecoveryPhrase,
+  getSessionState,
+} from "./api/commands";
 import { refreshWalletCache } from "./lib/wallet-sync";
 import { watchUnresolved } from "./store/unresolved";
 import { useSessionStore } from "./store/session";
@@ -57,7 +64,29 @@ function RequireWallet() {
   // role was wanted, and the picker offers its own way back to the role choice. The role
   // picker stays the entry point the connection gate hands off to.
   if (!initialized) return <Navigate to="/setup" replace />;
-  return <Outlet />;
+  // Asked here, not after `init_taker`, so a reload or a lost response before the user confirmed
+  // still lands on the phrase instead of losing it.
+  return (
+    <RecoveryPhraseGate ask={getRecoveryPhrase} confirm={confirmRecoveryPhraseSaved} subject="wallet">
+      <Outlet />
+    </RecoveryPhraseGate>
+  );
+}
+
+/** A new router's phrase comes before anything else on it, its setup included: the router can be
+ *  funded the moment it runs, and its words must be saved before there is anything to lose. */
+function RequireRouterPhrase() {
+  const id = useParams<{ routerId: string }>().routerId!;
+  // Asked again on every page of the router: a start can still create its wallet, and that start's
+  // error sends the user here to save the new words.
+  const { pathname } = useLocation();
+  const ask = useCallback(() => getRouterRecoveryPhrase(id), [id]);
+  const confirm = useCallback((phraseId: string) => confirmRouterRecoveryPhraseSaved(id, phraseId), [id]);
+  return (
+    <RecoveryPhraseGate key={pathname} ask={ask} confirm={confirm} subject="router">
+      <Outlet />
+    </RecoveryPhraseGate>
+  );
 }
 
 /**
@@ -191,18 +220,11 @@ function App() {
 
                 <Route path="/router" element={<RouterPage />} />
                 <Route path="/router/new" element={<AddRouterPage />} />
-                <Route
-                  path="/router/:routerId"
-                  element={<RouterWorkspacePage />}
-                />
-                <Route
-                  path="/router/:routerId/setup"
-                  element={<RouterSetupPage />}
-                />
-                <Route
-                  path="/router/:routerId/report/:swapId"
-                  element={<RouterSwapReportPage />}
-                />
+                <Route path="/router/:routerId" element={<RequireRouterPhrase />}>
+                  <Route index element={<RouterWorkspacePage />} />
+                  <Route path="setup" element={<RouterSetupPage />} />
+                  <Route path="report/:swapId" element={<RouterSwapReportPage />} />
+                </Route>
               </Route>
             </Route>
           </Route>

@@ -27,6 +27,7 @@ import type {
   Paths,
   PriceEstimate,
   ProtocolVersion,
+  RecoveryPhrase,
   RecoveryStatus,
   RecoverySummary,
   SendResult,
@@ -136,6 +137,30 @@ export function restoreWallet(
     selectionId,
     password,
   });
+}
+
+export function restoreWalletFromMnemonic(
+  walletName: string,
+  mnemonic: string,
+  password: string,
+  dataDir?: string,
+): Promise<void> {
+  return invoke("restore_wallet_from_mnemonic", {
+    dataDir,
+    walletName,
+    socksPort: undefined,
+    mnemonic,
+    password,
+  });
+}
+
+/** A new wallet's recovery phrase, until `confirmRecoveryPhraseSaved`; null for any other wallet. */
+export function getRecoveryPhrase(): Promise<RecoveryPhrase | null> {
+  return invoke("get_recovery_phrase");
+}
+
+export function confirmRecoveryPhraseSaved(id: string): Promise<void> {
+  return invoke("confirm_recovery_phrase_saved", { id });
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +277,15 @@ export function getRouterStatus(routerId: string): Promise<RouterStatus> {
 
 export function initRouter(config: RouterInitConfig): Promise<RouterStatus> {
   return invoke("init_maker", { config });
+}
+
+/** A new router's recovery phrase, only for the browser that created it, until confirmed. */
+export function getRouterRecoveryPhrase(routerId: string): Promise<RecoveryPhrase | null> {
+  return invoke("get_router_recovery_phrase", { routerId });
+}
+
+export function confirmRouterRecoveryPhraseSaved(routerId: string, id: string): Promise<void> {
+  return invoke("confirm_router_recovery_phrase_saved", { routerId, id });
 }
 
 export function updateRouterSettings(routerId: string, settings: RouterSettings): Promise<RouterSettings> {

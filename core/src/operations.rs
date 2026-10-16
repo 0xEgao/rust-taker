@@ -79,7 +79,10 @@ pub struct OperationRecord {
 /// `recover_swap` is deliberately absent. It also broadcasts, but it is the remedy for a
 /// stuck swap — blocking it would strand the funds it exists to reclaim.
 pub fn moves_funds(kind: &str) -> bool {
-    matches!(kind, "send_to_address" | "send_maker_to_address" | "start_swap")
+    matches!(
+        kind,
+        "send_to_address" | "send_maker_to_address" | "start_swap"
+    )
 }
 
 fn is_unsettled(record: &OperationRecord) -> bool {
@@ -89,7 +92,9 @@ fn is_unsettled(record: &OperationRecord) -> bool {
 /// A spend from `wallet_id` whose outcome could not be proven: it may already have moved coins,
 /// so another spend could double it.
 fn blocks_spend(record: &OperationRecord, wallet_id: Option<&str>) -> bool {
-    moves_funds(&record.kind) && is_unsettled(record) && !record.acknowledged
+    moves_funds(&record.kind)
+        && is_unsettled(record)
+        && !record.acknowledged
         && belongs_to(record, wallet_id)
 }
 
@@ -97,7 +102,10 @@ fn blocks_spend(record: &OperationRecord, wallet_id: Option<&str>) -> bool {
 /// status poll reads as a failure) must not be able to start a second beside it.
 fn spend_running(record: &OperationRecord, wallet_id: Option<&str>) -> bool {
     moves_funds(&record.kind)
-        && matches!(record.state, OperationState::Accepted | OperationState::Running)
+        && matches!(
+            record.state,
+            OperationState::Accepted | OperationState::Running
+        )
         && belongs_to(record, wallet_id)
 }
 
@@ -172,7 +180,9 @@ pub fn fingerprint(kind: &str, payload: &serde_json::Value) -> String {
     let mut hasher = DefaultHasher::new();
     kind.hash(&mut hasher);
     // Serialized through serde_json so map ordering is canonical rather than insertion-order.
-    serde_json::to_string(payload).unwrap_or_default().hash(&mut hasher);
+    serde_json::to_string(payload)
+        .unwrap_or_default()
+        .hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
@@ -279,9 +289,9 @@ impl Journal {
         apply: impl FnOnce(&mut OperationRecord),
     ) -> Result<(), AppError> {
         let mut index = self.index.lock()?;
-        let current = index.get(operation_id).ok_or_else(|| {
-            AppError::new(ErrorCode::InvalidInput, "no such operation")
-        })?;
+        let current = index
+            .get(operation_id)
+            .ok_or_else(|| AppError::new(ErrorCode::InvalidInput, "no such operation"))?;
         if current.state.is_terminal() {
             // A resolved financial key can never execute again.
             return Ok(());
@@ -358,7 +368,11 @@ impl Journal {
         let Ok(index) = self.index.lock() else {
             return Vec::new();
         };
-        index.values().filter(|r| blocks_spend(r, wallet_id)).cloned().collect()
+        index
+            .values()
+            .filter(|r| blocks_spend(r, wallet_id))
+            .cloned()
+            .collect()
     }
 
     /// Settles a record against evidence the caller gathered.
@@ -443,7 +457,8 @@ mod tests {
         let id = key();
         let first = j.admit(&id, "send", None, 1, &request()).unwrap();
         assert!(matches!(first, Admission::Accepted(_)));
-        j.mark_succeeded(&id, serde_json::json!({ "txid": "abc" })).unwrap();
+        j.mark_succeeded(&id, serde_json::json!({ "txid": "abc" }))
+            .unwrap();
 
         match j.admit(&id, "send", None, 1, &request()).unwrap() {
             Admission::Replayed(record) => {
@@ -466,19 +481,36 @@ mod tests {
     }
 
     fn admit_spend(j: &Journal, wallet: Option<&str>) -> Result<Admission, AppError> {
-        j.admit(&key(), "send_to_address", wallet.map(str::to_string), 1, &request())
+        j.admit(
+            &key(),
+            "send_to_address",
+            wallet.map(str::to_string),
+            1,
+            &request(),
+        )
     }
 
     #[test]
     fn a_spend_still_running_holds_the_next_one_until_it_settles() {
         let j = Journal::default();
         let send = key();
-        j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()).unwrap();
+        j.admit(
+            &send,
+            "send_to_address",
+            Some("w".to_string()),
+            1,
+            &request(),
+        )
+        .unwrap();
         assert!(admit_spend(&j, Some("w")).is_err());
         j.mark_running(&send).unwrap();
         assert!(admit_spend(&j, Some("w")).is_err());
-        assert!(admit_spend(&j, Some("other")).is_ok(), "another wallet's spend does not conflict");
-        j.mark_succeeded(&send, serde_json::json!({ "txid": "abc" })).unwrap();
+        assert!(
+            admit_spend(&j, Some("other")).is_ok(),
+            "another wallet's spend does not conflict"
+        );
+        j.mark_succeeded(&send, serde_json::json!({ "txid": "abc" }))
+            .unwrap();
         assert!(admit_spend(&j, Some("w")).is_ok());
     }
 
@@ -488,10 +520,23 @@ mod tests {
     fn a_retry_of_the_running_spend_replays() {
         let j = Journal::default();
         let send = key();
-        j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()).unwrap();
+        j.admit(
+            &send,
+            "send_to_address",
+            Some("w".to_string()),
+            1,
+            &request(),
+        )
+        .unwrap();
         j.mark_running(&send).unwrap();
         assert!(matches!(
-            j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()),
+            j.admit(
+                &send,
+                "send_to_address",
+                Some("w".to_string()),
+                1,
+                &request()
+            ),
             Ok(Admission::Replayed(_))
         ));
     }
@@ -504,7 +549,9 @@ mod tests {
         assert!(admit_spend(&walletless, Some("other")).is_err());
 
         let non_spend = Journal::default();
-        non_spend.admit(&key(), "init_taker", Some("w".to_string()), 1, &request()).unwrap();
+        non_spend
+            .admit(&key(), "init_taker", Some("w".to_string()), 1, &request())
+            .unwrap();
         assert!(admit_spend(&non_spend, Some("w")).is_ok());
     }
 
@@ -512,10 +559,21 @@ mod tests {
     fn an_unresolved_spend_refuses_the_next_one_until_acknowledged() {
         let j = Journal::default();
         let send = key();
-        j.admit(&send, "send_to_address", Some("w".to_string()), 1, &request()).unwrap();
-        j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "lost")).unwrap();
+        j.admit(
+            &send,
+            "send_to_address",
+            Some("w".to_string()),
+            1,
+            &request(),
+        )
+        .unwrap();
+        j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "lost"))
+            .unwrap();
         let refused = admit_spend(&j, Some("w")).unwrap_err();
-        assert!(refused.details.is_some(), "names the payment holding things up");
+        assert!(
+            refused.details.is_some(),
+            "names the payment holding things up"
+        );
         j.acknowledge(&send, Some("w")).unwrap();
         assert!(admit_spend(&j, Some("w")).is_ok());
     }
@@ -534,7 +592,8 @@ mod tests {
         );
 
         let send = key();
-        j.admit(&send, "send_to_address", None, 1, &request()).unwrap();
+        j.admit(&send, "send_to_address", None, 1, &request())
+            .unwrap();
         j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "connection lost"))
             .unwrap();
         assert_eq!(j.blocking_conflicts(None).len(), 1);
@@ -546,7 +605,8 @@ mod tests {
     fn an_unresolved_spend_blocks_only_its_own_wallet() {
         let j = Journal::default();
         let send = key();
-        j.admit(&send, "send_to_address", Some("a".into()), 1, &request()).unwrap();
+        j.admit(&send, "send_to_address", Some("a".into()), 1, &request())
+            .unwrap();
         j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "connection lost"))
             .unwrap();
         assert_eq!(j.blocking_conflicts(Some("a")).len(), 1);
@@ -567,12 +627,16 @@ mod tests {
     fn reconcile_settles_only_with_evidence() {
         let j = Journal::default();
         let id = key();
-        j.admit(&id, "send_to_address", None, 1, &request()).unwrap();
+        j.admit(&id, "send_to_address", None, 1, &request())
+            .unwrap();
         j.mark_running(&id).unwrap();
         // A result was written, then the outcome became unknowable.
-        j.update(&id, |r| r.result = Some(serde_json::json!({ "txid": "abc" })))
+        j.update(&id, |r| {
+            r.result = Some(serde_json::json!({ "txid": "abc" }))
+        })
+        .unwrap();
+        j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost"))
             .unwrap();
-        j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost")).unwrap();
 
         let unchanged = j.reconcile(&id, &["other".to_string()], None).unwrap();
         assert_eq!(unchanged.state, OperationState::Indeterminate);
@@ -587,9 +651,11 @@ mod tests {
     fn acknowledging_clears_the_gate_without_claiming_success() {
         let j = Journal::default();
         let id = key();
-        j.admit(&id, "send_to_address", None, 1, &request()).unwrap();
+        j.admit(&id, "send_to_address", None, 1, &request())
+            .unwrap();
         j.mark_running(&id).unwrap();
-        j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost")).unwrap();
+        j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost"))
+            .unwrap();
         assert_eq!(j.blocking_conflicts(None).len(), 1);
 
         let acknowledged = j.acknowledge(&id, None).unwrap();
@@ -603,8 +669,11 @@ mod tests {
         let j = Journal::default();
         let id = key();
         j.admit(&id, "send", None, 1, &request()).unwrap();
-        j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "connection lost after broadcast"))
-            .unwrap();
+        j.mark_indeterminate(
+            &id,
+            AppError::new(ErrorCode::Io, "connection lost after broadcast"),
+        )
+        .unwrap();
         assert_eq!(j.get(&id).unwrap().state, OperationState::Indeterminate);
     }
 
@@ -613,8 +682,10 @@ mod tests {
         let j = Journal::default();
         let id = key();
         j.admit(&id, "send", None, 1, &request()).unwrap();
-        j.mark_succeeded(&id, serde_json::json!({ "txid": "abc" })).unwrap();
-        j.mark_failed(&id, AppError::new(ErrorCode::Io, "late error")).unwrap();
+        j.mark_succeeded(&id, serde_json::json!({ "txid": "abc" }))
+            .unwrap();
+        j.mark_failed(&id, AppError::new(ErrorCode::Io, "late error"))
+            .unwrap();
         assert_eq!(j.get(&id).unwrap().state, OperationState::Succeeded);
     }
 
@@ -630,26 +701,52 @@ mod tests {
         for id in [&settled, &unresolved, &running] {
             j.admit(id, "send", None, 1, &request()).unwrap();
         }
-        j.mark_succeeded(&settled, serde_json::json!({ "txid": "abc" })).unwrap();
-        j.mark_indeterminate(&unresolved, AppError::new(ErrorCode::Io, "lost")).unwrap();
+        j.mark_succeeded(&settled, serde_json::json!({ "txid": "abc" }))
+            .unwrap();
+        j.mark_indeterminate(&unresolved, AppError::new(ErrorCode::Io, "lost"))
+            .unwrap();
         j.mark_running(&running).unwrap();
         for record in j.index.lock().unwrap().values_mut() {
             record.updated_at -= SETTLED_RETENTION_SECS;
         }
 
-        let left: Vec<String> = j.recent(10, None).into_iter().map(|r| r.operation_id).collect();
+        let left: Vec<String> = j
+            .recent(10, None)
+            .into_iter()
+            .map(|r| r.operation_id)
+            .collect();
         assert!(!left.contains(&settled), "settled and past retention");
         assert!(left.contains(&unresolved), "still guarding the wallet");
         assert!(left.contains(&running));
 
         j.acknowledge(&unresolved, None).unwrap();
-        j.index.lock().unwrap().get_mut(&unresolved).unwrap().updated_at -= SETTLED_RETENTION_SECS;
-        assert!(j.recent(10, None).iter().all(|r| r.operation_id != unresolved));
+        j.index
+            .lock()
+            .unwrap()
+            .get_mut(&unresolved)
+            .unwrap()
+            .updated_at -= SETTLED_RETENTION_SECS;
+        assert!(j
+            .recent(10, None)
+            .iter()
+            .all(|r| r.operation_id != unresolved));
     }
 
     /// The digest is short and unsalted, so a password reaching it would be a guessing oracle.
     /// Stripping also means a corrected password still matches its original key rather than
     /// reading as a different request.
+    /// A recovery phrase reaches the journal only as a request field — top level for a wallet
+    /// restore, inside `config` for a router — and must be gone in both.
+    #[test]
+    fn recovery_phrases_never_reach_the_journal() {
+        let wallet = serde_json::json!({ "walletName": "w", "mnemonic": "abandon abandon" });
+        let router =
+            serde_json::json!({ "config": { "routerId": "r", "mnemonic": "abandon abandon" } });
+        for request in [wallet, router] {
+            assert!(!without_secrets(&request).to_string().contains("abandon"));
+        }
+    }
+
     #[test]
     fn secrets_never_reach_the_fingerprint() {
         let a = serde_json::json!({ "walletName": "w", "walletPassword": "hunter2" });
@@ -663,7 +760,10 @@ mod tests {
 
         // A different non-secret field still changes the digest.
         let elsewhere = serde_json::json!({ "cfg": { "rpc_password": "p", "host": "other" } });
-        assert_ne!(fingerprint("init", &nested), fingerprint("init", &elsewhere));
+        assert_ne!(
+            fingerprint("init", &nested),
+            fingerprint("init", &elsewhere)
+        );
     }
 
     #[test]
@@ -674,7 +774,10 @@ mod tests {
         assert_ne!(fingerprint("send", &a), fingerprint("swap", &a));
         assert_ne!(
             fingerprint("send", &a),
-            fingerprint("send", &serde_json::json!({ "address": "bc1q", "amountSats": 2 }))
+            fingerprint(
+                "send",
+                &serde_json::json!({ "address": "bc1q", "amountSats": 2 })
+            )
         );
     }
 
@@ -682,15 +785,19 @@ mod tests {
     fn another_wallets_record_is_neither_visible_nor_settleable() {
         let j = Journal::default();
         let id = key();
-        j.admit(&id, "send_to_address", Some("a".into()), 1, &request()).unwrap();
-        j.mark_indeterminate(&id, AppError::internal("lost")).unwrap();
+        j.admit(&id, "send_to_address", Some("a".into()), 1, &request())
+            .unwrap();
+        j.mark_indeterminate(&id, AppError::internal("lost"))
+            .unwrap();
 
         assert!(j.recent(10, Some("b")).is_empty());
         assert!(j.get_for(&id, Some("b")).is_none());
         assert!(j.acknowledge(&id, Some("b")).is_err());
         assert!(j.reconcile(&id, &[], Some("b")).is_err());
         // Replaying the key from the other wallet must not hand its record back.
-        assert!(j.admit(&id, "send_to_address", Some("b".into()), 1, &request()).is_err());
+        assert!(j
+            .admit(&id, "send_to_address", Some("b".into()), 1, &request())
+            .is_err());
 
         assert_eq!(j.recent(10, Some("a")).len(), 1);
         assert!(j.acknowledge(&id, Some("a")).is_ok());

@@ -159,6 +159,7 @@ export function RouterIntro({ onImported }: { onImported: () => void }) {
               {wallet.restore && steps.create === "running" && (
                 <div className="mt-5 border-t border-line pt-5">
                   <RestoreProgress
+                    fromPhrase={wallet.restore?.from === "phrase"}
                     load={restoreLog}
                     finalStep="Registering the router"
                     note={"This might take several minutes. You can leave this page and come back: the restore keeps running, and the router appears in your router list, ready to start, when it is done."}

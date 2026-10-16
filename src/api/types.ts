@@ -360,11 +360,20 @@ export interface RouterSettings {
   network?: string;
 }
 
+/** A new wallet's or router's phrase, still waiting to be saved. `id` goes back with the
+ *  confirmation, so it clears this phrase and no other. */
+export interface RecoveryPhrase {
+  id: string;
+  words: string;
+}
+
 export interface RouterInitConfig extends RouterSettings {
   walletPassword: string;
   /** Restore the router's wallet from this registered backup file, with `walletPassword` being
    *  the backup's password. */
   restoreSelection?: string;
+  /** Restore the router's wallet from this recovery phrase instead of creating a new one. */
+  mnemonic?: string;
 }
 
 export interface SuggestedRouterPorts {

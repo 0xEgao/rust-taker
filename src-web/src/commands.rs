@@ -77,6 +77,68 @@ pub fn lookup(name: &str) -> Option<&'static Operation> {
 }
 
 pub static OPERATIONS: &[Operation] = &[
+    // Mutating, though they only read: a read skips CSRF, and on Umbrel the session cookie
+    // reaches every app on the host. The phrase must need the login-only token.
+    op("get_recovery_phrase", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            encode(&ops::taker_wallet::get_recovery_phrase(
+                &ctx.rt,
+                &*ctx.taker()?,
+                &ctx.session,
+            )?)
+        })
+    }),
+    op("confirm_recovery_phrase_saved", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                id: Uuid,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::taker_wallet::confirm_recovery_phrase_saved(
+                &ctx.rt,
+                &ctx.session,
+                body.id,
+            )?)
+        })
+    }),
+    op("get_router_recovery_phrase", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                router_id: String,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::maker::get_router_recovery_phrase(
+                &ctx.rt,
+                &ctx.session,
+                &body.router_id,
+            )?)
+        })
+    }),
+    op("confirm_router_recovery_phrase_saved", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                router_id: String,
+                id: Uuid,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::maker::confirm_router_recovery_phrase_saved(
+                &ctx.rt,
+                &ctx.session,
+                &body.router_id,
+                body.id,
+            )?)
+        })
+    }),
     op("check_router_config", false, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {
@@ -765,7 +827,10 @@ pub static DURABLE: &[Operation] = &[
                 address_type: AddressTypeDto,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::get_new_address(&*ctx.taker()?, body.address_type).await?)
+            encode(
+                &ops::taker_wallet::get_new_address(&ctx.rt, &*ctx.taker()?, body.address_type)
+                    .await?,
+            )
         })
     }),
     op("init_maker", true, |ctx, args| {
@@ -852,6 +917,36 @@ pub static DURABLE: &[Operation] = &[
                     body.wallet_name,
                     body.socks_port,
                     body.selection_id,
+                    body.password,
+                )
+                .await?,
+            )
+        })
+    }),
+    op("restore_wallet_from_mnemonic", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                /// Accepted and discarded, as for `restore_wallet`: the restore always lands in the
+                /// server-resolved root.
+                #[allow(dead_code)]
+                data_dir: Option<String>,
+                wallet_name: String,
+                socks_port: Option<u16>,
+                mnemonic: String,
+                password: String,
+            }
+            let body: Args = parse(args)?;
+            encode(
+                &ops::taker_wallet::restore_wallet_from_mnemonic(
+                    &ctx.rt,
+                    &ctx.session,
+                    None,
+                    body.wallet_name,
+                    body.socks_port,
+                    body.mnemonic,
                     body.password,
                 )
                 .await?,

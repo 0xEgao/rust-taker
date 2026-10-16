@@ -106,10 +106,11 @@ export function AddRouterPage() {
           </div>
         </header>
 
-        {creating && config?.restoreSelection && (
+        {creating && config && wallet.restore && (
           <Card className="mb-4 border-line-strong p-5">
             <h2 className="mb-4 font-header text-[14px] font-bold text-foreground">Restoring {config.routerId}</h2>
             <RestoreProgress
+              fromPhrase={wallet.restore?.from === "phrase"}
               load={restoreLog}
               finalStep="Registering the router"
               note={"This might take several minutes. You can leave this page and come back: the restore keeps running, and the router appears in your router list, ready to start, when it is done."}
