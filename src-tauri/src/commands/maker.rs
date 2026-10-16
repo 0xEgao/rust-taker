@@ -9,11 +9,33 @@ use std::sync::Arc;
 use portal_core::error::AppError;
 use portal_core::ops::maker;
 use portal_core::state::{AppState, DESKTOP_SESSION};
-use portal_core::types::{MakerInitConfig, MakerSettingsDto, MakerStatusDto, RouterDefaultsDto, WalletInfo};
+use portal_core::types::{
+    MakerInitConfig, MakerSettingsDto, MakerStatusDto, RecoveryPhraseDto, RouterDefaultsDto,
+    WalletInfo,
+};
 
 #[tauri::command]
 pub fn get_router_defaults() -> RouterDefaultsDto {
     maker::router_defaults()
+}
+
+#[tauri::command]
+pub fn get_router_recovery_phrase(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+) -> Result<Option<RecoveryPhraseDto>, AppError> {
+    crate::native::ensure_main_window(&window)?;
+    maker::get_router_recovery_phrase(&state, DESKTOP_SESSION, &router_id)
+}
+
+#[tauri::command]
+pub fn confirm_router_recovery_phrase_saved(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+    id: uuid::Uuid,
+) -> Result<(), AppError> {
+    maker::confirm_router_recovery_phrase_saved(&state, DESKTOP_SESSION, &router_id, id)
 }
 
 #[tauri::command]

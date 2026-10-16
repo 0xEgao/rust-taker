@@ -860,6 +860,18 @@ pub struct MakerInitConfig {
     /// with `wallet_password`, instead of created. Never part of the persisted settings.
     #[serde(default)]
     pub restore_selection: Option<uuid::Uuid>,
+    /// Restore the router's wallet from this phrase instead of creating a new one. Never copied
+    /// into the persisted settings, and named so the web journal scrubs it from requests.
+    #[serde(default)]
+    pub mnemonic: Option<String>,
+}
+
+/// A new wallet's or router's phrase, still waiting to be saved.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryPhraseDto {
+    pub id: uuid::Uuid,
+    pub words: String,
 }
 
 /// Persisted registration settings. Wallet and Tor control passwords are
@@ -936,6 +948,7 @@ impl MakerSettingsDto {
             time_relative_fee_pct: self.time_relative_fee_pct,
             data_dir: self.data_dir,
             restore_selection: None,
+            mnemonic: None,
         }
     }
 }

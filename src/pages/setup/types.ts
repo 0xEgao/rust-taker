@@ -3,7 +3,8 @@ import { getPaths } from "../../api/commands";
 export type WalletChoice =
   | { mode: "create"; walletName: string; password: string }
   | { mode: "load"; walletName: string; password?: string }
-  | { mode: "restore"; walletName: string; selectionId: string; displayName: string; password: string };
+  | { mode: "restore"; walletName: string; selectionId: string; displayName: string; password: string }
+  | { mode: "restore-phrase"; walletName: string; mnemonic: string; password: string };
 
 // Asked of the backend rather than rebuilt here: only it knows the crate's own default and
 // whether the user has already pointed the session somewhere else. The native picker also
