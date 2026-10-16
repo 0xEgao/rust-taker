@@ -267,6 +267,8 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   async function runChecks(wallet: WalletChoice) {
     setPendingWallet(wallet);
+    // Typed for an earlier failure, it must not ride along with this attempt's retry.
+    setRetryPassword("");
     setFailure(null);
     setViewMode("checking");
     // A restore runs its own sync before `init_taker` arms the phase watcher, so it starts
@@ -331,7 +333,12 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
     if (!pendingWallet) return;
     // Only an actual entry replaces the password: a create or restore that failed for some
     // other reason must keep the one it was given rather than retry with an empty field.
-    runChecks(retryPassword ? { ...pendingWallet, password: retryPassword } : pendingWallet);
+    // A phrase restore's dialog has no password field, so its retry keeps the password chosen.
+    runChecks(
+      retryPassword && pendingWallet.mode !== "restore-phrase"
+        ? { ...pendingWallet, password: retryPassword }
+        : pendingWallet,
+    );
   }
 
   function cancelFailure() {
@@ -685,7 +692,11 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
                   <Button
                     variant="secondary"
                     onClick={() => {
+                      // The failed attempt holds the words too.
+                      setPendingWallet(null);
                       setPhraseWords("");
+                      setPhrasePassword("");
+                      setPhraseConfirm("");
                       setViewMode("grid");
                     }}
                   >

@@ -55,6 +55,8 @@ pub struct PendingPhrase {
     pub id: Uuid,
     pub words: SecretMnemonic,
     pub session: SessionId,
+    /// Its unsaved-phrase marker, cleared on confirmation.
+    pub marker: PathBuf,
     /// The wallet's or router's data dir lock, so another Portal on this machine, which knows
     /// nothing of the phrase, cannot open or start it meanwhile. Shared with a wallet's open
     /// Taker, so a sign out releases the dir only once the phrase is gone too.
@@ -162,7 +164,8 @@ pub struct AppState {
     pub(crate) pending_phrases: Mutex<HashMap<PathBuf, PendingPhrase>>,
     /// Sessions `end_session` has run for. A create still finishing when its session ends must not
     /// hold a phrase for it afterwards.
-    pub(crate) ended_sessions: Mutex<HashSet<SessionId>>,
+    /// Pruned after a day, which no create outlasts.
+    pub(crate) ended_sessions: Mutex<HashMap<SessionId, Instant>>,
     /// Domain events. Each host subscribes and forwards these onto its own transport, so
     /// publishers never learn whether they are talking to a webview or a browser.
     pub events: EventSink,
@@ -177,7 +180,7 @@ impl AppState {
         hold: impl FnOnce(),
     ) -> Result<(), AppError> {
         let ended = self.ended_sessions.lock()?;
-        if !ended.contains(session) {
+        if !ended.contains_key(session) {
             hold();
         }
         Ok(())
@@ -328,7 +331,11 @@ mod phrase_tests {
     #[test]
     fn an_ended_session_is_never_handed_a_phrase() {
         let state = AppState::default();
-        state.ended_sessions.lock().unwrap().insert("gone".into());
+        state
+            .ended_sessions
+            .lock()
+            .unwrap()
+            .insert("gone".into(), std::time::Instant::now());
         let mut held = Vec::new();
         state.hold_phrase_for("gone", || held.push("gone")).unwrap();
         state.hold_phrase_for("live", || held.push("live")).unwrap();

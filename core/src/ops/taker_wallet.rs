@@ -207,10 +207,24 @@ async fn open_taker(
         .lock()?
         .get(key)
         .map(|pending| pending.dir_lock.clone());
+    let wallet_file = wallet_path(key, &config.wallet_name);
+    let marker = storage::unsaved_phrase_marker(key, &config.wallet_name);
     let dir_lock = match parked {
         Some(lock) => lock,
-        None => Arc::new(storage::lock_wallet_dir(key)?),
+        None => {
+            let lock = storage::lock_wallet_dir(key)?;
+            storage::discard_unsaved_wallet(key, &config.wallet_name)?;
+            Arc::new(lock)
+        }
     };
+    // `Taker::init` writes a new wallet before steps that can still fail, and the phrase dies with
+    // the error. Removing a wallet this call created lets the retry create it again, phrase and
+    // all; nothing could have been funded from it yet, and the dir lock keeps it this call's. A
+    // lookup error is not absence: taken for a create, an existing wallet would be marked.
+    let creating = !wallet_file.try_exists()?;
+    if creating {
+        std::fs::write(&marker, b"")?;
+    }
 
     let connection_type = match config.connection_type {
         ConnectionTypeDto::Tor => ConnectionType::Tor,
@@ -249,11 +263,6 @@ async fn open_taker(
     // Before the crate opens the wallet: its startup recovery writes reports straight away.
     storage::move_sidecars_out(key, &config.wallet_name)?;
     crate::logging::register_wallet(config.wallet_name.clone(), key.to_path_buf());
-    // `Taker::init` writes a new wallet before steps that can still fail, and the phrase dies with
-    // the error. Removing a wallet this call created lets the retry create it again, phrase and
-    // all; nothing could have been funded from it yet, and the dir lock keeps it this call's.
-    let wallet_file = wallet_path(key, &config.wallet_name);
-    let creating = !wallet_file.exists();
     let taker = tokio::task::spawn_blocking(move || {
         let _log = crate::logging::wallet_scope(wallet_key.clone());
         let _watch = crate::logging::watch_init_phases(sink, wallet_key);
@@ -266,6 +275,10 @@ async fn open_taker(
         crate::logging::unregister_wallet(key);
         if creating {
             let _ = std::fs::remove_file(&wallet_file);
+            // Kept while the wallet is: its phrase died with the error.
+            if matches!(wallet_file.try_exists(), Ok(false)) {
+                let _ = storage::clear_unsaved_phrase_marker(&marker);
+            }
         }
     })?;
     // `Some` only for a wallet `Taker::init` just created, and only on this one call.
@@ -283,6 +296,7 @@ async fn open_taker(
                     id: Uuid::new_v4(),
                     words,
                     session: session.to_string(),
+                    marker: marker.clone(),
                     dir_lock: dir_lock.clone(),
                 },
             );
@@ -329,6 +343,14 @@ pub fn get_recovery_phrase(
     session: &str,
 ) -> Result<Option<RecoveryPhraseDto>, AppError> {
     match state.pending_phrases.lock()?.get(&taker.data_dir) {
+        None if !matches!(
+            storage::unsaved_phrase_marker(&taker.data_dir, &taker.wallet_name).try_exists(),
+            Ok(false)
+        ) => Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "This wallet's recovery phrase was never saved and can no longer be shown. Sign out \
+             and open the wallet again: Portal creates it afresh, with a new phrase to save.",
+        )),
         None => Ok(None),
         Some(pending) if pending.session == session => Ok(Some(RecoveryPhraseDto {
             id: pending.id,
@@ -351,10 +373,18 @@ pub fn confirm_recovery_phrase_saved(
     session: &str,
     id: Uuid,
 ) -> Result<(), AppError> {
-    state
-        .pending_phrases
-        .lock()?
-        .retain(|_, pending| pending.id != id || pending.session != session);
+    let mut pending = state.pending_phrases.lock()?;
+    let Some((key, marker)) = pending
+        .iter()
+        .find(|(_, p)| p.id == id && p.session == session)
+        .map(|(key, p)| (key.clone(), p.marker.clone()))
+    else {
+        return Ok(());
+    };
+    // Cleared first: a marker that outlived its phrase would have a saved wallet taken for one
+    // that never was, and removed.
+    storage::clear_unsaved_phrase_marker(&marker)?;
+    pending.remove(&key);
     Ok(())
 }
 
@@ -503,7 +533,8 @@ pub fn release_session(state: &Arc<AppState>, session: &str) {
 /// can hold a node's RPC password.
 pub fn end_session(state: &Arc<AppState>, session: &str) {
     if let Ok(mut ended) = state.ended_sessions.lock() {
-        ended.insert(session.to_string());
+        ended.retain(|_, at| at.elapsed() < Duration::from_secs(24 * 60 * 60));
+        ended.insert(session.to_string(), std::time::Instant::now());
     }
     release_session(state, session);
     chain_backend::forget_session(session);
@@ -739,13 +770,16 @@ pub async fn restore_wallet(
 
     // Do not consume a one-shot file selection for an error the user can fix by
     // choosing a different wallet name and submitting the same restore again.
-    if restored_path.exists() {
+    // A lookup error is not absence: the restore would go ahead over a wallet that is there.
+    if restored_path.try_exists()? {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
             format!("a wallet named '{wallet_name}' already exists — pick another name"),
         ));
     }
     let backup = take_restore_selection(state, selection_id, &password).await?;
+    // A restored wallet can hold funds; a marker left from an abandoned create would get it removed.
+    storage::clear_unsaved_phrase_marker(&storage::unsaved_phrase_marker(&dir, &wallet_name))?;
     let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
     restore_backup(backup, dir, wallet_name, backend, password).await
 }
@@ -924,12 +958,15 @@ pub async fn restore_wallet_from_mnemonic(
     // Held across the check and the cleanup below, so the file removed on failure can only be
     // the one this restore wrote: an open of the same name would need this lock to create it.
     let _dir_lock = storage::lock_wallet_dir(&dir)?;
-    if restored_path.exists() {
+    // A lookup error is not absence: the restore would go ahead over a wallet that is there.
+    if restored_path.try_exists()? {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
             format!("a wallet named '{wallet_name}' already exists — pick another name"),
         ));
     }
+    // A restored wallet can hold funds; a marker left from an abandoned create would get it removed.
+    storage::clear_unsaved_phrase_marker(&storage::unsaved_phrase_marker(&dir, &wallet_name))?;
     let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
     let restored = restore_phrase(phrase, dir, wallet_name, backend, password).await;
     // The crate writes the file before its scan; a failed restore would otherwise leave a name
@@ -1079,7 +1116,12 @@ pub async fn get_new_address(
 ) -> Result<NewAddress, AppError> {
     // A receive address is how a new wallet gets funded, and a page opened before this session
     // switched wallets never passed the new wallet's phrase screen.
-    if state.pending_phrases.lock()?.contains_key(&taker.data_dir) {
+    if state.pending_phrases.lock()?.contains_key(&taker.data_dir)
+        || !matches!(
+            storage::unsaved_phrase_marker(&taker.data_dir, &taker.wallet_name).try_exists(),
+            Ok(false)
+        )
+    {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
             "This wallet's recovery phrase has not been saved yet. Reload the page to save it.",

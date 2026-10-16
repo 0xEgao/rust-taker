@@ -303,6 +303,9 @@ pub async fn init_maker(
     // directory, so a wallet sitting here belongs to a router that was removed. Registering it
     // again — only with the password that opens it — brings back its funds and bond.
     let wallet_file = wallet_path(&data_dir, &config.wallet_name);
+    let marker = crate::storage::unsaved_phrase_marker(&data_dir, &config.wallet_name);
+    // Removed before its phrase was saved: nothing could have funded it, so it is made again.
+    crate::storage::discard_unsaved_wallet(&data_dir, &config.wallet_name)?;
     let restore = match (config.restore_selection.take(), config.mnemonic.take()) {
         (Some(_), Some(_)) => {
             return Err(AppError::new(
@@ -317,14 +320,21 @@ pub async fn init_maker(
         )),
         (None, None) => None,
     };
-    if restore.is_some() && wallet_file.exists() {
+    // A lookup error is not absence: taken for a create, an existing wallet would be marked.
+    let wallet_found = wallet_file.try_exists()?;
+    if restore.is_some() && wallet_found {
         return Err(AppError::new(
             ErrorCode::InvalidInput,
             "this router folder already has a wallet — create the router with its password, \
              or pick another router ID to restore into",
         ));
     }
-    let readding = restore.is_none() && wallet_file.exists();
+    if restore.is_some() {
+        // A restored wallet can hold funds; a stale marker would get it taken for an unsaved one.
+        crate::storage::clear_unsaved_phrase_marker(&marker)?;
+    }
+    let readding = restore.is_none() && wallet_found;
+    let marked = restore.is_none() && !readding;
     if readding {
         let (path, password) = (wallet_file.clone(), password.to_string());
         tokio::task::spawn_blocking(move || {
@@ -426,11 +436,23 @@ pub async fn init_maker(
         if fresh_config {
             let _ = std::fs::remove_file(&config_file);
         }
-        abort_failed_creation(state, &router_id, created, error)
+        let aborted = abort_failed_creation(state, &router_id, created, error);
+        // Kept while the wallet is: its phrase died with the error.
+        if marked && matches!(wallet_file.try_exists(), Ok(false)) {
+            let _ = crate::storage::clear_unsaved_phrase_marker(&marker);
+        }
+        aborted
     };
     if let Err(error) = maker_settings::write_runtime_config(&settings) {
         abort(&error)?;
         return Err(error);
+    }
+    if marked {
+        if let Err(error) = std::fs::write(&marker, b"") {
+            let error = AppError::from(error);
+            abort(&error)?;
+            return Err(error);
+        }
     }
     let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
@@ -471,6 +493,7 @@ pub async fn init_maker(
                 id: uuid::Uuid::new_v4(),
                 words,
                 session: session.to_string(),
+                marker: marker.clone(),
                 dir_lock: Arc::new(dir_lock),
             });
         })?;
@@ -620,11 +643,14 @@ pub fn confirm_router_recovery_phrase_saved(
     id: uuid::Uuid,
 ) -> Result<(), AppError> {
     if let Some(entry) = state.makers.lock()?.get_mut(router_id) {
-        if entry
+        if let Some(pending) = entry
             .pending_phrase
             .as_ref()
-            .is_some_and(|p| p.id == id && p.session == session)
+            .filter(|p| p.id == id && p.session == session)
         {
+            // Cleared first: a marker that outlived its phrase would have a saved router taken
+            // for one that never was, and its wallet removed.
+            crate::storage::clear_unsaved_phrase_marker(&pending.marker)?;
             entry.pending_phrase = None;
         }
     }
@@ -797,6 +823,7 @@ pub async fn start_maker(
     let config = settings.clone().into_init(wallet_password);
     let data_dir = resolve_maker_data_dir(&config)?;
     let wallet_file = wallet_path(&data_dir, &config.wallet_name);
+    let marker = crate::storage::unsaved_phrase_marker(&data_dir, &config.wallet_name);
     // Held through the server's construction, which writes a missing wallet: removing one after a
     // failed start is only safe while no other Portal on this machine can be writing it.
     let dir_lock = match crate::security::fs::ensure_private_dir(&data_dir)
@@ -819,7 +846,43 @@ pub async fn start_maker(
             return Err(error);
         }
     };
-    let creating = !wallet_file.exists();
+    // Its phrase was never saved and is no longer held (the start above refuses while it is):
+    // nothing could have funded it, so this start makes it again.
+    if let Err(error) = crate::storage::discard_unsaved_wallet(&data_dir, &config.wallet_name) {
+        if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
+            entry.phase = MakerPhase::Failed {
+                message: error.message.clone(),
+            };
+        }
+        emit_phase(
+            state,
+            &router_id,
+            MakerPhase::Failed {
+                message: error.message.clone(),
+            },
+        );
+        return Err(error);
+    }
+    // A lookup error is not absence: taken for a create, an existing wallet would be marked.
+    let creating = match wallet_file.try_exists() {
+        Ok(found) => !found,
+        Err(error) => {
+            let error = AppError::from(error);
+            if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
+                entry.phase = MakerPhase::Failed {
+                    message: error.message.clone(),
+                };
+            }
+            emit_phase(
+                state,
+                &router_id,
+                MakerPhase::Failed {
+                    message: error.message.clone(),
+                },
+            );
+            return Err(error);
+        }
+    };
     if creating {
         let password = config.wallet_password.as_deref().unwrap_or_default();
         if let Err(error) = validate_password(password, "router wallet password") {
@@ -863,6 +926,24 @@ pub async fn start_maker(
     if !data_dir.join("config.toml").exists() {
         maker_settings::write_runtime_config(&settings)?;
     }
+    if creating {
+        if let Err(error) = std::fs::write(&marker, b"") {
+            let error = AppError::from(error);
+            if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
+                entry.phase = MakerPhase::Failed {
+                    message: error.message.clone(),
+                };
+            }
+            emit_phase(
+                state,
+                &router_id,
+                MakerPhase::Failed {
+                    message: error.message.clone(),
+                },
+            );
+            return Err(error);
+        }
+    }
     crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
     let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
@@ -871,6 +952,9 @@ pub async fn start_maker(
             // dies with the error; the router is held busy, so the file is this start's.
             if creating {
                 let _ = std::fs::remove_file(&wallet_file);
+                if matches!(wallet_file.try_exists(), Ok(false)) {
+                    let _ = crate::storage::clear_unsaved_phrase_marker(&marker);
+                }
             }
             if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
                 entry.phase = MakerPhase::Failed {
@@ -907,6 +991,7 @@ pub async fn start_maker(
                 id: uuid::Uuid::new_v4(),
                 words,
                 session: session.to_string(),
+                marker: marker.clone(),
                 dir_lock: Arc::new(dir_lock),
             });
         })?;
@@ -918,6 +1003,7 @@ pub async fn start_maker(
              phrase, then start it",
         ));
     }
+
     let mut makers = state.makers.lock()?;
     let entry = makers
         .get_mut(&router_id)

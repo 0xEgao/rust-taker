@@ -182,12 +182,12 @@ function wordCount(phrase: string): number {
   return phrase.trim() ? phrase.trim().split(/\s+/).length : 0;
 }
 
-/** Word counts BIP39 allows. */
-export function phraseIsComplete(phrase: string): boolean {
-  return [12, 15, 18, 21, 24].includes(wordCount(phrase));
-}
-
+/** The lengths the word boxes offer, and so the only ones a restore accepts. */
 const LENGTHS = [12, 24] as const;
+
+export function phraseIsComplete(phrase: string): boolean {
+  return (LENGTHS as readonly number[]).includes(wordCount(phrase));
+}
 
 function words(text: string): string[] {
   return text.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -212,9 +212,11 @@ export function RecoveryPhraseInput({
     return Array.from({ length: seed.length > 12 ? 24 : 12 }, (_, i) => seed[i] ?? "");
   });
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
+  const [tooLong, setTooLong] = useState<number | null>(null);
   const filled = boxes.filter(Boolean).length;
 
   function update(next: string[]) {
+    setTooLong(null);
     setBoxes(next);
     onChange(next.every(Boolean) ? next.join(" ") : "");
   }
@@ -234,10 +236,15 @@ export function RecoveryPhraseInput({
       return;
     }
     const whole = (LENGTHS as readonly number[]).includes(typed.length);
-    const length = typed.length > 12 ? 24 : boxes.length;
+    const length = whole ? typed.length : boxes.length;
     const start = whole ? 0 : index;
+    // Cut short or shifted, a phrase of another length would only fail its checksum later.
+    if (start + typed.length > length) {
+      setTooLong(typed.length);
+      return;
+    }
     const next = Array.from({ length }, (_, i) => boxes[i] ?? "");
-    typed.slice(0, length - start).forEach((word, i) => (next[start + i] = word));
+    typed.forEach((word, i) => (next[start + i] = word));
     update(next);
     inputs.current[Math.min(start + typed.length, length - 1)]?.focus();
   }
@@ -292,9 +299,15 @@ export function RecoveryPhraseInput({
           </li>
         ))}
       </ol>
-      <span className="text-[11.5px] text-subtle">
-        {filled} of {boxes.length} words · paste the whole phrase into any box
-      </span>
+      {tooLong ? (
+        <span className="text-[11.5px] text-danger">
+          That is {tooLong} words. Portal restores 12- and 24-word phrases.
+        </span>
+      ) : (
+        <span className="text-[11.5px] text-subtle">
+          {filled} of {boxes.length} words · paste the whole phrase into any box
+        </span>
+      )}
     </div>
   );
 }

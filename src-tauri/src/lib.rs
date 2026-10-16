@@ -63,13 +63,7 @@ fn require_sign_in<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     move |invoke| {
         let open = OPEN_COMMANDS.contains(&invoke.message.command());
-        if !open
-            && !invoke
-                .message
-                .webview()
-                .state::<Arc<auth::DesktopAuth>>()
-                .signed_in()
-        {
+        if !open && !invoke.message.webview().state::<Arc<auth::DesktopAuth>>().signed_in() {
             invoke.resolver.reject(portal_core::error::AppError::new(
                 portal_core::error::ErrorCode::AuthorizationDenied,
                 "sign in first",
@@ -226,10 +220,7 @@ pub fn run() {
         .setup(|app| {
             // Before anything can publish: the setup hook runs ahead of the window, so no
             // command has been able to emit yet and the bridge cannot miss a startup event.
-            bridge_events(
-                app.handle().clone(),
-                app.state::<Arc<AppState>>().events.subscribe(),
-            );
+            bridge_events(app.handle().clone(), app.state::<Arc<AppState>>().events.subscribe());
 
             // Before anything logs, so startup, Tor and a restore that runs before any wallet is
             // open all reach the app's `debug.log` rather than the terminal.
@@ -392,11 +383,7 @@ mod tests {
     /// The `command` half of every `module::command` path, ignoring comment lines — the bodies
     /// being scanned carry prose that would otherwise parse as command names.
     fn registered(body: &str) -> BTreeSet<String> {
-        let ident = |s: &str| {
-            !s.is_empty()
-                && s.chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        };
+        let ident = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
         body.lines()
             .map(|line| line.trim())
             .filter(|line| !line.starts_with("//"))
