@@ -8,11 +8,6 @@ import { BASE_PATH } from "../../playwright.config";
  */
 test.describe.configure({ mode: "serial" });
 
-// Known bug: `src-web/src/assets.rs` serves the UI at the root whatever `--base-path` says, both
-// from `--assets-dir` and embedded, so under the prefix every page and asset request gets the
-// shell with a 404 and the app never loads. Remove these with the fix.
-test.beforeEach(() => test.fail());
-
 const OWNER_PASSWORD = "e2e base path owner";
 
 test("everything is served under the prefix, and nothing at the root", async ({ request }) => {
@@ -29,7 +24,7 @@ test("the app signs in and reaches the connection gate under the prefix", async 
   });
 
   await page.goto(`${BASE_PATH}/`);
-  await expect(page).toHaveURL(new RegExp(`${BASE_PATH}/#/login$`), { timeout: 3_000 });
+  await expect(page).toHaveURL(new RegExp(`${BASE_PATH}/#/login$`));
   await page.getByRole("textbox", { name: "New password", exact: true }).fill(OWNER_PASSWORD);
   await page.getByRole("textbox", { name: "Confirm password", exact: true }).fill(OWNER_PASSWORD);
   await page.getByRole("button", { name: "Set password and continue" }).click();

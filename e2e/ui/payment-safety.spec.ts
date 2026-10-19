@@ -123,17 +123,13 @@ test.describe("an earlier payment with an unknown outcome", () => {
   });
 
   test("pauses spending while the journal cannot be read", async ({ page, portal }) => {
-    // Known bug: `operations.blocking()` in `src/api/web.ts` answers an error status with `[]`,
-    // which the store records as checked and empty, so spending is not paused. Only a network
-    // failure pauses it today. Remove this line with the fix.
-    test.fail();
     portal.state.journalReadable = false;
     await openWallet(page);
     await nav(page, "Tx").click();
 
-    // The refresh runs on mount; once the page has settled there is nothing more to wait for.
-    await expect(page.getByText(/cannot currently tell whether an earlier payment is still unconfirmed/)).toBeVisible({
-      timeout: 3_000,
-    });
+    await expect(page.getByText(/cannot currently tell whether an earlier payment is still unconfirmed/)).toBeVisible();
+    await field(page, "Recipient Address").fill(RECIPIENT);
+    await field(page, "Amount").fill("50000");
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   });
 });
