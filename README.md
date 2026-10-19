@@ -127,6 +127,21 @@ npm run web:dev
 
 Then open <http://localhost:1430>.
 
+### End-to-end tests
+
+```bash
+npx playwright install chromium   # once
+npm run test:e2e                  # both suites; npm run test:e2e:ui for the UI suite alone
+```
+
+Playwright drives the web build served by a real `portal-web` on port 3100, started against a
+fresh temporary home so it never touches your own Portal data. A second server on port 3101 runs
+under `--base-path /portal` for the `base-path` suite. The `server` suite uses the real
+API (sign-in, sessions, CSRF, the connection gate). The `ui` suite replaces the API with a fake,
+[`e2e/support/fake-portal.ts`](e2e/support/fake-portal.ts), so it can put every screen into an
+exact state without a chain or Tor. When you add a web operation, give the fake an answer for it.
+The `contract.spec.ts` test fails until you do. `npx playwright show-report` opens the last run's report.
+
 ### Build the release binary
 
 ```bash
