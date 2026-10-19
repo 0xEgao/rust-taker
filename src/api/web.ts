@@ -309,7 +309,9 @@ export const host: Host = {
       const response = await fetch(`${API}/operations`, {
         credentials: "same-origin",
       });
-      if (!response.ok) return [];
+      // Thrown, never answered with an empty list: the store holds spending on a failed read,
+      // and `[]` would tell it nothing is outstanding when nothing could be checked.
+      if (!response.ok) throw await toAppError(response);
       const body = (await response.json()) as {
         blockingConflicts?: UnresolvedOperation[];
       };
