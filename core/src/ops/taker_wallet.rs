@@ -15,8 +15,9 @@ use openswap::bitcoin::{Address, Amount, OutPoint, ScriptBuf, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
-use openswap::wallet::{AddressType, UTXOSpendInfo, Wallet};
+use openswap::wallet::{AddressType, SecretMnemonic, UTXOSpendInfo, Wallet};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::storage::{self, resolve_data_dir, wallet_path};
 
@@ -230,6 +231,7 @@ async fn open_taker(
         ConnectionTypeDto::Tor => ConnectionType::Tor,
         ConnectionTypeDto::Clearnet => ConnectionType::Clearnet,
     };
+    let phrase_password = config.wallet_password.clone();
     let chain_config = chain_backend::load(session);
     let init_cfg = TakerInitConfig {
         data_dir: Some(key.to_path_buf()),
@@ -281,12 +283,12 @@ async fn open_taker(
             }
         }
     })?;
-    // `Some` only for a wallet `Taker::init` just created, and only on this one call.
-    let new_phrase = taker
-        .get_wallet()
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .take_new_mnemonic();
+    // Only a wallet this call created has a phrase to show.
+    let new_phrase = if creating {
+        Some(read_sealed_phrase(taker.get_wallet().clone(), phrase_password).await?)
+    } else {
+        None
+    };
     if let Some(words) = new_phrase {
         let mut pending = state.pending_phrases.lock()?;
         state.hold_phrase_for(session, || {
@@ -335,6 +337,24 @@ async fn open_taker(
     Ok((instance, result))
 }
 
+/// The phrase the crate sealed into a wallet it just created. The key derivation is slow, so it
+/// runs off the async threads.
+pub(crate) async fn read_sealed_phrase(
+    wallet: Arc<RwLock<Wallet>>,
+    password: Option<String>,
+) -> Result<SecretMnemonic, AppError> {
+    let password = Zeroizing::new(password.unwrap_or_default());
+    tokio::task::spawn_blocking(move || {
+        wallet
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_wallet_mnemonic(password)
+    })
+    .await
+    .map_err(from_wallet_join_error)?
+    .map_err(AppError::from)
+}
+
 /// The new wallet's recovery phrase, for the session that created it, until it confirms it saved
 /// it. Not cleared by reading, so a reload before confirming shows it again.
 pub fn get_recovery_phrase(
@@ -354,7 +374,7 @@ pub fn get_recovery_phrase(
         None => Ok(None),
         Some(pending) if pending.session == session => Ok(Some(RecoveryPhraseDto {
             id: pending.id,
-            words: pending.words.words(),
+            words: pending.words.words().to_string(),
         })),
         // The words stay with their creator, but the wallet is not to be used, and so not funded,
         // until they are saved.
@@ -977,18 +997,18 @@ pub async fn restore_wallet_from_mnemonic(
     restored
 }
 
-/// Backs up to encrypted JSON (xpriv, not a seed phrase). Rust owns the save dialog.
-/// Writes the password-encrypted backup to a host-chosen destination. The host owns how that
-/// destination was picked and holds the sensitive-operation guard across the choice, so this
-/// takes the guard rather than acquiring a second one.
+/// Writes the password-encrypted backup to a host-chosen destination. `wallet_password` unseals
+/// the wallet's seed, which the backup re-reads. The host owns how that destination was picked
+/// and holds the sensitive-operation guard across the choice, so this takes the guard rather
+/// than acquiring a second one.
 pub async fn write_backup(
     wallet: impl AsRef<RwLock<Wallet>> + Send + 'static,
     _operation: SensitiveOperationGuard,
     destination: PathBuf,
     password: String,
+    wallet_password: String,
 ) -> Result<String, AppError> {
     // The openswap helper always replaces the selected extension with `.json`.
-    // Validate and pre-create that actual target so its first write is private too.
     let destination = destination.with_extension("json");
     if destination.exists()
         && std::fs::symlink_metadata(&destination)?
@@ -1000,30 +1020,42 @@ pub async fn write_backup(
             "backup destination cannot be a symlink",
         ));
     }
-    let destination_path = destination.display().to_string();
     let display_name = destination
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("wallet backup")
         .to_string();
-    crate::security::fs::write_private(&destination, &[])?;
+    // Written beside the destination and renamed over it only once complete: a wrong wallet
+    // password fails after the crate has opened its target, and an existing backup chosen as
+    // the destination must survive that.
+    let staging = destination.with_file_name(format!(".{}.partial.json", Uuid::new_v4()));
+    crate::security::fs::write_private(&staging, &[])?;
+    let staging_path = staging.display().to_string();
 
-    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+    let written = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let _operation = _operation;
-        wallet
-            .as_ref()
-            .read()?
-            .backup_wallet_gui_app(destination_path, Some(password))?;
+        wallet.as_ref().read()?.backup_wallet_gui_app(
+            staging_path,
+            Some(password),
+            Some(wallet_password),
+        )?;
         Ok(())
     })
     .await
-    .map_err(AppError::internal)??;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o600))?;
+    .map_err(AppError::internal)
+    .and_then(|written| written)
+    .and_then(|()| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(std::fs::rename(&staging, &destination)?)
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staging);
     }
-    Ok(display_name)
+    written.map(|()| display_name)
 }
 
 // --- Wallet operations: balances, addresses, history, UTXOs, send, sync, fees ---

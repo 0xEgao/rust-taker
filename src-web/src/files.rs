@@ -82,13 +82,17 @@ pub async fn create_backup(
     // The desktop wrapper enforces this before opening its save dialog; a backup reachable
     // over HTTP must clear the same floor rather than a weaker one.
     portal_core::security::input::validate_password(&body.password, "backup password")?;
+    let wallet_password = body.wallet_password.clone().unwrap_or_default();
+    if wallet_password.is_empty() {
+        return Err(AppError::new(ErrorCode::InvalidInput, "enter the wallet password").into());
+    }
     let wallet = match &body.router_id {
         Some(router_id) => {
             portal_core::ops::maker::router_wallet(
                 &state.runtime,
                 &caller.session,
                 router_id,
-                body.wallet_password.clone(),
+                Some(wallet_password.clone()),
             )
             .await?
         }
@@ -112,7 +116,14 @@ pub async fn create_backup(
     portal_core::security::fs::ensure_private_dir(
         destination.parent().expect("transfers has a parent"),
     )?;
-    portal_core::ops::taker_wallet::write_backup(wallet, guard, destination, body.password).await?;
+    portal_core::ops::taker_wallet::write_backup(
+        wallet,
+        guard,
+        destination,
+        body.password,
+        wallet_password,
+    )
+    .await?;
     Ok((StatusCode::OK, Json(json!({ "artifactId": id }))).into_response())
 }
 
@@ -123,7 +134,7 @@ pub struct BackupBody {
     /// Back up this router's wallet instead of the session's.
     #[serde(default)]
     pub router_id: Option<String>,
-    /// Opens a stopped router's wallet; a running router's needs none.
+    /// Unseals the wallet's seed for the backup, and opens a stopped router's wallet.
     #[serde(default)]
     pub wallet_password: Option<String>,
 }

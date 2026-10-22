@@ -454,6 +454,7 @@ pub async fn init_maker(
             return Err(error);
         }
     }
+    let phrase_password = config.wallet_password.clone();
     let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
@@ -467,13 +468,23 @@ pub async fn init_maker(
         abort(&error)?;
         return Err(error);
     }
-    // Taken before the drop: the crate yields a new wallet's phrase once, from this server, and
-    // the router later starts with a fresh one that has none.
-    let new_phrase = server
-        .wallet
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .take_new_mnemonic();
+    // Read before the drop: a router later starts with a fresh server, and only this one is known
+    // to have just created the wallet.
+    let new_phrase = if marked {
+        match crate::ops::taker_wallet::read_sealed_phrase(server.wallet.clone(), phrase_password)
+            .await
+        {
+            Ok(words) => Some(words),
+            Err(error) => {
+                server.watch_service.shutdown();
+                drop(server);
+                abort(&error)?;
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
     // `MakerServer::init` is the crate's only wallet create/load API and starts
     // a watch service as a side effect. Creation is registration-only here, so
     // stop that temporary service and reconstruct a fresh runtime on start.
@@ -632,7 +643,7 @@ pub fn get_router_recovery_phrase(
         .filter(|pending| pending.session == session)
         .map(|pending| RecoveryPhraseDto {
             id: pending.id,
-            words: pending.words.words(),
+            words: pending.words.words().to_string(),
         }))
 }
 
@@ -945,6 +956,7 @@ pub async fn start_maker(
         }
     }
     crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
+    let phrase_password = config.wallet_password.clone();
     let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
@@ -973,11 +985,32 @@ pub async fn start_maker(
     };
     // A registration whose wallet file was gone just had a new one created. Like `init_maker`,
     // it stays stopped until its words are saved, since a running router can be funded.
-    let new_phrase = server
-        .wallet
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .take_new_mnemonic();
+    let new_phrase = if creating {
+        match crate::ops::taker_wallet::read_sealed_phrase(server.wallet.clone(), phrase_password)
+            .await
+        {
+            Ok(words) => Some(words),
+            Err(error) => {
+                server.watch_service.shutdown();
+                drop(server);
+                if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
+                    entry.phase = MakerPhase::Failed {
+                        message: error.message.clone(),
+                    };
+                }
+                emit_phase(
+                    state,
+                    &router_id,
+                    MakerPhase::Failed {
+                        message: error.message.clone(),
+                    },
+                );
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
     if let Some(words) = new_phrase {
         server.watch_service.shutdown();
         drop(server);

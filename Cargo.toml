@@ -30,6 +30,7 @@ axum = { version = "0.8", features = ["json", "macros"] }
 tower-http = { version = "0.6", features = ["fs", "set-header", "limit"] }
 clap = { version = "4", features = ["derive", "env"] }
 argon2 = "0.5"
+zeroize = "1"
 rand = "0.8"
 tokio-stream = "0.1"
 futures-util = "0.3"
