@@ -11,7 +11,7 @@ import type {
 /** Six acts, one headline each. Acts before `route` have nothing on-chain — see `committed`. */
 export type Act = "find" | "deal" | "fund" | "route" | "finalizing" | "settle";
 
-export const ACT_LABEL: Record<Act, string> = {
+const ACT_LABEL: Record<Act, string> = {
   find: "Find",
   deal: "Deal",
   fund: "Fund",
@@ -62,7 +62,7 @@ const PHASE_DOING: Record<TrackerPhase, string> = {
 };
 
 /** An edge is a contract transaction, so it has its own lifecycle independent of its endpoints. */
-export type EdgeStage = "pending" | "built" | "broadcast" | "confirming" | "confirmed";
+type EdgeStage = "pending" | "built" | "broadcast" | "confirming" | "confirmed";
 
 export const EDGE_STAGE_LABEL: Record<EdgeStage, string> = {
   pending: "Not started",

@@ -10,7 +10,7 @@ use openswap::wallet::MakerReport;
 use crate::ops::taker_reports::{status_label, to_report_utxos};
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
-use crate::types::{MakerSwapReportDetail, MakerSwapReportSummary, Outpoint};
+use crate::types::{MakerSwapReportDetail, MakerSwapReportSummary};
 
 fn get_maker_server(state: &Arc<AppState>, router_id: &str) -> Result<Arc<MakerServer>, AppError> {
     let makers = state.makers.lock()?;
@@ -26,7 +26,13 @@ fn get_maker_server(state: &Arc<AppState>, router_id: &str) -> Result<Arc<MakerS
 
 /// Every report the router's wallet holds. The crate keys them by wallet name, one bucket.
 async fn load_reports(state: &Arc<AppState>, router_id: &str) -> Result<Vec<MakerReport>, AppError> {
-    let server = get_maker_server(state, router_id)?;
+    let server = get_maker_server(state, router_id).map_err(|e| match e.code {
+        ErrorCode::RouterNotInitialized => AppError::new(
+            ErrorCode::RouterNotRunning,
+            "Start the router to see its reports. They are kept inside its wallet.",
+        ),
+        _ => e,
+    })?;
     tokio::task::spawn_blocking(move || -> Result<Vec<MakerReport>, AppError> {
         Ok(server.wallet.read()?.swap_reports().maker.into_values().flatten().collect())
     })
@@ -75,21 +81,6 @@ pub async fn get_maker_swap_report(
             )
         })?;
 
-    // Since upstream PR #1006 the proof is the only record of either contract's location, and
-    // it names them as outpoints rather than bare txids.
-    let to_outpoint = |op: openswap::bitcoin::OutPoint| Outpoint {
-        txid: op.txid.to_string(),
-        vout: op.vout,
-    };
-    let incoming_contract_outpoint = r
-        .deniability_proof
-        .as_ref()
-        .map(|p| to_outpoint(p.proven_outpoint()));
-    let outgoing_contract_outpoint = r
-        .deniability_proof
-        .as_ref()
-        .and_then(|p| p.outgoing_swapcoin)
-        .map(to_outpoint);
     let deniability_proof = r
         .deniability_proof
         .map(|p| serde_json::to_value(p).unwrap_or(serde_json::Value::Null));
@@ -104,8 +95,6 @@ pub async fn get_maker_swap_report(
         incoming_amount_sats: r.incoming_amount,
         outgoing_amount_sats: r.outgoing_amount,
         fee_earned_sats: r.fee_earned,
-        incoming_contract_outpoint,
-        outgoing_contract_outpoint,
         incoming_utxos: to_report_utxos(r.incoming_utxos),
         outgoing_utxos: to_report_utxos(r.outgoing_utxos),
         timelock: r.timelock,

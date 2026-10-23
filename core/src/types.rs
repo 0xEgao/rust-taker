@@ -81,8 +81,7 @@ pub struct RouterDefaultsDto {
 }
 
 /// Result of probing a chain backend. Electrum answers the height/chain questions
-/// from its tip subscription, so both backends fill the same shape; `subversion`
-/// is the one field only Core can report.
+/// from its tip subscription, so both backends fill the same shape.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendStatus {
@@ -99,12 +98,6 @@ pub struct BackendStatus {
     pub blocks: Option<u64>,
     /// true when headers == blocks and IBD is over
     pub synced: bool,
-    /// Core's version string, e.g. "/Satoshi:27.0.0/".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subversion: Option<String>,
-    /// [0..1] estimate of chain verification progress.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_progress: Option<f64>,
     /// Hex of the signet challenge script, on signet only. Every signet shares one genesis
     /// hash and differs solely in this script, so it is the only thing that names *which*
     /// signet. Core reports it; Electrum synthesizes its chain info from the header tip and
@@ -119,8 +112,6 @@ pub struct BackendStatus {
 pub struct TorStatus {
     /// True only when both the SOCKS greeting and control-port handshake succeeded.
     pub reachable: bool,
-    /// Result of the independent SOCKS5 greeting, even if the control port later fails.
-    pub socks_reachable: bool,
     pub authenticated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_progress: Option<u8>,
@@ -340,8 +331,6 @@ pub struct SendResult {
 pub struct FidelityBondDto {
     pub outpoint: Outpoint,
     pub amount_sats: u64,
-    /// Absolute block height the bond unlocks at.
-    pub lock_time_height: u32,
     pub is_spent: bool,
     /// Not yet unlocked and not already redeemed.
     pub is_locked: bool,
@@ -363,8 +352,6 @@ pub struct PriceEstimate {
     /// True when the live price service failed and Portal returned the last
     /// successfully saved quote instead.
     pub cached: bool,
-    /// Unix timestamp in seconds for the live quote or persisted fallback.
-    pub fetched_at: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -454,9 +441,8 @@ fn default_router_count() -> usize {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapFundingEstimateDto {
-    /// The next three are totals across the planned funding split: the crate funds our own
+    /// The next two are totals across the planned funding split: the crate funds our own
     /// hop from up to `tx_count` transactions, not one.
-    pub input_count: usize,
     pub vbytes: u64,
     pub fee_sats: u64,
     /// Wallet UTXOs the funding transactions consume.
@@ -642,8 +628,6 @@ pub struct RecoveredContractDto {
     /// "incoming" for a hashlock claim of the route's payment to us, "outgoing" for a timelock
     /// refund of our own funding.
     pub leg: String,
-    /// "hashlock" | "timelock"
-    pub resolution: String,
 }
 
 /// One swap inside the recovery, for the list that stands in front of the detail view. Carries
@@ -656,8 +640,6 @@ pub struct RecoverySummary {
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_at_phase: Option<SwapPhaseDto>,
     pub router_count: usize,
     pub send_amount_sats: u64,
     /// How many recovery transactions have claimed this swap's funds back.
@@ -666,7 +648,6 @@ pub struct RecoverySummary {
     pub updated_at: u64,
     /// How the funds came back, from the crate's recovery reports: `hashlock`, `timelock`.
     pub recovery_types: Vec<String>,
-    pub recovery_txids: Vec<String>,
 }
 
 /// Read from the swap journal plus the cached wallet handle — never through the taker mutex, so it
@@ -685,10 +666,6 @@ pub struct RecoveryStatus {
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
-    /// Where the swap got to before it stopped, which decides whether there is an incoming leg
-    /// at all: a swap that failed on its first hop never created one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_at_phase: Option<SwapPhaseDto>,
     pub router_count: usize,
     pub send_amount_sats: u64,
     /// Every key was handed over before the swap stopped, so the route paid this wallet and what
@@ -775,13 +752,6 @@ pub struct SwapReportDetail {
     pub mining_fee_sats: u64,
     pub fee_percentage: f64,
     pub total_router_fees_sats: u64,
-    /// The contract UTXO this swap funded, not just its transaction: the deniability proof
-    /// records the exact outpoint, and a Taproot contract output is not necessarily vout 0.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outgoing_contract_outpoint: Option<Outpoint>,
-    /// The contract UTXO the route paid back, from the same proof.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub incoming_contract_outpoint: Option<Outpoint>,
     /// Wallet coins spent to fund the outgoing contract.
     pub outgoing_utxos: Vec<ReportUtxo>,
     /// Wallet coins the incoming swapcoin sweep created. Empty when the swap paid a
@@ -947,7 +917,6 @@ pub enum MakerPhase {
 #[serde(rename_all = "camelCase")]
 pub struct SendFeeEstimate {
     pub fee_sats: u64,
-    pub vsize: u64,
     pub inputs: usize,
 }
 
@@ -1048,10 +1017,6 @@ pub struct MakerSwapReportDetail {
     pub incoming_amount_sats: u64,
     pub outgoing_amount_sats: u64,
     pub fee_earned_sats: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub incoming_contract_outpoint: Option<Outpoint>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outgoing_contract_outpoint: Option<Outpoint>,
     /// Wallet coins the incoming swapcoin sweep created.
     pub incoming_utxos: Vec<ReportUtxo>,
     /// Wallet coins spent to fund the outgoing contract.

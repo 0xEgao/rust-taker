@@ -267,12 +267,7 @@ impl From<WalletError> for AppError {
             | WalletError::Security(SecurityError::Decryption | SecurityError::PasswordRequired) => {
                 ErrorCode::WalletWrongPassword
             }
-            // `check_node_requirements` reports a missing ZMQ publisher as an untyped
-            // `General`, so its wording is the only signal. If upstream rewords it this falls
-            // back to the generic load failure rather than misreporting something else.
-            WalletError::General(message) if message.to_lowercase().contains("zmq") => {
-                ErrorCode::ZmqUnreachable
-            }
+            WalletError::Zmq(_) => ErrorCode::ZmqUnreachable,
             _ => ErrorCode::WalletLoadFailed,
         };
         let details = match &e {
@@ -322,10 +317,8 @@ impl<T> From<std::sync::PoisonError<T>> for AppError {
     }
 }
 
-/// Openswap used to panic (not Result::Err) on a wrong password or corrupt wallet file; this
-/// classifies the spawn_blocking JoinError's panic message into a proper ErrorCode instead of a
-/// generic Internal. Upstream now returns `WalletError::Security` for that, but the panic paths
-/// outside wallet decryption remain, so this stays.
+/// A panic while loading a wallet means a file the crate could not make sense of, not a bug in
+/// Portal, so it reads as a load failure rather than `Internal`.
 ///
 /// Takes Tokio's error, not a host error type: both hosts run wallet work on the same blocking
 /// pool, and only the host knows how to unwrap its own wrapper around this.
@@ -340,15 +333,7 @@ pub fn from_wallet_join_error(join_err: tokio::task::JoinError) -> AppError {
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "wallet operation panicked".to_string());
 
-    let code = if msg.contains("Failed to decrypt") {
-        ErrorCode::WalletWrongPassword
-    } else if msg.contains("Failed to read the file") {
-        ErrorCode::WalletNotFound
-    } else {
-        // e.g. "Failed to deserialize file ...": corrupt/foreign wallet file.
-        ErrorCode::WalletLoadFailed
-    };
-    AppError::new(code, msg)
+    AppError::new(ErrorCode::WalletLoadFailed, msg)
 }
 
 #[cfg(test)]
@@ -418,18 +403,5 @@ mod tests {
             AppError::from(TakerError::NotEnoughMakersInOfferBook).code,
             ErrorCode::NotEnoughRouters
         );
-    }
-
-    #[test]
-    fn a_panicking_wallet_load_is_still_classified() {
-        // The historical path: upstream panicked rather than returning an error.
-        let joined = std::thread::spawn(|| panic!("Failed to decrypt the wallet file"))
-            .join()
-            .unwrap_err();
-        let message = joined
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        assert!(message.contains("Failed to decrypt"));
     }
 }

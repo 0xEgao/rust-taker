@@ -5,11 +5,11 @@ use openswap::bitcoin::{Address, Txid};
 use openswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport, UTXOSpendInfo};
 
 use crate::ops::chain_backend;
-use crate::ops::taker_journal::{self, SwapOutcome};
+use crate::ops::taker_journal::{self, SwapEntry, SwapOutcome};
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, TakerInstance};
 use crate::types::{
-    Outpoint, ReportRouterFee, ReportUtxo, SwapReportDetail, SwapReportSummary, SwapUtxoDto,
+    ReportRouterFee, ReportUtxo, SwapReportDetail, SwapReportSummary, SwapUtxoDto,
 };
 
 /// Shared with `commands::maker_reports`: both sides report the same `SwapStatus`.
@@ -70,7 +70,7 @@ pub async fn list_swap_reports(
     taker: &TakerInstance,
 ) -> Result<Vec<SwapReportSummary>, AppError> {
     let wallet = taker.wallet.clone();
-    let data_dir = taker.data_dir.clone();
+    let (data_dir, key) = (taker.data_dir.clone(), taker.journal_key.clone());
     let live_swap = taker.running_swap_id();
     tokio::task::spawn_blocking(move || -> Result<Vec<SwapReportSummary>, AppError> {
         let mut rows: Vec<SwapReportSummary> = wallet
@@ -91,23 +91,36 @@ pub async fn list_swap_reports(
             })
             .collect();
 
-        // The crate writes a report only from inside `start_swap`. A swap whose process died, or
-        // that failed past a point the crate reports, gets none — but it really happened and may
-        // still be holding funds, so leaving it out would report "0 failed" while money sits in
-        // a contract.
-        let reported: std::collections::HashSet<String> =
-            rows.iter().map(|r| r.swap_id.clone()).collect();
-        for entry in taker_journal::load(&data_dir)?.into_values() {
-            let status = match entry.effective_outcome(live_swap.as_deref()) {
+        let journal = taker_journal::load(&data_dir, &key)?;
+        let unreported = unreported_rows(journal.into_values(), &rows, live_swap.as_deref());
+        rows.extend(unreported);
+        rows.sort_by_key(|r| r.start_timestamp);
+        Ok(rows)
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+/// History rows for journaled swaps the crate wrote no report for.
+///
+/// The crate writes a report only from inside `start_swap`. A swap whose process died, or that
+/// failed past a point the crate reports, gets none — but it really happened and may still be
+/// holding funds, so leaving it out would report "0 failed" while money sits in a contract.
+fn unreported_rows(
+    journal: impl IntoIterator<Item = SwapEntry>,
+    reported: &[SwapReportSummary],
+    live_swap: Option<&str>,
+) -> Vec<SwapReportSummary> {
+    journal
+        .into_iter()
+        .filter(|entry| !reported.iter().any(|r| r.swap_id == entry.swap_id))
+        .filter_map(|entry| {
+            let status = match entry.effective_outcome(live_swap) {
                 SwapOutcome::Recovering => "interrupted",
                 SwapOutcome::Recovered => "recovered",
-                _ => continue,
+                _ => return None,
             };
-            if reported.contains(&entry.swap_id) {
-                continue;
-            }
-            rows.push(SwapReportSummary {
-                swap_id: entry.swap_id,
+            Some(SwapReportSummary {
                 status: status.to_string(),
                 reported: false,
                 start_timestamp: entry.created_at,
@@ -117,13 +130,10 @@ pub async fn list_swap_reports(
                 received_amount_sats: 0,
                 fee_paid_sats: 0,
                 routers_count: entry.routers.len(),
-            });
-        }
-        rows.sort_by_key(|r| r.start_timestamp);
-        Ok(rows)
-    })
-    .await
-    .map_err(AppError::internal)?
+                swap_id: entry.swap_id,
+            })
+        })
+        .collect()
 }
 
 pub async fn get_swap_report(
@@ -147,21 +157,6 @@ pub async fn get_swap_report(
         })
         .collect();
 
-    // Both sides of the route as outpoints. `proven_outpoint` is the incoming contract — the one
-    // `verify_deniability` checks on-chain — and `outgoing_swapcoin` is what this wallet paid in.
-    let to_outpoint = |op: openswap::bitcoin::OutPoint| Outpoint {
-        txid: op.txid.to_string(),
-        vout: op.vout,
-    };
-    let incoming_contract_outpoint = r
-        .deniability_proof
-        .as_ref()
-        .map(|p| to_outpoint(p.proven_outpoint()));
-    let outgoing_contract_outpoint = r
-        .deniability_proof
-        .as_ref()
-        .and_then(|p| p.outgoing_swapcoin)
-        .map(to_outpoint);
     // Raw pass-through — see the field's doc comment in types.rs for why this isn't hand-mirrored.
     let deniability_proof = r
         .deniability_proof
@@ -188,8 +183,6 @@ pub async fn get_swap_report(
         router_addresses: r.maker_addresses,
         router_fee_info,
         pay_swap,
-        outgoing_contract_outpoint,
-        incoming_contract_outpoint,
         deniability_proof,
         raw,
     })
@@ -309,4 +302,87 @@ pub async fn get_incoming_swap_utxo(
     })
     .await
     .map_err(AppError::internal)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SwapSummaryDto;
+
+    fn entry(id: &str) -> SwapEntry {
+        SwapEntry::start(&SwapSummaryDto {
+            swap_id: id.into(),
+            protocol: "taproot".into(),
+            send_amount_sats: 50_000,
+            routers: Vec::new(),
+            total_estimated_fee_sats: 0,
+            estimated_receive_amount_sats: 0,
+            router_fee_sats: 0,
+            mining_fee_sats: 0,
+            payment: None,
+        })
+    }
+
+    fn with_outcome(id: &str, outcome: SwapOutcome) -> SwapEntry {
+        SwapEntry {
+            outcome,
+            ..entry(id)
+        }
+    }
+
+    fn reported(id: &str) -> SwapReportSummary {
+        SwapReportSummary {
+            swap_id: id.into(),
+            status: "failed".into(),
+            reported: true,
+            start_timestamp: 0,
+            end_timestamp: Some(0),
+            outgoing_amount_sats: 0,
+            received_amount_sats: 0,
+            fee_paid_sats: 0,
+            routers_count: 0,
+        }
+    }
+
+    #[test]
+    fn recovering_and_recovered_swaps_without_a_report_are_listed() {
+        let rows = unreported_rows(
+            [
+                with_outcome("a", SwapOutcome::Recovering),
+                with_outcome("b", SwapOutcome::Recovered),
+            ],
+            &[],
+            None,
+        );
+        let statuses: Vec<_> = rows.iter().map(|r| (r.swap_id.as_str(), r.status.as_str())).collect();
+        assert_eq!(statuses, [("a", "interrupted"), ("b", "recovered")]);
+        assert!(rows.iter().all(|r| !r.reported && r.end_timestamp.is_none()));
+        assert_eq!(rows[0].outgoing_amount_sats, 50_000);
+    }
+
+    #[test]
+    fn a_swap_the_crate_reported_is_not_listed_twice() {
+        let rows = unreported_rows(
+            [with_outcome("a", SwapOutcome::Recovering)],
+            &[reported("a")],
+            None,
+        );
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn finished_aborted_and_running_swaps_are_left_to_their_own_views() {
+        let mut funded = entry("live");
+        funded.observe("Broadcast contract tx: aa");
+        let rows = unreported_rows(
+            [
+                with_outcome("done", SwapOutcome::Completed),
+                with_outcome("aborted", SwapOutcome::Aborted),
+                funded,
+            ],
+            &[],
+            Some("live"),
+        );
+        assert!(rows.is_empty());
+    }
 }

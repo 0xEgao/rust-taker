@@ -53,9 +53,6 @@ export interface BackendStatus {
   chain?: string;
   blocks?: number;
   synced: boolean;
-  /** Bitcoin Core only; Electrum has no version string to report. */
-  subversion?: string;
-  verificationProgress?: number;
   /** Hex of the signet challenge script, on signet only. Absent over Electrum even on a
    *  signet — it has no way to report one. */
   signetChallenge?: string;
@@ -64,8 +61,6 @@ export interface BackendStatus {
 // bootstrapProgress is informational only — openswap's own init doesn't gate on it.
 export interface TorStatus {
   reachable: boolean;
-  /** Independent SOCKS5 greeting result, even when the control port fails. */
-  socksReachable: boolean;
   authenticated: boolean;
   bootstrapProgress?: number;
   /** Tor's own name for the phase it is in, e.g. "Loading relay descriptors". */
@@ -283,8 +278,6 @@ export interface PriceEstimate {
   usd: number;
   /** The live request failed and Portal returned its last successfully saved quote. */
   cached: boolean;
-  /** Unix timestamp in seconds for the live quote or persisted fallback. */
-  fetchedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +324,6 @@ export interface OfferBookView {
  *  assumes a change output. */
 export interface SendFeeEstimate {
   feeSats: number;
-  vsize: number;
   inputs: number;
 }
 
@@ -416,7 +408,6 @@ export interface RouterStatus {
 export interface FidelityBond {
   outpoint: Outpoint;
   amountSats: number;
-  lockTimeHeight: number;
   isSpent: boolean;
   isLocked: boolean;
 }
@@ -435,8 +426,6 @@ export interface RouterSwapReportSummary {
 export interface RouterSwapReportDetail extends RouterSwapReportSummary {
   network: string;
   swapDurationSeconds: number;
-  incomingContractOutpoint?: Outpoint;
-  outgoingContractOutpoint?: Outpoint;
   incomingUtxos: ReportUtxo[];
   outgoingUtxos: ReportUtxo[];
   timelock: number;
@@ -465,8 +454,7 @@ export interface SwapRequest {
 }
 
 export interface SwapFundingEstimate {
-  /** The next three are totals across the wallet's funding split, which may be several txs. */
-  inputCount: number;
+  /** The next two are totals across the wallet's funding split, which may be several txs. */
   vbytes: number;
   feeSats: number;
   /** Wallet UTXOs the funding transactions consume. */
@@ -603,7 +591,6 @@ export interface RecoveredContract {
   txid: string;
   /** "incoming": the route's payment claimed by hashlock. "outgoing": our funding refunded. */
   leg: "incoming" | "outgoing";
-  resolution: "hashlock" | "timelock";
 }
 
 /**
@@ -615,7 +602,6 @@ export interface RecoverySummary {
   swapId: string;
   phase: RecoveryPhase;
   failureReason?: string;
-  failedAtPhase?: TrackerPhase;
   routerCount: number;
   sendAmountSats: number;
   /** How many recovery transactions have claimed this swap's funds back. */
@@ -624,7 +610,6 @@ export interface RecoverySummary {
   updatedAt: number;
   /** How the funds came back, once recovery reported it: "hashlock", "timelock". */
   recoveryTypes: string[];
-  recoveryTxids: string[];
 }
 
 export interface RecoveryStatus {
@@ -635,8 +620,6 @@ export interface RecoveryStatus {
   swapId?: string;
   phase: RecoveryPhase;
   failureReason?: string;
-  /** Where the swap stopped — decides whether there is an incoming leg at all. */
-  failedAtPhase?: TrackerPhase;
   routerCount: number;
   sendAmountSats: number;
   /** Every key went round the route before it stopped: it went through, and only the router's
@@ -724,12 +707,6 @@ export interface SwapReportDetail {
   routerFeeInfo: ReportRouterFee[];
   /** Paid a third-party receiver rather than back to this wallet. */
   paySwap: boolean;
-  /** The exact outpoint verify_deniability checks on-chain. */
-  /** The contract UTXO this wallet funded — an outpoint, since a Taproot contract output is not
-   *  necessarily vout 0. Absent for swaps whose report carries no deniability proof. */
-  outgoingContractOutpoint?: Outpoint;
-  /** The contract UTXO the route paid back; also the outpoint `verifyDeniability` checks. */
-  incomingContractOutpoint?: Outpoint;
   /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */
   deniabilityProof: Record<string, unknown> | null;
   /** The crate's report, as JSON. */

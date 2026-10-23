@@ -420,43 +420,37 @@ impl log::Log for InitPhaseWatcher {
     fn flush(&self) {}
 }
 
-type LineObserver = Box<dyn FnMut(&str, &str) + Send>;
+type LineObserver = Box<dyn FnMut(&str, &str)>;
 
-struct ThreadLogWatch {
-    id: u64,
-    /// The thread whose records this sees: a swap's own crate calls run on it, and several
-    /// wallets can be swapping at once.
-    thread: std::thread::ThreadId,
-    observe: LineObserver,
+thread_local! {
+    /// What this thread's records are handed to. Per thread, so a record logged anywhere else
+    /// never waits on an observer here, one of which saves to disk.
+    static THREAD_WATCHES: std::cell::RefCell<Vec<(u64, LineObserver)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
-
-static THREAD_WATCHES: Mutex<Vec<ThreadLogWatch>> = Mutex::new(Vec::new());
 static NEXT_THREAD_WATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Only removes its own watch, so it must be dropped on the thread that created it.
 pub struct ThreadLogGuard {
     id: u64,
 }
 
 impl Drop for ThreadLogGuard {
     fn drop(&mut self) {
-        if let Ok(mut watches) = THREAD_WATCHES.lock() {
-            watches.retain(|watch| watch.id != self.id);
-        }
+        let _ = THREAD_WATCHES.try_with(|watches| {
+            if let Ok(mut watches) = watches.try_borrow_mut() {
+                watches.retain(|(id, _)| *id != self.id);
+            }
+        });
     }
 }
 
 /// Hands every record this thread logs to `observe` as `(target, message)`, for as long as the
-/// guard lives. `observe` runs inside the logger, so it must never log itself.
+/// guard lives. A record `observe` logs itself is not handed back to it.
 #[must_use]
-pub fn watch_thread_logs(observe: impl FnMut(&str, &str) + Send + 'static) -> ThreadLogGuard {
+pub fn watch_thread_logs(observe: impl FnMut(&str, &str) + 'static) -> ThreadLogGuard {
     let id = NEXT_THREAD_WATCH.fetch_add(1, Ordering::Relaxed);
-    if let Ok(mut watches) = THREAD_WATCHES.lock() {
-        watches.push(ThreadLogWatch {
-            id,
-            thread: std::thread::current().id(),
-            observe: Box::new(observe),
-        });
-    }
+    THREAD_WATCHES.with(|watches| watches.borrow_mut().push((id, Box::new(observe))));
     ThreadLogGuard { id }
 }
 
@@ -482,20 +476,19 @@ impl log::Log for ThreadLogWatcher {
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        // Blocking: a skipped line can leave a funding wait's leg unsealed. Observers never log,
-        // so this cannot re-enter.
-        let Ok(mut watches) = THREAD_WATCHES.lock() else {
-            return;
-        };
-        let thread = std::thread::current().id();
-        let mut mine = watches.iter_mut().filter(|watch| watch.thread == thread).peekable();
-        if mine.peek().is_none() {
-            return;
-        }
-        let message = record.args().to_string();
-        for watch in mine {
-            (watch.observe)(record.target(), &message);
-        }
+        // `try_borrow_mut`: a record an observer logs arrives while the list is borrowed.
+        let _ = THREAD_WATCHES.try_with(|watches| {
+            let Ok(mut watches) = watches.try_borrow_mut() else {
+                return;
+            };
+            if watches.is_empty() {
+                return;
+            }
+            let message = record.args().to_string();
+            for (_, observe) in watches.iter_mut() {
+                observe(record.target(), &message);
+            }
+        });
     }
 
     fn flush(&self) {}

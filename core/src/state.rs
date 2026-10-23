@@ -96,6 +96,8 @@ pub struct TakerInstance {
     pub taker: Arc<Mutex<Option<Taker>>>,
     /// Cached from `taker.get_wallet()` so wallet reads never contend with the taker mutex.
     pub wallet: Arc<RwLock<Wallet>>,
+    /// Seals this wallet's swap journal, derived from its password at unlock.
+    pub journal_key: openswap::security::KeyMaterial,
     pub offer_sync: OfferSyncClient,
     /// Exact chain route this Taker was built against. A later gate choice in another
     /// session never changes it.

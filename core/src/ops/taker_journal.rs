@@ -1,17 +1,30 @@
-//! Portal's own record of every swap a wallet starts, kept beside the wallet as `swaps.json`.
+//! Portal's own record of every swap a wallet starts, kept beside the wallet as `swaps.journal`.
 //!
 //! openswap keeps a swap's progress private, so the record is folded from the lines the crate
 //! logs on the swap's own thread (`observe`). A line that stops matching after a crate bump
 //! leaves a stage behind, never wrong: stages and phases only move forward.
+//!
+//! It links the wallet's on-chain legs to its routers and amounts, so it is sealed like the
+//! wallet: AES-GCM under a key derived from the wallet password.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::error::AppError;
+use openswap::security::{decrypt_struct, encrypt_struct, EncryptedData, KeyMaterial};
+
+use crate::error::{AppError, ErrorCode};
 use crate::types::{RouterProgressDto, RouterStageDto, SwapPhaseDto, SwapSummaryDto, SwapTrackerDto};
 
-const JOURNAL_FILE: &str = "swaps.json";
+const JOURNAL_FILE: &str = "swaps.journal";
+
+/// The sealed journal with the salt its key is derived from. `EncryptedData` keeps its own salt
+/// private, so the next unlock could not re-derive the key without this copy.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SealedJournal {
+    salt: [u8; 16],
+    sealed: EncryptedData,
+}
 
 /// Serializes every read-modify-write of a journal: the swap thread and the recovery reads both
 /// save into the same file.
@@ -263,43 +276,79 @@ impl SwapEntry {
     }
 }
 
-/// Every swap this wallet has journaled, by id. Only a missing journal is empty: one that can't
-/// be read is an error, so no save ever overwrites the history it holds.
-pub fn load(dir: &Path) -> Result<BTreeMap<String, SwapEntry>, AppError> {
+fn read_sealed(dir: &Path) -> Result<Option<SealedJournal>, AppError> {
     let path = dir.join(JOURNAL_FILE);
     match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+        Ok(bytes) => serde_cbor::from_slice(&bytes).map(Some).map_err(|e| {
             AppError::internal(format!("cannot read the swap journal {}: {e}", path.display()))
         }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
 
+/// The journal's key, derived once per unlock. A journal that can't be read gets a fresh key,
+/// which no save can use: `save` refuses while the file on disk doesn't load.
+pub fn derive_key(dir: &Path, password: Option<String>) -> Result<KeyMaterial, AppError> {
+    let password = password.ok_or_else(|| {
+        AppError::new(ErrorCode::WalletWrongPassword, "a wallet password is required")
+    })?;
+    Ok(match read_sealed(dir).ok().flatten() {
+        // Encryption takes a fresh nonce every time; this one is never used.
+        Some(file) => KeyMaterial::existing(password, [0; 12], file.salt),
+        None => KeyMaterial::new_from_password(Some(password))
+            .ok_or_else(|| AppError::internal("no key material from a password"))?,
+    })
+}
+
+/// Every swap this wallet has journaled, by id. Only a missing journal is empty: one that can't
+/// be read is an error, so no save ever overwrites the history it holds.
+pub fn load(dir: &Path, key: &KeyMaterial) -> Result<BTreeMap<String, SwapEntry>, AppError> {
+    match read_sealed(dir)? {
+        Some(file) => decrypt_struct(file.sealed, key).map_err(|e| {
+            AppError::internal(format!("cannot open the swap journal: {e}"))
+        }),
+        None => Ok(BTreeMap::new()),
+    }
+}
+
 /// Writes one entry. Never logs: the swap thread calls this from inside the logger.
-pub fn save(dir: &Path, entry: &SwapEntry) -> Result<(), AppError> {
+pub fn save(dir: &Path, key: &KeyMaterial, entry: &SwapEntry) -> Result<(), AppError> {
     let _write = JOURNAL_WRITE.lock()?;
-    let mut all = load(dir)?;
+    let mut all = load(dir, key)?;
     all.insert(entry.swap_id.clone(), entry.clone());
-    write_all(dir, &all)
+    write_all(dir, key, &all)
 }
 
 /// Applies `change` to every entry and saves once if any changed.
-pub fn update_all(dir: &Path, mut change: impl FnMut(&mut SwapEntry) -> bool) -> Result<(), AppError> {
+pub fn update_all(
+    dir: &Path,
+    key: &KeyMaterial,
+    mut change: impl FnMut(&mut SwapEntry) -> bool,
+) -> Result<(), AppError> {
     let _write = JOURNAL_WRITE.lock()?;
-    let mut all = load(dir)?;
+    let mut all = load(dir, key)?;
     let mut changed = false;
     for entry in all.values_mut() {
         changed |= change(entry);
     }
     if changed {
-        write_all(dir, &all)?;
+        write_all(dir, key, &all)?;
     }
     Ok(())
 }
 
-fn write_all(dir: &Path, all: &BTreeMap<String, SwapEntry>) -> Result<(), AppError> {
-    let bytes = serde_json::to_vec_pretty(all).map_err(AppError::internal)?;
+fn write_all(
+    dir: &Path,
+    key: &KeyMaterial,
+    all: &BTreeMap<String, SwapEntry>,
+) -> Result<(), AppError> {
+    let sealed = encrypt_struct(all, key).map_err(|e| AppError::internal(format!("{e:?}")))?;
+    let bytes = serde_cbor::to_vec(&SealedJournal {
+        salt: key.pbkdf2_salt,
+        sealed,
+    })
+    .map_err(AppError::internal)?;
     // Written aside and renamed in, so a crash mid-write leaves the previous journal whole.
     let staged = dir.join(format!("{JOURNAL_FILE}.partial"));
     crate::security::fs::write_private(&staged, &bytes)?;
@@ -447,19 +496,38 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("portal-journal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let key = derive_key(&dir, Some("pw".into())).unwrap();
         let mut e = entry(1);
-        save(&dir, &e).unwrap();
+        save(&dir, &key, &e).unwrap();
         e.settle(Ok(()));
-        save(&dir, &e).unwrap();
-        let all = load(&dir).unwrap();
+        save(&dir, &key, &e).unwrap();
+        let all = load(&dir, &key).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all["s"].outcome, SwapOutcome::Completed);
-        update_all(&dir, |entry| {
+        update_all(&dir, &key, |entry| {
             entry.outcome = SwapOutcome::Recovered;
             true
         })
         .unwrap();
-        assert_eq!(load(&dir).unwrap()["s"].outcome, SwapOutcome::Recovered);
+        assert_eq!(load(&dir, &key).unwrap()["s"].outcome, SwapOutcome::Recovered);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The next unlock re-derives the key from the password alone; nothing readable is on disk.
+    #[test]
+    fn the_journal_is_sealed_under_the_wallet_password() {
+        let dir = std::env::temp_dir().join(format!("portal-journal-seal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        save(&dir, &derive_key(&dir, Some("pw".into())).unwrap(), &entry(1)).unwrap();
+        let bytes = std::fs::read(dir.join(JOURNAL_FILE)).unwrap();
+        assert!(!bytes.windows(8).any(|w| w == b"r0.onion"), "router address in the clear");
+
+        let reopened = derive_key(&dir, Some("pw".into())).unwrap();
+        assert_eq!(load(&dir, &reopened).unwrap().len(), 1);
+        let wrong = derive_key(&dir, Some("not it".into())).unwrap();
+        assert!(load(&dir, &wrong).is_err());
+        assert!(save(&dir, &wrong, &entry(1)).is_err(), "a wrong key never overwrites");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -469,11 +537,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("portal-journal-bad-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(load(&dir).unwrap().is_empty(), "no journal yet is an empty one");
-        std::fs::write(dir.join(JOURNAL_FILE), b"{ not json").unwrap();
-        assert!(load(&dir).is_err());
-        assert!(save(&dir, &entry(1)).is_err());
-        assert_eq!(std::fs::read(dir.join(JOURNAL_FILE)).unwrap(), b"{ not json");
+        let key = derive_key(&dir, Some("pw".into())).unwrap();
+        assert!(load(&dir, &key).unwrap().is_empty(), "no journal yet is an empty one");
+        std::fs::write(dir.join(JOURNAL_FILE), b"not cbor").unwrap();
+        assert!(load(&dir, &key).is_err());
+        assert!(save(&dir, &key, &entry(1)).is_err());
+        assert_eq!(std::fs::read(dir.join(JOURNAL_FILE)).unwrap(), b"not cbor");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

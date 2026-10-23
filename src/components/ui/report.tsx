@@ -285,7 +285,7 @@ export function ReportHero({ label, amountSats, secondary, tags, durationSeconds
  * Renders whatever the crate's `DeniabilityProof` JSON happens to contain, without hardcoding
  * field names — the Taproot and Legacy variants differ and the shape may evolve upstream.
  */
-export function JsonEntries({ value, depth = 0 }: { value: unknown; depth?: number }) {
+function JsonEntries({ value, depth = 0 }: { value: unknown; depth?: number }) {
   if (value === null || value === undefined) return <span className="text-subtle">—</span>;
 
   if (typeof value === "string") {
