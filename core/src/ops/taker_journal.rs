@@ -303,13 +303,22 @@ pub fn derive_key(dir: &Path, password: Option<String>) -> Result<KeyMaterial, A
 
 /// Every swap this wallet has journaled, by id. Only a missing journal is empty: one that can't
 /// be read is an error, so no save ever overwrites the history it holds.
-pub fn load(dir: &Path, key: &KeyMaterial) -> Result<BTreeMap<String, SwapEntry>, AppError> {
+fn load(dir: &Path, key: &KeyMaterial) -> Result<BTreeMap<String, SwapEntry>, AppError> {
     match read_sealed(dir)? {
         Some(file) => decrypt_struct(file.sealed, key).map_err(|e| {
             AppError::internal(format!("cannot open the swap journal: {e}"))
         }),
         None => Ok(BTreeMap::new()),
     }
+}
+
+/// For views that only add journal detail to what the wallet itself says: an unreadable journal
+/// leaves them the wallet's view rather than none at all.
+pub fn load_for_view(dir: &Path, key: &KeyMaterial) -> BTreeMap<String, SwapEntry> {
+    load(dir, key).unwrap_or_else(|e| {
+        log::warn!("showing swaps without the journal: {}", e.message);
+        BTreeMap::new()
+    })
 }
 
 /// Writes one entry. Never logs: the swap thread calls this from inside the logger.
@@ -541,6 +550,7 @@ mod tests {
         assert!(load(&dir, &key).unwrap().is_empty(), "no journal yet is an empty one");
         std::fs::write(dir.join(JOURNAL_FILE), b"not cbor").unwrap();
         assert!(load(&dir, &key).is_err());
+        assert!(load_for_view(&dir, &key).is_empty(), "views fall back to the wallet's own data");
         assert!(save(&dir, &key, &entry(1)).is_err());
         assert_eq!(std::fs::read(dir.join(JOURNAL_FILE)).unwrap(), b"not cbor");
         std::fs::remove_dir_all(&dir).unwrap();

@@ -430,9 +430,10 @@ thread_local! {
 }
 static NEXT_THREAD_WATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Only removes its own watch, so it must be dropped on the thread that created it.
+/// Removes its watch from the thread that created it, so it must never leave that thread.
 pub struct ThreadLogGuard {
     id: u64,
+    _not_send: std::marker::PhantomData<*const ()>,
 }
 
 impl Drop for ThreadLogGuard {
@@ -451,7 +452,10 @@ impl Drop for ThreadLogGuard {
 pub fn watch_thread_logs(observe: impl FnMut(&str, &str) + 'static) -> ThreadLogGuard {
     let id = NEXT_THREAD_WATCH.fetch_add(1, Ordering::Relaxed);
     THREAD_WATCHES.with(|watches| watches.borrow_mut().push((id, Box::new(observe))));
-    ThreadLogGuard { id }
+    ThreadLogGuard {
+        id,
+        _not_send: std::marker::PhantomData,
+    }
 }
 
 /// The txid a funding wait is polling, from its "Tx <txid> has N confirmations (need M)" round.

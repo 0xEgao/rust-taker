@@ -91,7 +91,7 @@ pub async fn list_swap_reports(
             })
             .collect();
 
-        let journal = taker_journal::load(&data_dir, &key)?;
+        let journal = taker_journal::load_for_view(&data_dir, &key);
         let unreported = unreported_rows(journal.into_values(), &rows, live_swap.as_deref());
         rows.extend(unreported);
         rows.sort_by_key(|r| r.start_timestamp);

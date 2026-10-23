@@ -424,11 +424,15 @@ pub async fn start_swap(
                 }
             }
             let (journal, data_dir, key) = &watched;
-            if let Ok(mut entry) = journal.lock() {
-                if entry.observe(line) {
+            // Saved outside the lock: the tracker poll reads this entry while the file is written.
+            let changed = journal.lock().ok().and_then(|mut entry| {
+                entry.observe(line).then(|| {
                     entry.updated_at = taker_journal::now_secs();
-                    let _ = taker_journal::save(data_dir, key, &entry);
-                }
+                    entry.clone()
+                })
+            });
+            if let Some(entry) = changed {
+                let _ = taker_journal::save(data_dir, key, &entry);
             }
         });
         let (result, coins_committed) = {
@@ -563,12 +567,12 @@ pub async fn get_swap_tracker(
     }
     let (data_dir, key) = (taker.data_dir.clone(), taker.journal_key.clone());
     tokio::task::spawn_blocking(move || {
-        Ok(taker_journal::load(&data_dir, &key)?
+        taker_journal::load_for_view(&data_dir, &key)
             .remove(&swap_id)
-            .map(|entry| entry.to_tracker_dto(Vec::new())))
+            .map(|entry| entry.to_tracker_dto(Vec::new()))
     })
     .await
-    .map_err(AppError::internal)?
+    .map_err(AppError::internal)
 }
 
 /// Starts recovery for contracts the automatic path never picked up — a loop that failed to spawn,
@@ -633,7 +637,7 @@ pub async fn list_recoveries(
 
     tokio::task::spawn_blocking(move || -> Result<Vec<RecoverySummary>, AppError> {
         let reports = wallet.read()?.swap_reports().recovery;
-        let mut rows: Vec<RecoverySummary> = taker_journal::load(&data_dir, &key)?
+        let mut rows: Vec<RecoverySummary> = taker_journal::load_for_view(&data_dir, &key)
             .into_values()
             .filter_map(|entry| {
                 let outcome = entry.effective_outcome(live_swap.as_deref());
@@ -704,16 +708,19 @@ pub async fn get_recovery_status(
         // The crate keeps no per-swap recovery state, so a swap counts as recovered once the
         // worker has stopped with nothing left in contracts.
         if recovery_running == Some(false) && live.is_empty() && !swap_running {
-            taker_journal::update_all(&data_dir, &key, |entry| {
+            let settled = taker_journal::update_all(&data_dir, &key, |entry| {
                 let recovering = entry.effective_outcome(None) == SwapOutcome::Recovering;
                 if recovering {
                     entry.outcome = SwapOutcome::Recovered;
                     entry.updated_at = taker_journal::now_secs();
                 }
                 recovering
-            })?;
+            });
+            if let Err(e) = settled {
+                log::warn!("could not mark finished recoveries in the journal: {}", e.message);
+            }
         }
-        let journal = taker_journal::load(&data_dir, &key)?;
+        let journal = taker_journal::load_for_view(&data_dir, &key);
         let outcome = |entry: &SwapEntry| entry.effective_outcome(live_swap.as_deref());
         let candidates: Vec<&SwapEntry> = journal
             .values()
