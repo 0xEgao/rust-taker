@@ -364,7 +364,7 @@ export const host: Host = {
   },
   // Two steps because the server only hands a backup over once: producing it returns an id,
   // and the download consumes and deletes it, so a retry means producing a fresh one.
-  createBackup: async (password, routerId, walletPassword) => {
+  createBackup: async (walletPassword, password, routerId) => {
     const created = await post("/backups", { password, routerId, walletPassword });
     if (!created.ok) throw await toAppError(created);
     const { artifactId } = (await created.json()) as { artifactId: string };

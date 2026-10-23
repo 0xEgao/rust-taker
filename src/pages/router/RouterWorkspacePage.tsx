@@ -1617,7 +1617,7 @@ export function RouterWorkspacePage() {
                   <p className="mt-1 text-[11px] text-muted">An encrypted export of this router&apos;s wallet</p>
                 </div>
                 <div className="p-5">
-                  <BackupForm routerId={id} routerStopped={!running} />
+                  <BackupForm routerId={id} />
                 </div>
               </Card>
             </div>

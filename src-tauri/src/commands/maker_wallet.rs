@@ -81,7 +81,7 @@ pub async fn backup_maker_wallet(
     state: tauri::State<'_, Arc<AppState>>,
     router_id: String,
     password: String,
-    wallet_password: Option<String>,
+    wallet_password: String,
 ) -> Result<String, AppError> {
     crate::native::ensure_main_window(&window)?;
     portal_core::security::input::validate_password(&password, "backup password")?;
@@ -89,7 +89,7 @@ pub async fn backup_maker_wallet(
         &state,
         portal_core::state::DESKTOP_SESSION,
         &router_id,
-        wallet_password,
+        Some(wallet_password.clone()),
     )
     .await?;
     super::taker_wallet::save_backup(
@@ -98,6 +98,7 @@ pub async fn backup_maker_wallet(
         wallet,
         &format!("portal-router-{router_id}-backup"),
         password,
+        wallet_password,
     )
     .await
 }

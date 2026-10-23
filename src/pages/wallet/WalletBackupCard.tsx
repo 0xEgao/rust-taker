@@ -68,9 +68,9 @@ export function WalletFooterCard() {
   );
 }
 
-/** Password, confirm, then the host saves the encrypted file. Without `routerId` it backs up
- *  the open wallet. A stopped router's wallet is closed, so it also asks for that password. */
-export function BackupForm({ routerId, routerStopped = false }: { routerId?: string; routerStopped?: boolean }) {
+/** Wallet password, backup password, confirm, then the host saves the encrypted file. Without
+ *  `routerId` it backs up the open wallet. */
+export function BackupForm({ routerId }: { routerId?: string }) {
   const pushToast = useToastStore((s) => s.push);
 
   const [open, setOpen] = useState(false);
@@ -82,6 +82,9 @@ export function BackupForm({ routerId, routerStopped = false }: { routerId?: str
 
   function submit() {
     setError(undefined);
+    if (!walletPassword) {
+      return setError(`Enter the ${routerId === undefined ? "wallet" : "router wallet"} password.`);
+    }
     if (!password) return setError("Please enter a backup password.");
     if (password.length < MIN_BACKUP_PASSWORD) {
       return setError(
@@ -89,14 +92,13 @@ export function BackupForm({ routerId, routerStopped = false }: { routerId?: str
       );
     }
     if (password !== confirm) return setError("Passwords do not match.");
-    if (routerStopped && !walletPassword) return setError("Enter the router wallet password.");
     void run();
   }
 
   async function run() {
     setBusy(true);
     try {
-      const displayName = await createBackup(password, routerId, routerStopped ? walletPassword : undefined);
+      const displayName = await createBackup(walletPassword, password, routerId);
       pushToast("success", `Encrypted backup created: ${displayName}`);
       setOpen(false);
     } catch (e) {
@@ -127,17 +129,15 @@ export function BackupForm({ routerId, routerStopped = false }: { routerId?: str
         </Button>
       ) : (
         <div className="mt-4">
-          {routerStopped && (
-            <div className="mb-3">
-              <PasswordField
-                label="Router wallet password"
-                autoComplete="current-password"
-                value={walletPassword}
-                onChange={(e) => setWalletPassword(e.target.value)}
-                hint="The router is stopped, so its wallet is opened just for this backup."
-              />
-            </div>
-          )}
+          <div className="mb-3">
+            <PasswordField
+              label={routerId === undefined ? "Wallet password" : "Router wallet password"}
+              autoComplete="current-password"
+              value={walletPassword}
+              onChange={(e) => setWalletPassword(e.target.value)}
+              hint="Unlocks the wallet's seed for the backup."
+            />
+          </div>
           <div className="grid grid-cols-2 gap-3 max-[620px]:grid-cols-1">
             <PasswordField
               label="Backup Password"

@@ -17,6 +17,7 @@ libc.workspace = true
 dirs.workspace = true
 serde_cbor.workspace = true
 argon2.workspace = true
+zeroize.workspace = true
 minreq.workspace = true
 log4rs.workspace = true
 libtor = { workspace = true, optional = true }

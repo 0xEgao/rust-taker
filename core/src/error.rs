@@ -233,7 +233,10 @@ impl From<WalletError> for AppError {
             WalletError::IO(_) => ErrorCode::Io,
             // `PasswordRequired` means the file is encrypted and we passed none, which the UI
             // recovers from the same way as a bad one: ask again.
-            WalletError::Security(SecurityError::Decryption | SecurityError::PasswordRequired) => {
+            // `WrongPassword` is the check on reads of an open wallet's sealed seed (backup,
+            // phrase); the other two come from decrypting the wallet file.
+            WalletError::WrongPassword
+            | WalletError::Security(SecurityError::Decryption | SecurityError::PasswordRequired) => {
                 ErrorCode::WalletWrongPassword
             }
             // `check_node_requirements` reports a missing ZMQ publisher as an untyped
@@ -331,6 +334,7 @@ mod tests {
 
         let missing = TakerError::Wallet(WalletError::Security(SecurityError::PasswordRequired));
         assert_eq!(AppError::from(missing).code, ErrorCode::WalletWrongPassword);
+        assert_eq!(AppError::from(WalletError::WrongPassword).code, ErrorCode::WalletWrongPassword);
     }
 
     /// Every code must choose a behaviour. A new one added without a class will not compile,

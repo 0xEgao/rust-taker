@@ -155,11 +155,20 @@ pub async fn backup_wallet(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, Arc<AppState>>,
     password: String,
+    wallet_password: String,
 ) -> Result<String, AppError> {
     ensure_main_window(&window)?;
     validate_password(&password, "backup password")?;
     let wallet = desktop_taker(&state)?.wallet.clone();
-    save_backup(window, &state, wallet, "portal-wallet-backup", password).await
+    save_backup(
+        window,
+        &state,
+        wallet,
+        "portal-wallet-backup",
+        password,
+        wallet_password,
+    )
+    .await
 }
 
 /// Asks where to save, then writes the encrypted backup of `wallet` there. Shared by the wallet
@@ -170,6 +179,7 @@ pub(crate) async fn save_backup(
     wallet: impl AsRef<RwLock<Wallet>> + Send + 'static,
     file_stem: &str,
     password: String,
+    wallet_password: String,
 ) -> Result<String, AppError> {
     let operation = SensitiveOperationGuard::acquire(
         &state.sensitive_operation_active,
@@ -198,7 +208,7 @@ pub(crate) async fn save_backup(
             "backup destination is not a local filesystem path",
         )
     })?;
-    taker_wallet::write_backup(wallet, operation, destination, password).await
+    taker_wallet::write_backup(wallet, operation, destination, password, wallet_password).await
 }
 
 #[tauri::command]

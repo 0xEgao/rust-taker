@@ -63,9 +63,9 @@ export interface Host {
    *  browser never learns a server path. */
   selectBackup(): Promise<RestoreSelection>;
   /** Writes an encrypted backup of the open wallet, or of `routerId`'s wallet, and returns the
-   *  file's name. A stopped router's wallet is opened with `walletPassword`. Desktop saves it
+   *  file's name. `walletPassword` unseals the wallet's seed. Desktop saves it
    *  where a native dialog says; web has the server produce it and downloads it. */
-  createBackup(password: string, routerId?: string, walletPassword?: string): Promise<string>;
+  createBackup(walletPassword: string, password: string, routerId?: string): Promise<string>;
 }
 
 /** Mirrors `RestoreSelectionView` in core. */
