@@ -1063,7 +1063,11 @@ pub async fn write_backup(
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))?;
         }
-        std::fs::File::open(&staging)?.sync_all()?;
+        // Write access: Windows refuses to flush a read-only handle.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&staging)?
+            .sync_all()?;
         std::fs::rename(&staging, &destination)?;
         // Best-effort: the rename has already replaced the destination.
         #[cfg(unix)]
