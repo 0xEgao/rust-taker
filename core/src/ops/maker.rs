@@ -462,14 +462,9 @@ pub async fn init_maker(
             return Err(error);
         }
     };
-    if let Err(error) = maker_settings::save(&settings) {
-        server.watch_service.shutdown();
-        drop(server);
-        abort(&error)?;
-        return Err(error);
-    }
-    // Read before the drop: a router later starts with a fresh server, and only this one is known
-    // to have just created the wallet.
+    // Read before the registration is saved: a failure here aborts, and abort leaves a saved
+    // registration behind that would block the retry. Also before the drop: a router later starts
+    // with a fresh server, and only this one is known to have just created the wallet.
     let new_phrase = if marked {
         match crate::ops::taker_wallet::read_sealed_phrase(server.wallet.clone(), phrase_password)
             .await
@@ -485,6 +480,12 @@ pub async fn init_maker(
     } else {
         None
     };
+    if let Err(error) = maker_settings::save(&settings) {
+        server.watch_service.shutdown();
+        drop(server);
+        abort(&error)?;
+        return Err(error);
+    }
     // `MakerServer::init` is the crate's only wallet create/load API and starts
     // a watch service as a side effect. Creation is registration-only here, so
     // stop that temporary service and reconstruct a fresh runtime on start.
@@ -993,6 +994,10 @@ pub async fn start_maker(
             Err(error) => {
                 server.watch_service.shutdown();
                 drop(server);
+                let _ = std::fs::remove_file(&wallet_file);
+                if matches!(wallet_file.try_exists(), Ok(false)) {
+                    let _ = crate::storage::clear_unsaved_phrase_marker(&marker);
+                }
                 if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
                     entry.phase = MakerPhase::Failed {
                         message: error.message.clone(),

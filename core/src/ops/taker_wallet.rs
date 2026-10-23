@@ -285,7 +285,20 @@ async fn open_taker(
     })?;
     // Only a wallet this call created has a phrase to show.
     let new_phrase = if creating {
-        Some(read_sealed_phrase(taker.get_wallet().clone(), phrase_password).await?)
+        match read_sealed_phrase(taker.get_wallet().clone(), phrase_password).await {
+            Ok(words) => Some(words),
+            Err(error) => {
+                // Dropping a Taker saves the wallet file, which can take seconds and would
+                // recreate the file removed below if it ran after.
+                let _ = tokio::task::spawn_blocking(move || drop(taker)).await;
+                crate::logging::unregister_wallet(key);
+                let _ = std::fs::remove_file(&wallet_file);
+                if matches!(wallet_file.try_exists(), Ok(false)) {
+                    let _ = storage::clear_unsaved_phrase_marker(&marker);
+                }
+                return Err(error);
+            }
+        }
     } else {
         None
     };
@@ -1050,7 +1063,19 @@ pub async fn write_backup(
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))?;
         }
-        Ok(std::fs::rename(&staging, &destination)?)
+        std::fs::File::open(&staging)?.sync_all()?;
+        std::fs::rename(&staging, &destination)?;
+        // Best-effort: the rename has already replaced the destination.
+        #[cfg(unix)]
+        if let Some(parent) = destination.parent() {
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+        }
+        Ok(())
     });
     if written.is_err() {
         let _ = std::fs::remove_file(&staging);
