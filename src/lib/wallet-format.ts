@@ -207,7 +207,6 @@ const SWAP_STATUS_ICON: Record<SwapStatus, LucideIcon> = {
   recovery_timelock: AlertCircle,
   recovered: AlertCircle,
   interrupted: AlertCircle,
-  unfinished: AlertCircle,
   failed: XCircle,
 };
 
@@ -217,7 +216,6 @@ const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
   recovery_timelock: "text-warning",
   recovered: "text-warning",
   interrupted: "text-warning",
-  unfinished: "text-warning",
   failed: "text-danger",
 };
 

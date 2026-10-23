@@ -15,7 +15,7 @@ use openswap::bitcoin::{Address, Amount, OutPoint, ScriptBuf, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
-use openswap::wallet::{AddressType, SecretMnemonic, UTXOSpendInfo, Wallet};
+use openswap::wallet::{AddressType, SecretMnemonic, UTXOSpendInfo, Wallet, WalletError};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -262,8 +262,6 @@ async fn open_taker(
     let wallet_key = key.to_path_buf();
     // Registered before `Taker::init`, not after: the threads it starts log straight away, and
     // only a registered wallet can claim their unattributed lines.
-    // Before the crate opens the wallet: its startup recovery writes reports straight away.
-    storage::move_sidecars_out(key, &config.wallet_name)?;
     crate::logging::register_wallet(config.wallet_name.clone(), key.to_path_buf());
     let taker = tokio::task::spawn_blocking(move || {
         let _log = crate::logging::wallet_scope(wallet_key.clone());
@@ -283,6 +281,9 @@ async fn open_taker(
             }
         }
     })?;
+    // openswap stopped reading this at #1137, and its one-time upgrade has just passed over it,
+    // but it still holds swap secrets in the clear.
+    let _ = std::fs::remove_file(key.join("swap_tracker.cbor"));
     // Only a wallet this call created has a phrase to show.
     let new_phrase = if creating {
         match read_sealed_phrase(taker.get_wallet().clone(), phrase_password).await {
@@ -328,6 +329,7 @@ async fn open_taker(
         chain_backend: chain_config,
         socks_port: tor.socks_port,
         active_swap: Mutex::new(None),
+        preparation: Default::default(),
         sync_cancel: Arc::new(AtomicBool::new(false)),
         sync_in_flight: Arc::new(AtomicBool::new(false)),
         is_offerbook_syncing: AtomicBool::new(false),
@@ -470,7 +472,7 @@ pub(crate) fn verify_wallet_password(
     match load_sensitive_struct::<serde::de::IgnoredAny, SerdeCbor>(path, password) {
         Ok(_) => Ok(()),
         Err(SecurityError::Decryption | SecurityError::PasswordRequired) => Err(wrong()),
-        Err(e) => Err(AppError::new(ErrorCode::WalletLoadFailed, format!("{e:?}"))),
+        Err(e) => Err(WalletError::Security(e).into()),
     }
 }
 
@@ -482,6 +484,7 @@ fn verify_backup_password(path: &Path, password: String) -> Result<(), AppError>
             ErrorCode::WalletWrongPassword,
             "incorrect backup password",
         )),
+        Err(e @ SecurityError::NeedsUpgrade(_)) => Err(WalletError::Security(e).into()),
         Err(e) => Err(AppError::new(
             ErrorCode::InvalidInput,
             format!("this file is not a readable Portal backup: {e:?}"),
@@ -910,7 +913,7 @@ pub(crate) fn normalize_phrase(phrase: &str) -> String {
 }
 
 /// The crate's error for a wrong word, count or checksum, worded for the user.
-fn phrase_error(error: openswap::wallet::WalletError) -> AppError {
+fn phrase_error(error: WalletError) -> AppError {
     match error {
         openswap::wallet::WalletError::BIP39(_) => AppError::new(
             ErrorCode::InvalidInput,

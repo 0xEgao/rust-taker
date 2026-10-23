@@ -27,8 +27,7 @@ pub fn resolve_data_dir(data_dir: &Option<String>) -> Result<PathBuf, AppError> 
 }
 
 /// The crate `data_dir` for one wallet. One per wallet, never shared: the crate keeps a single
-/// swap tracker and offerbook per data dir, and every `Taker::init` fails the unfinished swaps
-/// it finds in that tracker, whichever wallet they belong to.
+/// offerbook and config per data dir, and Portal keeps the wallet's swap journal there.
 pub fn wallet_data_dir(root: &Path, wallet_name: &str) -> PathBuf {
     root.join(WALLET_DATA_DIR).join(wallet_name)
 }
@@ -62,10 +61,8 @@ pub fn record_network(dir: &Path, chain: &str) -> Result<(), AppError> {
 /// The files Portal keeps beside a wallet or router.
 const SIDECARS: [&str; 2] = ["last_address.json", "tx_first_seen.json"];
 
-/// Moves every file an older Portal kept in `wallets/` out to the data dir. The crate finds the
-/// report file for a recovery by expecting `wallets/` to hold the wallet file alone, and
-/// anything else there sends recovery reports to a fallback file. So this runs before the crate
-/// opens the wallet, and a copy that was already moved wins.
+/// Moves every file an older Portal kept in `wallets/` out to the data dir. A copy that was
+/// already moved wins.
 pub fn move_sidecars_out(dir: &Path, wallet_name: &str) -> Result<(), AppError> {
     for file in SIDECARS {
         let old = dir.join("wallets").join(format!("{wallet_name}_{file}"));
@@ -95,14 +92,15 @@ pub fn recorded_network(dir: &Path) -> Option<String> {
 }
 
 /// The chain of a wallet or router, readable while it is locked. One Portal never opened (a
-/// Maker Dashboard import, a `makerd` dir) has no record, so it falls back to the chain its swap
-/// reports name, then to an address Portal issued from its wallet: the prefix tells mainnet from
-/// the test networks (`"test"`), though not one test network from another.
+/// Maker Dashboard import, a `makerd` dir) has no record, so it falls back to the chain a router
+/// records in its `config.toml` once started, then to an address Portal issued from its wallet:
+/// the prefix tells mainnet from the test networks (`"test"`), though not one test network from
+/// another.
 pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
     if let Some(chain) = recorded_network(dir) {
         return Some(chain);
     }
-    if let Some(chain) = reported_network(dir, wallet_name) {
+    if let Some(chain) = configured_network(dir) {
         return Some(chain);
     }
     let issued = fs::read_to_string(sidecar_path(dir, wallet_name, "last_address.json").ok()?).ok()?;
@@ -120,16 +118,16 @@ pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
     Some(network.to_string())
 }
 
-fn reported_network(dir: &Path, wallet_name: &str) -> Option<String> {
-    let path = crate::ops::taker_reports::report_path(dir, wallet_name);
-    let reports: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    let by_node = reports.get("maker").and_then(|m| m.as_object());
-    ["taker", "recovery"]
-        .iter()
-        .filter_map(|section| reports.get(section)?.as_array())
-        .chain(by_node.into_iter().flat_map(|m| m.values().filter_map(|v| v.as_array())))
-        .flatten()
-        .find_map(|report| Some(report.get("network")?.as_str()?.to_string()))
+/// `network = "signet"`, which `MakerServer::init` writes from the wallet itself.
+fn configured_network(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join("config.toml"))
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "network").then(|| value.trim().trim_matches('"').to_string())
+        })
+        .filter(|chain| !chain.is_empty())
 }
 
 /// Wallets under `<root>/takers`, sorted: each is a directory holding its own
@@ -300,13 +298,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecorded_router_is_placed_by_its_swap_reports() {
-        let dir = scratch("reported");
+    fn an_unrecorded_router_is_placed_by_its_config() {
+        let dir = scratch("configured");
         fs::create_dir_all(dir.join("wallets")).unwrap();
         assert_eq!(wallet_network(&dir, "default-maker"), None);
         fs::write(
-            dir.join("wallets").join("default-maker_swap_report.json"),
-            r#"{"taker":[],"maker":{"default-maker":[{"network":"signet"}]},"recovery":[]}"#,
+            dir.join("config.toml"),
+            "network_port = 6102\nnetwork = \"signet\"\nrpc_port = 6103\n",
         )
         .unwrap();
         assert_eq!(wallet_network(&dir, "default-maker").as_deref(), Some("signet"));
@@ -315,7 +313,6 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The crate guesses a recovery's report file from `wallets/`, so Portal's files leave it.
     #[test]
     fn a_sidecar_left_in_wallets_is_moved_out() {
         let dir = scratch("sidecar");

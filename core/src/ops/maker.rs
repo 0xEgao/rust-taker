@@ -149,13 +149,14 @@ async fn construct_server(
     // Read once: the network recorded must be the one this server was built on, even if the
     // session's backend changes while `MakerServer::init` runs.
     let chain = chain_backend::load(session);
-    // Before the crate opens the wallet: its startup recovery writes reports straight away.
-    crate::storage::move_sidecars_out(&data_dir, &config.wallet_name)?;
     let server_config = build_config(&chain, config, data_dir.clone())?;
     let server = tokio::task::spawn_blocking(move || MakerServer::init(server_config))
         .await
         .map_err(from_wallet_join_error)?
         .map_err(AppError::from)?;
+    // openswap stopped reading this at #1137, and its one-time upgrade has just passed over it,
+    // but it still holds swap secrets in the clear.
+    let _ = std::fs::remove_file(data_dir.join("maker_swap_tracker.cbor"));
     chain_backend::record_network_once(session, data_dir, chain, socks_port);
     Ok(Arc::new(server))
 }
@@ -163,8 +164,8 @@ async fn construct_server(
 /// Unwinds a failed `init_maker` so the attempt can be retried.
 ///
 /// `created` is the wallet this attempt made, if it made one: `MakerServer::init` goes through
-/// `Wallet::load_or_init` and can create the wallet before a later step (sync, watch service,
-/// report load) fails, and leaving it behind would reject every retry of the same name. A
+/// `Wallet::load_or_init` and can create the wallet before a later step (sync, watch service)
+/// fails, and leaving it behind would reject every retry of the same name. A
 /// wallet that was already there — a removed router being registered again — is `None`, and
 /// is never touched: it holds that router's funds and bond.
 fn abort_failed_creation(
