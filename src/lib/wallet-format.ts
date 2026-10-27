@@ -69,7 +69,7 @@ export function getTransactionKind(category: string, label: string | undefined, 
   return amountSats >= 0 ? "received" : "sent";
 }
 
-const PORTAL_SIGNET_EXPLORER = "https://mempool.citadelfoss.xyz";
+const PORTAL_SIGNET_EXPLORER = "https://mempool.openswap.live";
 const PUBLIC_EXPLORERS: Record<string, string> = {
   bitcoin: "https://blockstream.info",
   testnet: "https://mempool.space/testnet",

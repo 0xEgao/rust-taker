@@ -12,7 +12,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
-          "url": "https://mempool.citadelfoss.xyz/*"
+          "url": "https://mempool.openswap.live/*"
         },
         {
           "url": "https://mempool.space/*"
