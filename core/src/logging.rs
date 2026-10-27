@@ -458,6 +458,15 @@ pub fn watch_thread_logs(observe: impl FnMut(&str, &str) + 'static) -> ThreadLog
     }
 }
 
+/// A funding wait starting: "Waiting for N confirmation(s) on K transaction(s)...", logged once
+/// per wait before any of its txids. Each leg is its own wait, so this is where a leg begins.
+pub fn funding_wait_start(target: &str, message: &str) -> bool {
+    target == "openswap::wallet::api"
+        && message.starts_with("Waiting for ")
+        && message.contains(" confirmation(s) on ")
+        && message.ends_with(" transaction(s)...")
+}
+
 /// The txid a funding wait is polling, from its "Tx <txid> has N confirmations (need M)" round.
 /// Its "seen in mempool" line is not one: it would make one round read as two and split a leg.
 pub fn funding_wait_txid<'a>(target: &str, message: &'a str) -> Option<&'a str> {
@@ -628,6 +637,19 @@ pub fn tail_lines(path: &Path, want: usize) -> std::io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{redact_line, InitPhase, MakerLogRouter};
+
+    #[test]
+    fn a_funding_wait_start_is_told_from_its_rounds() {
+        use super::{funding_wait_start, funding_wait_txid};
+        const API: &str = "openswap::wallet::api";
+        let start = "Waiting for 1 confirmation(s) on 2 transaction(s)...";
+        let round = "Tx 88a4524c7c00d8c99416a10a9f9fc6682163c2a8983cc72da8802bdec7c37ee4 has 0 confirmations (need 1)";
+        assert!(funding_wait_start(API, start));
+        assert!(!funding_wait_start("openswap::taker::api", start));
+        assert!(!funding_wait_start(API, round));
+        assert_eq!(funding_wait_txid(API, start), None);
+        assert!(funding_wait_txid(API, round).is_some());
+    }
 
     #[test]
     fn extracts_leading_bracketed_port() {

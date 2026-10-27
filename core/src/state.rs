@@ -260,23 +260,30 @@ pub struct ActiveSwap {
 #[derive(Default)]
 pub struct FundingWaits {
     pub legs: Vec<Vec<String>>,
-    complete: bool,
+    /// The wait now running has named a txid no earlier leg holds, so it is the last leg.
+    open: bool,
 }
 
 impl FundingWaits {
-    /// Each round re-checks every txid of the leg, so one coming round again means the leg's
-    /// group is whole, and the next unseen txid is the next leg's. A later wait that re-checks
-    /// an earlier leg (Legacy waits on the previous hop again) repeats known txids only.
+    /// Each leg is its own wait, so a leg begins where its wait does. Repeats can't mark the
+    /// boundary: a txid is only logged while unconfirmed, and a leg confirming within one poll
+    /// round never names a txid twice.
+    pub fn begin_wait(&mut self) {
+        self.open = false;
+    }
+
+    /// A txid no earlier leg holds belongs to the running wait's leg, even when it first shows a
+    /// round late (a split not yet in our mempool is not logged). Known txids are a wait that
+    /// re-checks an earlier leg (Legacy waits on the previous hop again) and add nothing.
     pub fn observe(&mut self, txid: &str) {
         if self.legs.iter().flatten().any(|seen| seen == txid) {
-            self.complete = true;
             return;
         }
         match self.legs.last_mut() {
-            Some(leg) if !self.complete => leg.push(txid.to_string()),
+            Some(leg) if self.open => leg.push(txid.to_string()),
             _ => {
                 self.legs.push(vec![txid.to_string()]);
-                self.complete = false;
+                self.open = true;
             }
         }
     }
@@ -304,22 +311,52 @@ pub enum SwapLifecycle {
 mod funding_waits_tests {
     use super::FundingWaits;
 
+    /// Each slice is one wait: the txid lines logged between two wait-start lines.
+    fn replay(waits: &[&[&str]]) -> Vec<Vec<String>> {
+        let mut seen = FundingWaits::default();
+        for wait in waits {
+            seen.begin_wait();
+            for txid in *wait {
+                seen.observe(txid);
+            }
+        }
+        seen.legs
+    }
+
     #[test]
     fn groups_each_legs_splits_and_ignores_rewaits_on_earlier_legs() {
-        let mut waits = FundingWaits::default();
-        // Leg 0: two splits polled round after round.
-        for txid in ["a", "b", "a", "b", "a"] {
-            waits.observe(txid);
-        }
-        // Leg 1 starts; Legacy then re-checks leg 0 before moving on.
-        for txid in ["c", "d", "c", "a", "b", "d"] {
-            waits.observe(txid);
-        }
-        // Leg 2: a single split.
-        for txid in ["e", "e"] {
-            waits.observe(txid);
-        }
-        assert_eq!(waits.legs, vec![vec!["a", "b"], vec!["c", "d"], vec!["e"]]);
+        let legs = replay(&[
+            // Leg 0: two splits polled round after round.
+            &["a", "b", "a", "b", "a"],
+            // Leg 1, then Legacy re-checks leg 0 in a wait of its own.
+            &["c", "d", "c", "d"],
+            &["a", "b"],
+            // Leg 2: a single split.
+            &["e", "e"],
+        ]);
+        assert_eq!(legs, vec![vec!["a", "b"], vec!["c", "d"], vec!["e"]]);
+    }
+
+    /// The common case on a fast chain: the first round logs each split once and the next block
+    /// confirms them all, so no txid repeats. A confirmed leg must not absorb the next one.
+    #[test]
+    fn a_leg_confirmed_in_one_round_keeps_its_own_splits() {
+        let legs = replay(&[&["a", "b"], &["c", "d"], &["e"]]);
+        assert_eq!(legs, vec![vec!["a", "b"], vec!["c", "d"], vec!["e"]]);
+    }
+
+    /// A split not yet in our mempool is first logged a round late; it is still this leg's.
+    #[test]
+    fn a_split_arriving_late_stays_in_its_leg() {
+        let legs = replay(&[&["a", "a", "b"], &["c", "c", "d", "c", "d"]]);
+        assert_eq!(legs, vec![vec!["a", "b"], vec!["c", "d"]]);
+    }
+
+    /// A wait whose txids were all already confirmed logs none, and must not open a leg.
+    #[test]
+    fn a_wait_that_names_nothing_adds_no_leg() {
+        let legs = replay(&[&["a"], &[], &["b"]]);
+        assert_eq!(legs, vec![vec!["a"], vec!["b"]]);
     }
 }
 

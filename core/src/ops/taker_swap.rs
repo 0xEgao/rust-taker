@@ -418,7 +418,11 @@ pub async fn start_swap(
         let key = swap_instance.journal_key.clone();
         let watched = (Arc::clone(&journal), data_dir.clone(), key.clone());
         let watch = crate::logging::watch_thread_logs(move |target, line| {
-            if let Some(txid) = crate::logging::funding_wait_txid(target, line) {
+            if crate::logging::funding_wait_start(target, line) {
+                if let Ok(mut waits) = funding_waits.lock() {
+                    waits.begin_wait();
+                }
+            } else if let Some(txid) = crate::logging::funding_wait_txid(target, line) {
                 if let Ok(mut waits) = funding_waits.lock() {
                     waits.observe(txid);
                 }
